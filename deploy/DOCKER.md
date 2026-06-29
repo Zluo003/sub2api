@@ -1,76 +1,60 @@
-# Sub2API Docker Image
+# Docker Image
 
-Sub2API is an AI API Gateway Platform for distributing and managing AI product subscription API quotas.
+Sub2API 默认发布到 GitHub Container Registry：
 
-## Quick Start
-
-```bash
-docker run -d \
-  --name sub2api \
-  -p 8080:8080 \
-  -e DATABASE_URL="postgres://user:pass@host:5432/sub2api" \
-  -e REDIS_URL="redis://host:6379" \
-  weishaw/sub2api:latest
+```text
+ghcr.io/zluo003/sub2api:latest
 ```
 
-## Docker Compose
+拉取镜像：
+
+```bash
+docker pull ghcr.io/zluo003/sub2api:latest
+```
+
+最小运行示例：
 
 ```yaml
-version: '3.8'
-
 services:
   sub2api:
-    image: weishaw/sub2api:latest
+    image: ghcr.io/zluo003/sub2api:latest
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgres://postgres:postgres@db:5432/sub2api?sslmode=disable
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - db
-      - redis
-
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=sub2api
+      - AUTO_SETUP=true
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=sub2api
+      - DATABASE_PASSWORD=change_this_secure_password
+      - DATABASE_DBNAME=sub2api
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=change_this_fixed_secret
+      - TOTP_ENCRYPTION_KEY=change_this_fixed_secret
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-
-volumes:
-  postgres_data:
-  redis_data:
+      - ./data:/app/data
 ```
 
-## Environment Variables
+推荐直接使用本目录的 compose 文件：
 
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | Yes | - |
-| `REDIS_URL` | Redis connection string | Yes | - |
-| `PORT` | Server port | No | `8080` |
-| `GIN_MODE` | Gin framework mode (`debug`/`release`) | No | `release` |
+```bash
+cp .env.example .env
+mkdir -p data postgres_data redis_data
+docker compose -f docker-compose.local.yml up -d
+```
 
-## Supported Architectures
+二次开发使用本地镜像：
 
-- `linux/amd64`
-- `linux/arm64`
+```bash
+cd ..
+docker build -t sub2api:dev .
+cd deploy
+docker compose -f docker-compose.dev.yml up -d
+```
 
-## Tags
+镜像 release 由 `.github/workflows/release.yml` 和 GoReleaser 生成。创建 tag 后会推送：
 
-- `latest` - Latest stable release
-- `x.y.z` - Specific version
-- `x.y` - Latest patch of minor version
-- `x` - Latest minor of major version
-
-## Links
-
-- [GitHub Repository](https://github.com/weishaw/sub2api)
-- [Documentation](https://github.com/weishaw/sub2api#readme)
+```text
+ghcr.io/zluo003/sub2api:<version>
+ghcr.io/zluo003/sub2api:latest
+```
