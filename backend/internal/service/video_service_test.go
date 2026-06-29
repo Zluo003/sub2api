@@ -95,6 +95,131 @@ func TestNormalizeVideoCreateRequestRequiresReferenceVideoDuration(t *testing.T)
 	require.Contains(t, err.Error(), "reference_video_duration_required")
 }
 
+func TestNormalizeVideoCreateRequestRejectsUnsupportedDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		duration float64
+	}{
+		{name: "too short", duration: 3},
+		{name: "too long", duration: 16},
+		{name: "fractional", duration: 8.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &VideoCreateRequest{
+				Model:      VideoModelSeedance20,
+				Prompt:     "a cinematic shot",
+				Duration:   tc.duration,
+				Resolution: VideoResolution720P,
+			}
+
+			_, err := normalizeVideoCreateRequest(req)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "invalid_video_duration")
+		})
+	}
+}
+
+func TestNormalizeVideoCreateRequestRejectsReferenceVideoDurationOutsideOfficialLimits(t *testing.T) {
+	req := &VideoCreateRequest{
+		Model:      VideoModelSeedance20,
+		Prompt:     "a cinematic shot",
+		Duration:   8,
+		Resolution: VideoResolution720P,
+		Content: []VideoContent{
+			{
+				Type:            "video_url",
+				Role:            "reference_video",
+				VideoURL:        &VideoContentURL{URL: "https://cdn.example.com/ref.mp4"},
+				DurationSeconds: float64PtrForVideoTest(16),
+			},
+		},
+	}
+
+	_, err := normalizeVideoCreateRequest(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_reference_video_duration")
+}
+
+func TestNormalizeVideoCreateRequestRejectsReferenceVideoTotalDurationAboveOfficialLimit(t *testing.T) {
+	req := &VideoCreateRequest{
+		Model:      VideoModelSeedance20,
+		Prompt:     "a cinematic shot",
+		Duration:   8,
+		Resolution: VideoResolution720P,
+		Content: []VideoContent{
+			{
+				Type:            "video_url",
+				Role:            "reference_video",
+				VideoURL:        &VideoContentURL{URL: "https://cdn.example.com/ref.mp4"},
+				DurationSeconds: float64PtrForVideoTest(8),
+			},
+			{
+				Type:            "video_url",
+				Role:            "reference_video",
+				VideoURL:        &VideoContentURL{URL: "https://cdn.example.com/ref2.mp4"},
+				DurationSeconds: float64PtrForVideoTest(8),
+			},
+		},
+	}
+
+	_, err := normalizeVideoCreateRequest(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_reference_video_duration")
+}
+
+func TestNormalizeVideoCreateRequestSupportsSeedance1080P(t *testing.T) {
+	req := &VideoCreateRequest{
+		Model:      VideoModelSeedance20,
+		Prompt:     "a cinematic shot",
+		Duration:   8,
+		Resolution: VideoResolution1080P,
+	}
+
+	normalized, err := normalizeVideoCreateRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, VideoResolution1080P, normalized.Resolution)
+	require.Equal(t, "seedance-2.0-1080p", SeedanceUpstreamModel(normalized.Model, normalized.Resolution))
+}
+
+func TestNormalizeVideoCreateRequestRejectsFast1080P(t *testing.T) {
+	req := &VideoCreateRequest{
+		Model:      VideoModelSeedance20Fast,
+		Prompt:     "a cinematic shot",
+		Duration:   8,
+		Resolution: VideoResolution1080P,
+	}
+
+	_, err := normalizeVideoCreateRequest(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_resolution")
+}
+
+func TestNormalizeVideoPricingRulesAllowsOnlyBaseSeedance1080P(t *testing.T) {
+	rules, err := normalizeVideoPricingRules([]VideoGroupPricingRule{
+		{
+			ModelCode:        VideoModelSeedance20,
+			Resolution:       VideoResolution1080P,
+			CreditsPerSecond: 1.5,
+			Enabled:          true,
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.Equal(t, VideoModelSeedance20, rules[0].ModelCode)
+	require.Equal(t, VideoResolution1080P, rules[0].Resolution)
+
+	_, err = normalizeVideoPricingRules([]VideoGroupPricingRule{
+		{
+			ModelCode:        VideoModelSeedance20Fast,
+			Resolution:       VideoResolution1080P,
+			CreditsPerSecond: 1.5,
+			Enabled:          true,
+		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_resolution")
+}
+
 func TestVideoResponseFromTaskDoesNotExposeUpstreamFieldsOrProvider(t *testing.T) {
 	now := time.Unix(1782700000, 0)
 	completed := now.Add(30 * time.Second)

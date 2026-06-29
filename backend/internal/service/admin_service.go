@@ -1828,9 +1828,7 @@ func normalizeVideoPricingRules(rules []VideoGroupPricingRule) ([]VideoGroupPric
 			return nil, infraerrors.BadRequest("invalid_video_model", "Invalid video model")
 		}
 		resolution := strings.TrimSpace(rule.Resolution)
-		switch resolution {
-		case VideoResolution480P, VideoResolution720P:
-		default:
+		if !IsSupportedVideoResolution(model, resolution) {
 			return nil, infraerrors.BadRequest("invalid_video_resolution", "Invalid video resolution")
 		}
 		if rule.CreditsPerSecond < 0 {

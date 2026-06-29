@@ -377,6 +377,7 @@ export default {
     dashboard: '仪表盘',
     announcements: '公告',
     apiKeys: 'API 密钥',
+    apiDocs: '接口文档',
     usage: '使用记录',
     redeem: '兑换',
     affiliate: '邀请返利',
@@ -416,6 +417,11 @@ export default {
     channelMonitor: '渠道监控',
     channelStatus: '渠道状态',
     riskControl: '风控中心',
+  },
+
+  apiDocs: {
+    title: '接口文档',
+    description: 'OpenAI、Claude、Gemini 与 Seedance 接口示例和接入说明'
   },
 
   // Auth

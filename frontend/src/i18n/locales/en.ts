@@ -377,6 +377,7 @@ export default {
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
+    apiDocs: 'API Docs',
     usage: 'Usage',
     redeem: 'Redeem',
     affiliate: 'Affiliate Rebates',
@@ -416,6 +417,11 @@ export default {
     channelMonitor: 'Channel Monitor',
     channelStatus: 'Channel Status',
     riskControl: 'Risk Control',
+  },
+
+  apiDocs: {
+    title: 'API Docs',
+    description: 'OpenAI, Claude, Gemini, and Seedance endpoint examples and integration notes'
   },
 
   // Auth

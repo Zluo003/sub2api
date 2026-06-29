@@ -499,7 +499,7 @@ export interface OpenAIMessagesDispatchModelConfig {
 }
 
 export type VideoModelCode = 'seedance-2.0' | 'seedance-2.0-fast'
-export type VideoResolution = '480p' | '720p'
+export type VideoResolution = '480p' | '720p' | '1080p'
 
 export interface VideoGroupPricingRule {
   id?: number

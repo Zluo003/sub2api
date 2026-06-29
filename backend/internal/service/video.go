@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -11,8 +12,9 @@ const (
 	VideoModelSeedance20     = "seedance-2.0"
 	VideoModelSeedance20Fast = "seedance-2.0-fast"
 
-	VideoResolution480P = "480p"
-	VideoResolution720P = "720p"
+	VideoResolution480P  = "480p"
+	VideoResolution720P  = "720p"
+	VideoResolution1080P = "1080p"
 
 	VideoTaskStatusQueued     = "queued"
 	VideoTaskStatusProcessing = "processing"
@@ -20,6 +22,22 @@ const (
 	VideoTaskStatusFailed     = "failed"
 	VideoTaskStatusCancelled  = "cancelled"
 )
+
+func IsSupportedVideoResolution(model, resolution string) bool {
+	model = strings.TrimSpace(model)
+	resolution = strings.TrimSpace(resolution)
+	switch model {
+	case VideoModelSeedance20:
+		return resolution == VideoResolution480P ||
+			resolution == VideoResolution720P ||
+			resolution == VideoResolution1080P
+	case VideoModelSeedance20Fast:
+		return resolution == VideoResolution480P ||
+			resolution == VideoResolution720P
+	default:
+		return false
+	}
+}
 
 var (
 	ErrVideoTaskNotFound          = infraerrors.NotFound("VIDEO_TASK_NOT_FOUND", "Video task not found")

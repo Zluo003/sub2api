@@ -3836,6 +3836,7 @@ const videoModelOptions: Array<{ value: VideoModelCode; label: string }> = [
 const videoResolutionOptions: Array<{ value: VideoResolution; label: string }> = [
   { value: "480p", label: "480p" },
   { value: "720p", label: "720p" },
+  { value: "1080p", label: "1080p" },
 ];
 
 const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
@@ -3849,6 +3850,13 @@ const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
   {
     model_code: "seedance-2.0",
     resolution: "720p",
+    credits_per_second: 0,
+    reference_video_multiplier: 1,
+    enabled: true,
+  },
+  {
+    model_code: "seedance-2.0",
+    resolution: "1080p",
     credits_per_second: 0,
     reference_video_multiplier: 1,
     enabled: true,

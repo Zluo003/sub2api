@@ -29,7 +29,9 @@ const (
 	videoDefaultPollTimeout      = 5 * time.Minute
 	videoDefaultRequestTimeout   = 60 * time.Second
 	videoDefaultConnectTimeout   = 15 * time.Second
-	videoMaxDurationSeconds      = 30
+	videoMinDurationSeconds      = 4
+	videoMaxDurationSeconds      = 15
+	videoMaxReferenceVideoTotal  = 15
 	videoPublicIDPrefix          = "video_"
 	videoObject                  = "video"
 	videoAbilityTextToVideo      = "video_text_to_video"
@@ -741,11 +743,11 @@ func normalizeVideoCreateRequest(req *VideoCreateRequest) (*normalizedVideoReque
 	if resolution == "" {
 		resolution = VideoResolution720P
 	}
-	if resolution != VideoResolution480P && resolution != VideoResolution720P {
+	if !IsSupportedVideoResolution(model, resolution) {
 		return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 	}
 	duration := req.Duration
-	if duration <= 0 || duration > videoMaxDurationSeconds {
+	if duration != math.Trunc(duration) || duration < videoMinDurationSeconds || duration > videoMaxDurationSeconds {
 		return nil, videoBadRequest("invalid_video_duration", "Invalid video duration")
 	}
 	generatedSeconds := int(math.Ceil(duration))
@@ -955,7 +957,13 @@ func referenceVideoSeconds(content []VideoContent) (int, error) {
 		if item.DurationSeconds == nil || *item.DurationSeconds <= 0 {
 			return 0, videoBadRequest("reference_video_duration_required", "Reference video duration is required")
 		}
+		if *item.DurationSeconds < 2 || *item.DurationSeconds > 15 {
+			return 0, videoBadRequest("invalid_reference_video_duration", "Invalid reference video duration")
+		}
 		total += int(math.Ceil(*item.DurationSeconds))
+		if total > videoMaxReferenceVideoTotal {
+			return 0, videoBadRequest("invalid_reference_video_duration", "Invalid reference video duration")
+		}
 	}
 	return total, nil
 }
