@@ -28,6 +28,14 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
+        <div v-if="account.platform === 'video'">
+          <label class="input-label">{{ t('admin.accounts.video.provider') }}</label>
+          <select v-model="editVideoProvider" class="input">
+            <option value="aigod">{{ t('admin.accounts.video.providers.aigod') }}</option>
+            <option value="jingyu">{{ t('admin.accounts.video.providers.jingyu') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.video.providerHint') }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -42,7 +50,7 @@
                   : account.platform === 'antigravity'
                     ? 'https://cloudcode-pa.googleapis.com'
                     : account.platform === 'video'
-                      ? 'https://api.aigod.one'
+                      ? editVideoProviderDefaults.baseUrl
                     : 'https://api.anthropic.com'
             "
           />
@@ -54,7 +62,7 @@
             v-model="editVideoAPIPath"
             type="text"
             class="input"
-            placeholder="/v1/videos"
+            :placeholder="editVideoProviderDefaults.apiPath"
           />
           <p class="input-hint">{{ t('admin.accounts.video.apiPathHint') }}</p>
         </div>
@@ -2515,11 +2523,24 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editVideoProvider = ref<'aigod' | 'jingyu'>('aigod')
 const editVideoAPIPath = ref('/v1/videos')
 const editVideoPollIntervalMs = ref(2000)
 const editVideoPollTimeoutMs = ref(300000)
 const editVideoRequestTimeoutMs = ref(60000)
 const editVideoConnectTimeoutMs = ref(15000)
+const editVideoProviderDefaults = computed(() =>
+  editVideoProvider.value === 'jingyu'
+    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
+    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+)
+const resolvedEditVideoAPIPath = computed(() => {
+  const path = editVideoAPIPath.value.trim()
+  if (editVideoProvider.value === 'jingyu' && (!path || path === '/v1/videos')) {
+    return editVideoProviderDefaults.value.apiPath
+  }
+  return path || editVideoProviderDefaults.value.apiPath
+})
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
 const editBedrockSecretAccessKey = ref('')
@@ -2941,6 +2962,18 @@ const expiresAtInput = computed({
 })
 
 // Watchers
+watch(editVideoProvider, (_newProvider, oldProvider) => {
+  const previousDefaults = oldProvider === 'jingyu'
+    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
+    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+  if (!editBaseUrl.value.trim() || editBaseUrl.value.trim() === previousDefaults.baseUrl) {
+    editBaseUrl.value = editVideoProviderDefaults.value.baseUrl
+  }
+  if (!editVideoAPIPath.value.trim() || editVideoAPIPath.value.trim() === previousDefaults.apiPath) {
+    editVideoAPIPath.value = editVideoProviderDefaults.value.apiPath
+  }
+})
+
 const normalizePoolModeRetryCount = (value: number) => {
   if (!Number.isFinite(value)) {
     return DEFAULT_POOL_MODE_RETRY_COUNT
@@ -3160,13 +3193,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         : newAccount.platform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
           : newAccount.platform === 'video'
-            ? 'https://api.aigod.one'
+            ? (extra?.video_provider === 'jingyu' ? 'https://api.jingyuapi.art' : 'https://api.aigod.one')
           : 'https://api.anthropic.com'
+    if (newAccount.platform === 'video') {
+      editVideoProvider.value = extra?.video_provider === 'jingyu' ? 'jingyu' : 'aigod'
+    }
     editBaseUrl.value = newAccount.platform === 'video'
       ? ((extra?.base_url as string) || (credentials.base_url as string) || platformDefaultUrl)
       : ((credentials.base_url as string) || platformDefaultUrl)
     if (newAccount.platform === 'video') {
-      editVideoAPIPath.value = (extra?.api_path as string) || '/v1/videos'
+      editVideoAPIPath.value = (extra?.api_path as string) || editVideoProviderDefaults.value.apiPath
       editVideoPollIntervalMs.value = Number(extra?.poll_interval_ms ?? 2000)
       editVideoPollTimeoutMs.value = Number(extra?.poll_timeout_ms ?? 300000)
       editVideoRequestTimeoutMs.value = Number(extra?.request_timeout_ms ?? 60000)
@@ -3842,8 +3878,9 @@ const handleSubmit = async () => {
           (props.account.extra as Record<string, unknown>) || {}
         updatePayload.extra = {
           ...currentExtra,
-          base_url: newBaseUrl || 'https://api.aigod.one',
-          api_path: editVideoAPIPath.value.trim() || '/v1/videos',
+          video_provider: editVideoProvider.value,
+          base_url: newBaseUrl || editVideoProviderDefaults.value.baseUrl,
+          api_path: resolvedEditVideoAPIPath.value,
           poll_interval_ms: Number(editVideoPollIntervalMs.value) || 2000,
           poll_timeout_ms: Number(editVideoPollTimeoutMs.value) || 300000,
           request_timeout_ms: Number(editVideoRequestTimeoutMs.value) || 60000,

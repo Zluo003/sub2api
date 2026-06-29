@@ -1,0 +1,38 @@
+package service
+
+import "strings"
+
+type aigodVideoProviderAdapter struct{}
+
+func (a aigodVideoProviderAdapter) Provider() string {
+	return videoProviderAigod
+}
+
+func (a aigodVideoProviderAdapter) DefaultBaseURL() string {
+	return videoDefaultBaseURL
+}
+
+func (a aigodVideoProviderAdapter) DefaultAPIPath() string {
+	return videoDefaultAPIPath
+}
+
+func (a aigodVideoProviderAdapter) Compatible(model, resolution string) bool {
+	return IsSupportedVideoResolution(strings.TrimSpace(model), strings.TrimSpace(resolution))
+}
+
+func (a aigodVideoProviderAdapter) UpstreamModel(account *Account, normalized *normalizedVideoRequest) string {
+	if normalized == nil {
+		return ""
+	}
+	if mappedModel := resolvedMappedVideoModel(account, normalized.Model); mappedModel != "" {
+		return mappedModel
+	}
+	return SeedanceUpstreamModel(normalized.Model, normalized.Resolution)
+}
+
+func (a aigodVideoProviderAdapter) BuildCreateBody(normalized *normalizedVideoRequest, upstreamModel string) map[string]any {
+	if normalized == nil {
+		return nil
+	}
+	return normalized.UpstreamBody(upstreamModel)
+}

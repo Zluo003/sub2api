@@ -23,8 +23,13 @@ import (
 )
 
 const (
+	videoProviderAigod           = "aigod"
+	videoProviderJingyu          = "jingyu"
 	videoDefaultBaseURL          = "https://api.aigod.one"
 	videoDefaultAPIPath          = "/v1/videos"
+	videoDefaultJingyuBaseURL    = "https://api.jingyuapi.art"
+	videoDefaultJingyuAPIPath    = "/v1/video/generations"
+	videoJingyuSeedanceModel     = "seedance-api-2.0"
 	videoDefaultPollInterval     = 2 * time.Second
 	videoDefaultPollTimeout      = 5 * time.Minute
 	videoDefaultRequestTimeout   = 60 * time.Second
@@ -123,12 +128,16 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		return nil, err
 	}
 
-	account, err := s.selectAccount(ctx, input.APIKey.Group.ID, normalized.Model)
+	account, err := s.selectAccount(ctx, input.APIKey.Group.ID, normalized.Model, normalized.Resolution)
 	if err != nil {
 		return nil, err
 	}
-	upstreamModel := SeedanceUpstreamModel(normalized.Model, normalized.Resolution)
-	upstreamBody := normalized.UpstreamBody(upstreamModel)
+	upstreamModel := videoUpstreamModelForAccount(account, normalized)
+	upstreamBody := videoUpstreamBodyForAccount(account, normalized, upstreamModel)
+	upstreamEndpoint := normalizedVideoEndpoint(input.UpstreamEndpoint)
+	if accountEndpoint := videoAccountAPIPath(account); accountEndpoint != "" {
+		upstreamEndpoint = accountEndpoint
+	}
 
 	publicID := generateVideoPublicID()
 	requestJSON := map[string]any{
@@ -159,7 +168,6 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		return nil, err
 	}
 	inboundEndpoint := normalizedVideoEndpoint(input.InboundEndpoint)
-	upstreamEndpoint := normalizedVideoEndpoint(input.UpstreamEndpoint)
 	if err := s.billCreatedTask(ctx, task, input.APIKey, input.Subscription, account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, inboundEndpoint, upstreamEndpoint); err != nil {
 		return nil, err
 	}
@@ -199,7 +207,7 @@ func (s *VideoService) GetTask(ctx context.Context, publicID string, apiKey *API
 	return videoResponseFromTask(task), nil
 }
 
-func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model string) (*Account, error) {
+func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model string, resolution string) (*Account, error) {
 	accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, PlatformVideo)
 	if err != nil {
 		return nil, err
@@ -213,6 +221,9 @@ func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model s
 			continue
 		}
 		if !account.IsModelSupported(model) {
+			continue
+		}
+		if !isVideoAccountCompatible(&account, model, resolution) {
 			continue
 		}
 		candidates = append(candidates, account)
@@ -349,8 +360,9 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 			clientErr := mapVideoUpstreamError(err, false)
 			s.recordVideoAccountFailure(context.Background(), input.Account, clientErr, err)
 			task, _ := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-				Status:    stringPtr(VideoTaskStatusFailed),
-				ErrorJSON: videoErrorJSON(clientErr.VideoClientError),
+				Status:               stringPtr(VideoTaskStatusFailed),
+				UpstreamResponseJSON: videoUpstreamErrorJSON(err),
+				ErrorJSON:            videoErrorJSON(clientErr.VideoClientError),
 			})
 			_ = s.refundFailedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
 			return
@@ -694,7 +706,13 @@ func (s *VideoService) billingDeps() *billingDeps {
 
 func normalizedVideoEndpoint(endpoint string) string {
 	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" || !strings.Contains(endpoint, "/videos") {
+	if endpoint == "" {
+		return ""
+	}
+	if endpoint == videoDefaultJingyuAPIPath {
+		return videoDefaultJingyuAPIPath
+	}
+	if !strings.Contains(endpoint, "/videos") {
 		return videoDefaultAPIPath
 	}
 	return videoDefaultAPIPath
@@ -813,6 +831,29 @@ func (r *normalizedVideoRequest) UpstreamBody(upstreamModel string) map[string]a
 	}
 	if r.SafetyIdentifier != "" {
 		body["safety_identifier"] = r.SafetyIdentifier
+	}
+	return body
+}
+
+func (r *normalizedVideoRequest) JingyuUpstreamBody(upstreamModel string) map[string]any {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		upstreamModel = videoJingyuSeedanceModel
+	}
+	body := map[string]any{
+		"model":        upstreamModel,
+		"prompt":       r.Prompt,
+		"duration":     r.GeneratedSeconds,
+		"aspect_ratio": r.Ratio,
+		"resolution":   VideoResolution720P,
+	}
+	if refs := jingyuReferencesFromContent(r.Content); len(refs) > 0 {
+		body["references"] = refs
+	}
+	if r.Raw != nil {
+		if extra, ok := mapFromAny(r.Raw["extra"]); ok && len(extra) > 0 {
+			body["extra"] = cloneMap(extra)
+		}
 	}
 	return body
 }
@@ -1021,6 +1062,40 @@ func videoContentForUpstream(content []VideoContent, prompt string) []map[string
 	return out
 }
 
+func jingyuReferencesFromContent(content []VideoContent) []map[string]any {
+	out := make([]map[string]any, 0, len(content))
+	for _, item := range content {
+		entry := map[string]any{}
+		switch item.Type {
+		case "image_url":
+			if item.ImageURL == nil || strings.TrimSpace(item.ImageURL.URL) == "" {
+				continue
+			}
+			entry["type"] = "image"
+			entry["url"] = strings.TrimSpace(item.ImageURL.URL)
+		case "video_url":
+			if item.VideoURL == nil || strings.TrimSpace(item.VideoURL.URL) == "" {
+				continue
+			}
+			entry["type"] = "video"
+			entry["url"] = strings.TrimSpace(item.VideoURL.URL)
+		case "audio_url":
+			if item.AudioURL == nil || strings.TrimSpace(item.AudioURL.URL) == "" {
+				continue
+			}
+			entry["type"] = "audio"
+			entry["url"] = strings.TrimSpace(item.AudioURL.URL)
+		default:
+			continue
+		}
+		if item.Role != "" {
+			entry["role"] = item.Role
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func validateVideoEstimatedCost(apiKey *APIKey, subscription *UserSubscription, actualCost float64) error {
 	if actualCost <= 0 || apiKey == nil || apiKey.User == nil || apiKey.Group == nil {
 		return nil
@@ -1059,6 +1134,18 @@ func SeedanceUpstreamModel(model, resolution string) string {
 	return strings.TrimSpace(model) + "-" + strings.TrimSpace(resolution)
 }
 
+func videoUpstreamModelForAccount(account *Account, normalized *normalizedVideoRequest) string {
+	return videoProviderAdapterForAccount(account).UpstreamModel(account, normalized)
+}
+
+func videoUpstreamBodyForAccount(account *Account, normalized *normalizedVideoRequest, upstreamModel string) map[string]any {
+	return videoProviderAdapterForAccount(account).BuildCreateBody(normalized, upstreamModel)
+}
+
+func isVideoAccountCompatible(account *Account, model string, resolution string) bool {
+	return videoProviderAdapterForAccount(account).Compatible(model, resolution)
+}
+
 type videoUpstreamCreateResult struct {
 	ID  string
 	Raw map[string]any
@@ -1074,6 +1161,24 @@ type videoUpstreamError struct {
 	StatusCode int
 	Body       []byte
 	Err        error
+}
+
+func videoUpstreamErrorJSON(err error) map[string]any {
+	var upstreamErr *videoUpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr == nil {
+		if err == nil {
+			return nil
+		}
+		return map[string]any{"error": err.Error()}
+	}
+	out := map[string]any{"status_code": upstreamErr.StatusCode}
+	if len(upstreamErr.Body) > 0 {
+		out["body"] = truncateString(string(upstreamErr.Body), 4096)
+	}
+	if upstreamErr.Err != nil {
+		out["error"] = upstreamErr.Err.Error()
+	}
+	return out
 }
 
 func (e *videoUpstreamError) Error() string {
@@ -1122,7 +1227,7 @@ func (s *VideoService) recordVideoAccountFailure(ctx context.Context, account *A
 		_ = s.accountRepo.SetError(ctx, account.ID, message)
 	case mapped.StatusCode == http.StatusTooManyRequests:
 		_ = s.accountRepo.SetRateLimited(ctx, account.ID, time.Now().UTC().Add(1*time.Minute))
-	case mapped.StatusCode >= 500 || mapped.StatusCode == 0:
+	case mapped.StatusCode == 0:
 		reason := "video service temporary failure"
 		if cause != nil {
 			reason = "video service temporary failure: " + cause.Error()
@@ -1197,6 +1302,9 @@ func SanitizeVideoClientError(code, message string) (string, string) {
 	forbidden := []string{
 		"aigod",
 		"api.aigod.one",
+		"jingyu",
+		"jingyuapi",
+		"api.jingyuapi.art",
 		"upstream",
 		"upstream_task",
 		"upstream_task_id",
@@ -1240,18 +1348,41 @@ func videoErrorFromJSON(raw map[string]any) *VideoClientError {
 func videoAccountEndpoint(account *Account) (string, error) {
 	baseURL := strings.TrimSpace(accountExtraString(account, "base_url"))
 	if baseURL == "" {
-		baseURL = videoDefaultBaseURL
+		baseURL = videoDefaultBaseURLForProvider(videoAccountProvider(account))
 	}
-	apiPath := strings.TrimSpace(accountExtraString(account, "api_path"))
-	if apiPath == "" {
-		apiPath = videoDefaultAPIPath
-	}
+	apiPath := videoAccountAPIPath(account)
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", ErrVideoAccountNotFound
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + strings.TrimLeft(apiPath, "/")
 	return parsed.String(), nil
+}
+
+func videoAccountAPIPath(account *Account) string {
+	apiPath := strings.TrimSpace(accountExtraString(account, "api_path"))
+	if apiPath == "" {
+		return videoDefaultAPIPathForProvider(videoAccountProvider(account))
+	}
+	return apiPath
+}
+
+func videoAccountProvider(account *Account) string {
+	provider := strings.ToLower(strings.TrimSpace(accountExtraString(account, "video_provider")))
+	switch provider {
+	case videoProviderJingyu:
+		return videoProviderJingyu
+	default:
+		return videoProviderAigod
+	}
+}
+
+func videoDefaultBaseURLForProvider(provider string) string {
+	return videoProviderAdapterByName(provider).DefaultBaseURL()
+}
+
+func videoDefaultAPIPathForProvider(provider string) string {
+	return videoProviderAdapterByName(provider).DefaultAPIPath()
 }
 
 func videoAccountDuration(account *Account, key string, fallback time.Duration) time.Duration {
@@ -1333,6 +1464,15 @@ func stringFromMap(raw map[string]any, key string) string {
 		return strconv.FormatInt(v, 10)
 	default:
 		return ""
+	}
+}
+
+func mapFromAny(value any) (map[string]any, bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		return v, true
+	default:
+		return nil, false
 	}
 }
 

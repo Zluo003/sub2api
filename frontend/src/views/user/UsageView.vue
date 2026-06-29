@@ -222,8 +222,8 @@
 
           <template #cell-billing_mode="{ row }">
             <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium"
-                  :class="getBillingModeBadgeClass(getDisplayBillingMode(row))">
-              {{ getBillingModeLabel(getDisplayBillingMode(row), t) }}
+                  :class="getUsageBillingModeBadgeClass(row)">
+              {{ getUsageBillingModeLabel(row) }}
             </span>
           </template>
 
@@ -687,7 +687,7 @@ import {
   textOutputTokens,
   hasImageOutputCost,
 } from '@/utils/imageUsage'
-import { formatVideoDurationParts, isVideoUsage, videoUnitPrice } from '@/utils/videoUsage'
+import { formatVideoDurationParts, isVideoRefundUsage, isVideoUsage, videoUnitPrice } from '@/utils/videoUsage'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -831,6 +831,18 @@ const getRequestTypeBadgeClass = (log: UsageLog): string => {
   if (requestType === 'stream') return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
   if (requestType === 'sync') return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
   return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200'
+}
+
+const getUsageBillingModeLabel = (log: UsageLog): string => {
+  if (isVideoRefundUsage(log)) return t('usage.asyncTaskRefund')
+  return getBillingModeLabel(getDisplayBillingMode(log), t)
+}
+
+const getUsageBillingModeBadgeClass = (log: UsageLog): string => {
+  if (isVideoRefundUsage(log)) {
+    return 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300'
+  }
+  return getBillingModeBadgeClass(getDisplayBillingMode(log))
 }
 
 

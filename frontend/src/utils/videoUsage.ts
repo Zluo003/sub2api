@@ -9,10 +9,16 @@ type VideoUsageRow = Pick<
   | 'video_reference_duration_seconds'
   | 'video_billable_seconds'
   | 'video_result_url'
+  | 'request_id'
+  | 'actual_cost'
 >
 
 export function isVideoUsage(row: VideoUsageRow | null | undefined): boolean {
   return row?.billing_mode === 'video_duration' || Boolean(row?.video_task_id)
+}
+
+export function isVideoRefundUsage(row: VideoUsageRow | null | undefined): boolean {
+  return isVideoUsage(row) && ((row?.actual_cost ?? 0) < 0 || row?.request_id?.endsWith(':refund') === true)
 }
 
 export function formatVideoDurationParts(row: VideoUsageRow | null | undefined): string {

@@ -400,16 +400,16 @@
         </p>
       </div>
 
-      <!-- Account Type Selection (Video - API Key only) -->
+      <!-- Upstream Platform Selection (Video) -->
       <div v-if="form.platform === 'video'">
-        <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
+        <label class="input-label">{{ t('admin.accounts.video.upstreamPlatform') }}</label>
         <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-type">
           <button
             type="button"
-            @click="accountCategory = 'apikey'"
+            @click="videoProvider = 'aigod'"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              accountCategory === 'apikey'
+              videoProvider === 'aigod'
                 ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
                 : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
             ]"
@@ -417,7 +417,7 @@
             <div
               :class="[
                 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                accountCategory === 'apikey'
+                videoProvider === 'aigod'
                   ? 'bg-cyan-600 text-white'
                   : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
               ]"
@@ -426,10 +426,39 @@
             </div>
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">
-                {{ t('admin.accounts.types.videoApikey') }}
+                {{ t('admin.accounts.video.providers.aigod') }}
               </span>
               <span class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.video.seedanceAdapter') }}
+              </span>
+            </div>
+          </button>
+          <button
+            type="button"
+            @click="videoProvider = 'jingyu'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              videoProvider === 'jingyu'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                videoProvider === 'jingyu'
+                  ? 'bg-cyan-600 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="key" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">
+                {{ t('admin.accounts.video.providers.jingyu') }}
+              </span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.video.jingyuAdapter') }}
               </span>
             </div>
           </button>
@@ -1131,7 +1160,7 @@
                 : form.platform === 'gemini'
                   ? 'https://generativelanguage.googleapis.com'
                   : form.platform === 'video'
-                    ? 'https://api.aigod.one'
+                    ? videoProviderDefaults.baseUrl
                   : 'https://api.anthropic.com'
             "
           />
@@ -1143,7 +1172,7 @@
             v-model="videoAPIPath"
             type="text"
             class="input"
-            placeholder="/v1/videos"
+            :placeholder="videoProviderDefaults.apiPath"
           />
           <p class="input-hint">{{ t('admin.accounts.video.apiPathHint') }}</p>
         </div>
@@ -3431,6 +3460,7 @@ const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return t('admin.accounts.grok.baseUrlHint')
+  if (form.platform === 'video') return t('admin.accounts.video.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -3519,11 +3549,25 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const videoProvider = ref<'aigod' | 'jingyu'>('aigod')
 const videoAPIPath = ref('/v1/videos')
 const videoPollIntervalMs = ref(2000)
 const videoPollTimeoutMs = ref(300000)
 const videoRequestTimeoutMs = ref(60000)
 const videoConnectTimeoutMs = ref(15000)
+const videoProviderDefaults = computed(() =>
+  videoProvider.value === 'jingyu'
+    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
+    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+)
+
+const resolvedVideoAPIPath = computed(() => {
+  const path = videoAPIPath.value.trim()
+  if (videoProvider.value === 'jingyu' && (!path || path === '/v1/videos')) {
+    return videoProviderDefaults.value.apiPath
+  }
+  return path || videoProviderDefaults.value.apiPath
+})
 
 const syncPreviewCredentials = computed(() => {
   if (!apiKeyValue.value) return undefined
@@ -3550,6 +3594,17 @@ const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
+const applyVideoProviderModelDefaults = () => {
+  if (videoProvider.value === 'jingyu') {
+    modelRestrictionMode.value = 'mapping'
+    allowedModels.value = []
+    modelMappings.value = [{ from: 'seedance-2.0', to: 'seedance-api-2.0' }]
+    return
+  }
+  modelRestrictionMode.value = 'whitelist'
+  allowedModels.value = [...videoDefaultModels]
+  modelMappings.value = []
+}
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
@@ -4008,11 +4063,12 @@ watch(
     if (newPlatform === 'video') {
       accountCategory.value = 'apikey'
       addMethod.value = 'oauth'
-      modelRestrictionMode.value = 'whitelist'
-      allowedModels.value = [...videoDefaultModels]
       form.concurrency = 1
       form.load_factor = null
-      videoAPIPath.value = '/v1/videos'
+      videoProvider.value = 'aigod'
+      apiKeyBaseUrl.value = videoProviderDefaults.value.baseUrl
+      videoAPIPath.value = videoProviderDefaults.value.apiPath
+      applyVideoProviderModelDefaults()
     }
     if (newPlatform !== 'gemini' && newPlatform !== 'anthropic' && accountCategory.value === 'service_account') {
       accountCategory.value = 'oauth-based'
@@ -4057,6 +4113,21 @@ watch(
     grokOAuth.resetState()
   }
 )
+
+watch(videoProvider, (_newProvider, oldProvider) => {
+  const previousDefaults = oldProvider === 'jingyu'
+    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
+    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+  if (!apiKeyBaseUrl.value.trim() || apiKeyBaseUrl.value.trim() === previousDefaults.baseUrl) {
+    apiKeyBaseUrl.value = videoProviderDefaults.value.baseUrl
+  }
+  if (!videoAPIPath.value.trim() || videoAPIPath.value.trim() === previousDefaults.apiPath) {
+    videoAPIPath.value = videoProviderDefaults.value.apiPath
+  }
+  if (form.platform === 'video') {
+    applyVideoProviderModelDefaults()
+  }
+})
 
 // Gemini AI Studio OAuth availability (requires operator-configured OAuth client)
 watch(
@@ -4411,6 +4482,7 @@ const resetForm = () => {
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  videoProvider.value = 'aigod'
   videoAPIPath.value = '/v1/videos'
   videoPollIntervalMs.value = 2000
   videoPollTimeoutMs.value = 300000
@@ -4824,7 +4896,7 @@ const handleSubmit = async () => {
       : form.platform === 'gemini'
         ? 'https://generativelanguage.googleapis.com'
         : form.platform === 'video'
-          ? 'https://api.aigod.one'
+          ? videoProviderDefaults.value.baseUrl
         : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
@@ -4875,8 +4947,9 @@ const handleSubmit = async () => {
   form.credentials = credentials
   const extra = form.platform === 'video'
     ? {
+        video_provider: videoProvider.value,
         base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
-        api_path: videoAPIPath.value.trim() || '/v1/videos',
+        api_path: resolvedVideoAPIPath.value,
         poll_interval_ms: Number(videoPollIntervalMs.value) || 2000,
         poll_timeout_ms: Number(videoPollTimeoutMs.value) || 300000,
         request_timeout_ms: Number(videoRequestTimeoutMs.value) || 60000,

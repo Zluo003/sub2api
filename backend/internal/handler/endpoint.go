@@ -98,7 +98,9 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 		return EndpointGeminiModels
 
 	case service.PlatformVideo:
-		return EndpointVideos
+		// Video requests choose the concrete upstream endpoint after account
+		// selection because different video providers use different task APIs.
+		return ""
 
 	case service.PlatformAntigravity:
 		// Antigravity accounts serve both Claude and Gemini.
