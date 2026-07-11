@@ -374,6 +374,7 @@ export default {
 
   // Navigation
   nav: {
+    modelPlaza: 'Model Plaza',
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
@@ -1087,6 +1088,41 @@ export default {
     empty: {
       title: 'No channels available',
       description: 'No monitored channels have been configured yet.'
+    }
+  },
+
+  modelPlaza: {
+    title: 'Model Plaza',
+    description: 'Models and standard prices are collected automatically from channel pricing. Final billing also applies the group multiplier selected by the API key.',
+    models: 'models',
+    search: 'Search models',
+    searchPlaceholder: 'Model, vendor, or capability...',
+    vendor: 'Vendor',
+    allVendors: 'All vendors',
+    clearFilters: 'Clear filters',
+    empty: 'No matching models',
+    emptyHint: 'Adjust the search query or vendor filter.',
+    standardPricing: 'Standard pricing',
+    noPricing: 'Pricing not configured',
+    availableGroups: '{count} available groups',
+    copyModel: 'Copy model name',
+    copied: 'Copied',
+    perMillion: '/ 1M tokens',
+    perRequest: '/ request',
+    perImage: '/ image',
+    perSecond: '/ second',
+    pricing: {
+      input: 'Input',
+      output: 'Output',
+      cacheRead: 'Cache read',
+      cacheWrite: 'Cache write',
+      default: 'Base price'
+    },
+    billingModes: {
+      token: 'Per token',
+      per_request: 'Per request',
+      image: 'Per image',
+      video_duration: 'Per video second'
     }
   },
 

@@ -374,6 +374,7 @@ export default {
 
   // Navigation
   nav: {
+    modelPlaza: '模型广场',
     dashboard: '仪表盘',
     announcements: '公告',
     apiKeys: 'API 密钥',
@@ -1091,6 +1092,41 @@ export default {
     empty: {
       title: '暂无可显示的渠道',
       description: '管理员尚未配置可监控的渠道。'
+    }
+  },
+
+  modelPlaza: {
+    title: '模型广场',
+    description: '自动汇总渠道定价中已接入的模型与标准价格，实际结算价格会叠加 API Key 所选分组倍率。',
+    models: '个模型',
+    search: '搜索模型',
+    searchPlaceholder: '模型名称、厂商或能力...',
+    vendor: '模型厂商',
+    allVendors: '全部厂商',
+    clearFilters: '清除筛选',
+    empty: '没有找到匹配的模型',
+    emptyHint: '请调整搜索词或厂商筛选。',
+    standardPricing: '标准定价',
+    noPricing: '暂未配置定价',
+    availableGroups: '{count} 个可用分组',
+    copyModel: '复制模型名称',
+    copied: '已复制',
+    perMillion: '/ 1M token',
+    perRequest: '/ 次',
+    perImage: '/ 张',
+    perSecond: '/ 秒',
+    pricing: {
+      input: '输入',
+      output: '输出',
+      cacheRead: '缓存读取',
+      cacheWrite: '缓存写入',
+      default: '基础价格'
+    },
+    billingModes: {
+      token: '按 Token',
+      per_request: '按次',
+      image: '按图片',
+      video_duration: '按视频秒数'
     }
   },
 

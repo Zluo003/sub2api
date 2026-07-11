@@ -155,3 +155,40 @@ func TestBuildPlatformSections_GroupsByPlatform(t *testing.T) {
 	require.Len(t, sections[0].SupportedModels, 1)
 	require.Equal(t, "claude-sonnet-4-6", sections[0].SupportedModels[0].Name)
 }
+
+func TestBuildModelPlazaItems_DeduplicatesAndCountsAccess(t *testing.T) {
+	price := 0.000003
+	channels := []service.AvailableChannel{
+		{
+			Name:   "primary",
+			Status: service.StatusActive,
+			Groups: []service.AvailableGroupRef{{ID: 1, Name: "g1", Platform: "openai"}},
+			SupportedModels: []service.SupportedModel{{
+				Name:     "gpt-5",
+				Platform: "openai",
+				Pricing:  &service.ChannelModelPricing{InputPrice: &price},
+			}},
+		},
+		{
+			Name:   "fallback",
+			Status: service.StatusActive,
+			Groups: []service.AvailableGroupRef{
+				{ID: 1, Name: "g1", Platform: "openai"},
+				{ID: 2, Name: "g2", Platform: "openai"},
+			},
+			SupportedModels: []service.SupportedModel{{Name: "GPT-5", Platform: "openai"}},
+		},
+		{
+			Name:            "hidden",
+			Status:          service.StatusActive,
+			Groups:          []service.AvailableGroupRef{{ID: 3, Name: "g3", Platform: "anthropic"}},
+			SupportedModels: []service.SupportedModel{{Name: "claude-opus-4", Platform: "anthropic"}},
+		},
+	}
+
+	items := buildModelPlazaItems(channels, map[int64]struct{}{1: {}, 2: {}})
+	require.Len(t, items, 1)
+	require.Equal(t, "gpt-5", items[0].Name)
+	require.Equal(t, 2, items[0].GroupCount)
+	require.NotNil(t, items[0].Pricing)
+}

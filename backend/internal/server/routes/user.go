@@ -78,6 +78,11 @@ func RegisterUserRoutes(
 			channels.GET("/available", h.AvailableChannel.List)
 		}
 
+		models := authenticated.Group("/models")
+		{
+			models.GET("/plaza", h.AvailableChannel.ListModelPlaza)
+		}
+
 		// 使用记录
 		usage := authenticated.Group("/usage")
 		{

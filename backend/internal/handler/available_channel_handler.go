@@ -2,6 +2,7 @@ package handler
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -111,6 +112,15 @@ type userAvailableChannel struct {
 	Platforms   []userChannelPlatformSection `json:"platforms"`
 }
 
+// userModelPlazaItem is the user-facing, deduplicated model catalogue entry.
+// Pricing comes directly from channel pricing; no separate model catalogue is maintained.
+type userModelPlazaItem struct {
+	Name       string                     `json:"name"`
+	Platform   string                     `json:"platform"`
+	Pricing    *userSupportedModelPricing `json:"pricing"`
+	GroupCount int                        `json:"group_count"`
+}
+
 // List 列出当前用户可见的「可用渠道」。
 // GET /api/v1/channels/available
 func (h *AvailableChannelHandler) List(c *gin.Context) {
@@ -164,6 +174,92 @@ func (h *AvailableChannelHandler) List(c *gin.Context) {
 	}
 
 	response.Success(c, out)
+}
+
+// ListModelPlaza returns the models configured in active channel pricing that
+// the current user can actually access. Unlike List, this endpoint is not tied
+// to the optional available-channels navigation switch.
+// GET /api/v1/models/plaza
+func (h *AvailableChannelHandler) ListModelPlaza(c *gin.Context) {
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	userGroups, err := h.apiKeyService.GetAvailableGroups(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	allowedGroupIDs := make(map[int64]struct{}, len(userGroups))
+	for i := range userGroups {
+		allowedGroupIDs[userGroups[i].ID] = struct{}{}
+	}
+
+	channels, err := h.channelService.ListAvailable(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, buildModelPlazaItems(channels, allowedGroupIDs))
+}
+
+func buildModelPlazaItems(
+	channels []service.AvailableChannel,
+	allowedGroupIDs map[int64]struct{},
+) []userModelPlazaItem {
+	type aggregate struct {
+		item   userModelPlazaItem
+		groups map[int64]struct{}
+	}
+
+	itemsByKey := make(map[string]*aggregate)
+	for _, ch := range channels {
+		if ch.Status != service.StatusActive {
+			continue
+		}
+		visibleGroups := filterUserVisibleGroups(ch.Groups, allowedGroupIDs)
+		if len(visibleGroups) == 0 {
+			continue
+		}
+		for _, section := range buildPlatformSections(ch, visibleGroups) {
+			for _, model := range section.SupportedModels {
+				key := strings.ToLower(model.Platform) + "\x00" + strings.ToLower(model.Name)
+				agg, exists := itemsByKey[key]
+				if !exists {
+					agg = &aggregate{
+						item: userModelPlazaItem{
+							Name:     model.Name,
+							Platform: model.Platform,
+							Pricing:  model.Pricing,
+						},
+						groups: make(map[int64]struct{}),
+					}
+					itemsByKey[key] = agg
+				} else if agg.item.Pricing == nil && model.Pricing != nil {
+					agg.item.Pricing = model.Pricing
+				}
+				for _, group := range section.Groups {
+					agg.groups[group.ID] = struct{}{}
+				}
+			}
+		}
+	}
+
+	items := make([]userModelPlazaItem, 0, len(itemsByKey))
+	for _, agg := range itemsByKey {
+		agg.item.GroupCount = len(agg.groups)
+		items = append(items, agg.item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Platform != items[j].Platform {
+			return items[i].Platform < items[j].Platform
+		}
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+	return items
 }
 
 // buildPlatformSections 把一个渠道按 visibleGroups 的平台集合拆成有序的 section 列表：
