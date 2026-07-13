@@ -103,8 +103,9 @@ RUN apk add --no-cache \
     lz4-libs \
     krb5-libs \
     libldap \
-    libedit \
-    && rm -rf /var/cache/apk/*
+	libedit \
+	ffmpeg \
+	&& rm -rf /var/cache/apk/*
 
 # Copy pg_dump and psql from the same postgres image used in docker-compose
 # This ensures version consistency between backup tools and the database server

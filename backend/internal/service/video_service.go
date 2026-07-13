@@ -102,28 +102,16 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 	if input == nil || input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil || input.Request == nil {
 		return nil, videoBadRequest("invalid_video_request", "Invalid video request")
 	}
-	if input.APIKey.Group.Platform != PlatformVideo {
+	if input.APIKey.Group.Platform != PlatformVideo && !input.APIKey.Group.IsAgent() {
 		return nil, videoBadRequest("video_platform_required", "Video API is not available for this API key group")
 	}
 
-	normalized, err := normalizeVideoCreateRequest(input.Request)
+	normalized, rule, estimate, err := s.estimateGenerationCost(ctx, input.APIKey, input.Request, 1)
 	if err != nil {
 		return nil, err
 	}
-	rule, err := s.pricingRepo.GetEnabledRule(ctx, input.APIKey.Group.ID, normalized.Model, normalized.Resolution)
-	if err != nil {
-		if errors.Is(err, ErrVideoPricingRuleNotFound) {
-			return nil, videoBadRequest("video_pricing_rule_not_found", "Video pricing rule is not configured")
-		}
-		return nil, err
-	}
-
-	totalCost := float64(normalized.BillableSeconds) * rule.CreditsPerSecond
-	rateMultiplier := input.APIKey.Group.RateMultiplier
-	if rateMultiplier <= 0 {
-		rateMultiplier = 1
-	}
-	actualCost := totalCost * rateMultiplier
+	totalCost := estimate.TotalCost
+	actualCost := estimate.ActualCost
 	if err := validateVideoEstimatedCost(input.APIKey, input.Subscription, actualCost); err != nil {
 		return nil, err
 	}
@@ -190,6 +178,87 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		s.startLifecycle(lifecycleInput)
 	}
 	return videoResponseFromTask(task), nil
+}
+
+// EstimateGenerationCost is the authoritative pre-charge estimate used by
+// Yingzo confirmation quotes. It intentionally shares normalization and the
+// pricing rule lookup with CreateTask.
+func (s *VideoService) EstimateGenerationCost(
+	ctx context.Context,
+	apiKey *APIKey,
+	request *VideoCreateRequest,
+	count int,
+) (*VideoCostEstimate, error) {
+	_, _, estimate, err := s.estimateGenerationCost(ctx, apiKey, request, count)
+	return estimate, err
+}
+
+func (s *VideoService) HasEnabledPricing(ctx context.Context, groupID int64, model string) (bool, error) {
+	if s == nil || s.pricingRepo == nil || groupID <= 0 {
+		return false, nil
+	}
+	rules, err := s.pricingRepo.ListByGroupID(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	for _, rule := range rules {
+		if rule.Enabled && rule.ModelCode == model && IsSupportedVideoResolution(model, rule.Resolution) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *VideoService) estimateGenerationCost(
+	ctx context.Context,
+	apiKey *APIKey,
+	request *VideoCreateRequest,
+	count int,
+) (*normalizedVideoRequest, *VideoGroupPricingRule, *VideoCostEstimate, error) {
+	if apiKey == nil || apiKey.Group == nil || request == nil {
+		return nil, nil, nil, videoBadRequest("invalid_video_request", "Invalid video request")
+	}
+	if count <= 0 {
+		return nil, nil, nil, videoBadRequest("invalid_video_count", "Video count must be positive")
+	}
+	normalized, err := normalizeVideoCreateRequest(request)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rule, err := s.pricingRepo.GetEnabledRule(ctx, apiKey.Group.ID, normalized.Model, normalized.Resolution)
+	if err != nil {
+		if errors.Is(err, ErrVideoPricingRuleNotFound) {
+			return nil, nil, nil, videoBadRequest("video_pricing_rule_not_found", "Video pricing rule is not configured")
+		}
+		return nil, nil, nil, err
+	}
+	referenceMultiplier := rule.ReferenceVideoMultiplier
+	if referenceMultiplier <= 0 {
+		referenceMultiplier = 1
+	}
+	perOutputCost := float64(normalized.GeneratedSeconds)*rule.CreditsPerSecond +
+		float64(normalized.ReferenceVideoSeconds)*rule.CreditsPerSecond*referenceMultiplier
+	totalCost := perOutputCost * float64(count)
+	rateMultiplier := apiKey.Group.RateMultiplier
+	if rateMultiplier <= 0 {
+		rateMultiplier = 1
+	}
+	estimate := &VideoCostEstimate{
+		Model:                    normalized.Model,
+		Resolution:               normalized.Resolution,
+		AbilityCode:              normalized.AbilityCode,
+		Count:                    count,
+		GeneratedSeconds:         normalized.GeneratedSeconds,
+		ReferenceVideoSeconds:    normalized.ReferenceVideoSeconds,
+		BillableSeconds:          normalized.BillableSeconds * count,
+		CreditsPerSecond:         rule.CreditsPerSecond,
+		ReferenceVideoMultiplier: referenceMultiplier,
+		RateMultiplier:           rateMultiplier,
+		TotalCost:                totalCost,
+		ActualCost:               totalCost * rateMultiplier,
+		PricingRuleUpdatedAt:     rule.UpdatedAt,
+	}
+	return normalized, rule, estimate, nil
 }
 
 func (s *VideoService) GetTask(ctx context.Context, publicID string, apiKey *APIKey) (*VideoResponse, error) {

@@ -1,0 +1,1158 @@
+package handler
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
+)
+
+type AgentHandler struct {
+	db                *sql.DB
+	dataDir           string
+	objectStore       service.BackupObjectStore
+	billingService    *service.BillingService
+	videoService      *service.VideoService
+	accountRepo       service.AccountRepository
+	userGroupRateRepo service.UserGroupRateRepository
+	cleanupMu         sync.Mutex
+	cleanupStop       context.CancelFunc
+	cleanupDone       chan struct{}
+}
+
+func NewAgentHandler(
+	db *sql.DB,
+	cfg *config.Config,
+	billingService *service.BillingService,
+	videoService *service.VideoService,
+	userGroupRateRepo service.UserGroupRateRepository,
+	accountRepo service.AccountRepository,
+) *AgentHandler {
+	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
+	_ = os.MkdirAll(dir, 0700)
+	h := &AgentHandler{
+		db:                db,
+		dataDir:           dir,
+		billingService:    billingService,
+		videoService:      videoService,
+		userGroupRateRepo: userGroupRateRepo,
+		accountRepo:       accountRepo,
+	}
+	if bucket := os.Getenv("AGENT_ASSETS_S3_BUCKET"); bucket != "" {
+		s3Config := &service.BackupS3Config{
+			Endpoint:        os.Getenv("AGENT_ASSETS_S3_ENDPOINT"),
+			Region:          os.Getenv("AGENT_ASSETS_S3_REGION"),
+			AccessKeyID:     os.Getenv("AGENT_ASSETS_S3_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("AGENT_ASSETS_S3_SECRET_ACCESS_KEY"),
+			Bucket:          bucket,
+			Prefix:          "yingzo-agent-assets/",
+			ForcePathStyle:  os.Getenv("AGENT_ASSETS_S3_FORCE_PATH_STYLE") == "true",
+		}
+		if !s3Config.IsConfigured() {
+			panic("AGENT_ASSETS_S3_BUCKET requires access key ID and secret access key")
+		}
+		store, err := repository.NewS3BackupStoreFactory()(context.Background(), s3Config)
+		if err != nil {
+			panic(fmt.Sprintf("initialize Agent S3 storage: %v", err))
+		}
+		h.objectStore = store
+	}
+	h.StartCleanupWorker(time.Hour)
+	return h
+}
+
+func (h *AgentHandler) StartCleanupWorker(interval time.Duration) {
+	if h == nil || h.db == nil || interval <= 0 {
+		return
+	}
+	h.cleanupMu.Lock()
+	defer h.cleanupMu.Unlock()
+	if h.cleanupStop != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	h.cleanupStop = cancel
+	h.cleanupDone = done
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _ = h.CleanupExpired(ctx)
+			}
+		}
+	}()
+}
+
+func (h *AgentHandler) StopCleanupWorker() {
+	if h == nil {
+		return
+	}
+	h.cleanupMu.Lock()
+	cancel, done := h.cleanupStop, h.cleanupDone
+	h.cleanupStop = nil
+	h.cleanupDone = nil
+	h.cleanupMu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+}
+func randomToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+func hashToken(s string) string { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:]) }
+
+func (h *AgentHandler) StartDeviceAuthorization(c *gin.Context) {
+	var in struct {
+		InstallationID   string `json:"installation_id" binding:"required"`
+		InstallationName string `json:"installation_name" binding:"required"`
+	}
+	if c.ShouldBindJSON(&in) != nil {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request", "message": "installation_id and installation_name are required"}})
+		return
+	}
+	if len(in.InstallationName) > 120 {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request", "message": "installation_name is too long"}})
+		return
+	}
+	installationID, err := uuid.Parse(in.InstallationID)
+	if err != nil {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request", "message": "installation_id must be a UUID"}})
+		return
+	}
+	device, err := randomToken(32)
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "token_generation_failed"}})
+		return
+	}
+	user, err := randomToken(6)
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "token_generation_failed"}})
+		return
+	}
+	user = strings.ToUpper(user[:8])
+	id := uuid.New()
+	expires := time.Now().Add(10 * time.Minute)
+	_, err = h.db.ExecContext(c, `INSERT INTO agent_device_authorizations(id,device_code_hash,user_code_hash,installation_id,installation_name,system_code,status,expires_at) VALUES($1,$2,$3,$4,$5,'yingzo','pending',$6)`, id, hashToken(device), hashToken(user), installationID, in.InstallationName, expires)
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error", "message": "could not create authorization"}})
+		return
+	}
+	verificationURI := strings.TrimRight(os.Getenv("AGENT_AUTHORIZATION_URL"), "/")
+	if verificationURI == "" {
+		origin := strings.TrimRight(c.Request.Header.Get("Origin"), "/")
+		if origin == "" {
+			scheme := "https"
+			if c.Request.TLS == nil {
+				scheme = "http"
+			}
+			origin = scheme + "://" + c.Request.Host
+		}
+		verificationURI = origin + "/agent/authorize"
+	}
+	c.JSON(201, gin.H{"device_code": device, "user_code": user, "verification_uri": verificationURI, "verification_uri_complete": fmt.Sprintf("%s?user_code=%s", verificationURI, user), "expires_in": 600, "interval": 3})
+}
+
+func (h *AgentHandler) ApproveDeviceAuthorization(c *gin.Context) {
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
+		return
+	}
+	var in struct {
+		UserCode string `json:"user_code" binding:"required"`
+	}
+	if c.ShouldBindJSON(&in) != nil {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request"}})
+		return
+	}
+	res, err := h.db.ExecContext(c, `UPDATE agent_device_authorizations SET user_id=$1,status='approved',approved_at=NOW() WHERE user_code_hash=$2 AND status='pending' AND expires_at>NOW()`, subject.UserID, hashToken(strings.ToUpper(strings.TrimSpace(in.UserCode))))
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		c.JSON(404, gin.H{"error": gin.H{"code": "authorization_not_found"}})
+		return
+	}
+	c.JSON(200, gin.H{"approved": true})
+}
+
+func (h *AgentHandler) GetDeviceAuthorization(c *gin.Context) {
+	if _, ok := middleware.GetAuthSubjectFromContext(c); !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized"}})
+		return
+	}
+	userCode := strings.ToUpper(strings.TrimSpace(c.Param("user_code")))
+	if userCode == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "authorization_not_found"}})
+		return
+	}
+	var installationID uuid.UUID
+	var installationName, status string
+	var expiresAt time.Time
+	err := h.db.QueryRowContext(c, `SELECT installation_id,installation_name,status,expires_at FROM agent_device_authorizations WHERE user_code_hash=$1 AND system_code='yingzo' AND status='pending' AND expires_at>NOW()`, hashToken(userCode)).Scan(&installationID, &installationName, &status, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "authorization_not_found"}})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"installation_id":   installationID,
+		"installation_name": installationName,
+		"system_code":       "yingzo",
+		"status":            status,
+		"expires_at":        expiresAt.UTC(),
+	})
+}
+
+func (h *AgentHandler) PollDeviceAuthorization(c *gin.Context) {
+	var in struct {
+		DeviceCode string `json:"device_code" binding:"required"`
+	}
+	if c.ShouldBindJSON(&in) != nil {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request"}})
+		return
+	}
+	tx, err := h.db.BeginTx(c, &sql.TxOptions{})
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	defer tx.Rollback()
+	var id, installID uuid.UUID
+	var name, status string
+	var userID sql.NullInt64
+	var expires time.Time
+	err = tx.QueryRowContext(c, `SELECT id,installation_id,installation_name,status,user_id,expires_at FROM agent_device_authorizations WHERE device_code_hash=$1 FOR UPDATE`, hashToken(in.DeviceCode)).Scan(&id, &installID, &name, &status, &userID, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(400, gin.H{"error": gin.H{"code": "expired_token"}})
+		return
+	}
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if time.Now().After(expires) {
+		c.JSON(400, gin.H{"error": gin.H{"code": "expired_token"}})
+		return
+	}
+	if status == "pending" {
+		c.JSON(428, gin.H{"error": gin.H{"code": "authorization_pending"}})
+		return
+	}
+	if (status != "approved" && status != "consumed") || !userID.Valid {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
+		return
+	}
+	var keyID int64
+	var key string
+	err = tx.QueryRowContext(c, `SELECT ai.api_key_id,ak.key FROM agent_installations ai JOIN api_keys ak ON ak.id=ai.api_key_id WHERE ai.id=$1 AND ai.user_id=$2 AND ai.status='active' AND ak.status='active' AND ak.deleted_at IS NULL`, installID, userID.Int64).Scan(&keyID, &key)
+	if status == "consumed" && errors.Is(err, sql.ErrNoRows) {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		key = "sk-agent-" + mustToken(24)
+		var groupID int64
+		if err = tx.QueryRowContext(c, `SELECT id FROM groups WHERE system_code='yingzo' AND deleted_at IS NULL`).Scan(&groupID); err == nil {
+			err = tx.QueryRowContext(c, `INSERT INTO api_keys(user_id,key,name,group_id,status) VALUES($1,$2,$3,$4,'active') RETURNING id`, userID.Int64, key, "Yingzo "+name, groupID).Scan(&keyID)
+		}
+		if err == nil {
+			var result sql.Result
+			result, err = tx.ExecContext(c, `INSERT INTO agent_installations(id,user_id,api_key_id,system_code,display_name,status) VALUES($1,$2,$3,'yingzo',$4,'active') ON CONFLICT(id) DO UPDATE SET api_key_id=EXCLUDED.api_key_id,status='active',revoked_at=NULL,updated_at=NOW() WHERE agent_installations.user_id=EXCLUDED.user_id`, installID, userID.Int64, keyID, name)
+			if err == nil {
+				rows, rowsErr := result.RowsAffected()
+				if rowsErr != nil || rows != 1 {
+					err = errors.New("installation ownership conflict")
+				}
+			}
+		}
+	}
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "credential_provision_failed"}})
+		return
+	}
+	if status == "approved" {
+		if _, err = tx.ExecContext(c, `UPDATE agent_device_authorizations SET status='consumed',consumed_at=NOW() WHERE id=$1`, id); err != nil {
+			c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	c.JSON(200, gin.H{"access_token": key, "token_type": "Bearer"})
+}
+func mustToken(n int) string {
+	s, e := randomToken(n)
+	if e != nil {
+		panic(e)
+	}
+	return s
+}
+
+func (h *AgentHandler) RevokeInstallation(c *gin.Context) {
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
+		return
+	}
+	id := c.Param("id")
+	res, err := h.db.ExecContext(c, `WITH revoked AS (UPDATE agent_installations SET status='revoked',revoked_at=NOW(),updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='active' RETURNING api_key_id) UPDATE api_keys SET status='disabled',updated_at=NOW() WHERE id IN(SELECT api_key_id FROM revoked)`, id, subject.UserID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	n, _ := res.RowsAffected()
+	c.JSON(200, gin.H{"revoked": n > 0})
+}
+
+func (h *AgentHandler) ListModels(c *gin.Context) {
+	available, err := h.availableAgentModels(c.Request.Context(), c)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "model_discovery_failed", "message": "Unable to inspect the Agent account pool"}})
+		return
+	}
+	ids := make([]string, 0, len(available))
+	for id := range available {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	data := make([]gin.H, 0, len(ids))
+	for _, id := range ids {
+		capability := service.AgentCapabilities()[id]
+		data = append(data, gin.H{"id": id, "capability_version": capability.CapabilityVersion})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data})
+}
+
+func (h *AgentHandler) GetModelCapability(c *gin.Context) {
+	available, err := h.availableAgentModels(c.Request.Context(), c)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "model_discovery_failed", "message": "Unable to inspect the Agent account pool"}})
+		return
+	}
+	capability, ok := available[c.Param("id")]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "model_not_found", "message": "model is not available to the Agent group"}})
+		return
+	}
+	c.JSON(http.StatusOK, capability)
+}
+
+func (h *AgentHandler) availableAgentModels(ctx context.Context, c *gin.Context) (map[string]service.AgentCapability, error) {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok || apiKey.Group == nil || apiKey.Group.ID <= 0 || h.accountRepo == nil {
+		return nil, errors.New("Agent account pool is unavailable")
+	}
+	accounts, err := h.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, apiKey.Group.ID, []string{
+		service.PlatformOpenAI, service.PlatformVideo, service.PlatformGemini,
+	})
+	if err != nil {
+		return nil, err
+	}
+	available := make(map[string]service.AgentCapability)
+	for _, account := range accounts {
+		for model, platform := range map[string]string{
+			"gpt-image-2":      service.PlatformOpenAI,
+			"seedance-2.0":     service.PlatformVideo,
+			"gemini-3.5-flash": service.PlatformGemini,
+		} {
+			if account.Platform != platform || !account.IsModelSupported(model) {
+				continue
+			}
+			if platform == service.PlatformVideo && (account.Type != service.AccountTypeAPIKey || strings.TrimSpace(account.GetCredential("api_key")) == "") {
+				continue
+			}
+			available[model] = service.AgentCapabilities()[model]
+		}
+	}
+	if _, hasVideo := available[service.VideoModelSeedance20]; hasVideo {
+		priced, pricingErr := h.videoService.HasEnabledPricing(ctx, apiKey.Group.ID, service.VideoModelSeedance20)
+		if pricingErr != nil {
+			return nil, pricingErr
+		}
+		if !priced {
+			delete(available, service.VideoModelSeedance20)
+		}
+	}
+	return available, nil
+}
+
+type agentGenerationEstimateRequest struct {
+	Kind    string          `json:"kind" binding:"required"`
+	Model   string          `json:"model" binding:"required"`
+	Count   int             `json:"count" binding:"required"`
+	Request json.RawMessage `json:"request" binding:"required"`
+}
+
+type agentGenerationQuote struct {
+	QuoteID        string         `json:"quote_id"`
+	Kind           string         `json:"kind"`
+	Model          string         `json:"model"`
+	RequestHash    string         `json:"request_hash"`
+	PricingVersion string         `json:"pricing_version"`
+	UnitKind       string         `json:"unit_kind"`
+	Units          float64        `json:"units"`
+	Count          int            `json:"count"`
+	UnitPrice      float64        `json:"unit_price"`
+	TotalPrice     float64        `json:"total_price"`
+	ActualPrice    float64        `json:"actual_price"`
+	Currency       string         `json:"currency"`
+	Details        map[string]any `json:"details"`
+	CreatedAt      time.Time      `json:"created_at"`
+	ValidUntil     time.Time      `json:"valid_until"`
+	Active         bool           `json:"active"`
+}
+
+func (h *AgentHandler) EstimateGeneration(c *gin.Context) {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok || apiKey.Group == nil || apiKey.GroupID == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid API key"}})
+		return
+	}
+	var input agentGenerationEstimateRequest
+	if err := c.ShouldBindJSON(&input); err != nil || input.Count <= 0 || input.Count > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_estimate_request", "message": "kind, model, request, and count from 1 to 100 are required"}})
+		return
+	}
+	input.Kind = strings.TrimSpace(strings.ToLower(input.Kind))
+	input.Model = strings.TrimSpace(input.Model)
+	if _, available := service.AgentCapabilities()[input.Model]; !available {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "model_not_found", "message": "model is not available to the Agent group"}})
+		return
+	}
+
+	quote, err := h.calculateGenerationQuote(c.Request.Context(), apiKey, input)
+	if err != nil {
+		status, body := infraerrors.ToHTTP(err)
+		if status < 400 || status > 599 {
+			status = http.StatusBadRequest
+		}
+		code := strings.TrimSpace(body.Reason)
+		if code == "" {
+			code = "generation_estimate_failed"
+		}
+		message := strings.TrimSpace(body.Message)
+		if message == "" {
+			message = err.Error()
+		}
+		c.JSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
+		return
+	}
+	detailsJSON, err := json.Marshal(quote.Details)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "generation_quote_failed", "message": "Failed to serialize quote"}})
+		return
+	}
+	_, err = h.db.ExecContext(c, `
+		INSERT INTO agent_generation_quotes(
+			id,api_key_id,group_id,kind,model,request_hash,pricing_version,unit_kind,
+			units,count,unit_price,total_price,actual_price,currency,details,created_at,expires_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+	`, quote.QuoteID, apiKey.ID, apiKey.Group.ID, quote.Kind, quote.Model, quote.RequestHash,
+		quote.PricingVersion, quote.UnitKind, quote.Units, quote.Count, quote.UnitPrice,
+		quote.TotalPrice, quote.ActualPrice, quote.Currency, detailsJSON, quote.CreatedAt, quote.ValidUntil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "generation_quote_failed", "message": "Failed to persist quote"}})
+		return
+	}
+	c.JSON(http.StatusOK, quote)
+}
+
+func (h *AgentHandler) calculateGenerationQuote(ctx context.Context, apiKey *service.APIKey, input agentGenerationEstimateRequest) (*agentGenerationQuote, error) {
+	now := time.Now().UTC()
+	quote := &agentGenerationQuote{
+		QuoteID:    "quote_" + uuid.NewString(),
+		Kind:       input.Kind,
+		Model:      input.Model,
+		Count:      input.Count,
+		Currency:   "credit",
+		CreatedAt:  now,
+		ValidUntil: now.Add(10 * time.Minute),
+		Active:     true,
+	}
+	switch input.Kind {
+	case "image":
+		if input.Model != "gpt-image-2" || h.billingService == nil {
+			return nil, infraerrors.BadRequest("invalid_image_model", "Image estimate requires gpt-image-2")
+		}
+		var request struct {
+			Model string `json:"model"`
+			Size  string `json:"size"`
+		}
+		if err := json.Unmarshal(input.Request, &request); err != nil {
+			return nil, infraerrors.BadRequest("invalid_image_request", "Invalid image request")
+		}
+		if request.Model != "" && request.Model != input.Model {
+			return nil, infraerrors.BadRequest("estimate_model_mismatch", "Request model does not match estimate model")
+		}
+		cost, tier, err := h.billingService.EstimateImageGenerationCost(ctx, apiKey, h.userGroupRateRepo, input.Model, request.Size, input.Count)
+		if err != nil {
+			return nil, infraerrors.ServiceUnavailable("generation_estimate_failed", "Unable to resolve current image pricing").WithCause(err)
+		}
+		quote.UnitKind = "image"
+		quote.Units = float64(input.Count)
+		quote.UnitPrice = cost.TotalCost / float64(input.Count)
+		quote.TotalPrice = cost.TotalCost
+		quote.ActualPrice = cost.ActualCost
+		quote.Details = map[string]any{"image_size": tier, "count": input.Count}
+		quote.RequestHash = hashJSON(map[string]any{"kind": input.Kind, "model": input.Model, "image_size": tier, "count": input.Count})
+	case "video":
+		if h.videoService == nil {
+			return nil, infraerrors.ServiceUnavailable("generation_estimate_failed", "Video pricing service is unavailable")
+		}
+		var request service.VideoCreateRequest
+		if err := json.Unmarshal(input.Request, &request); err != nil {
+			return nil, infraerrors.BadRequest("invalid_video_request", "Invalid video request")
+		}
+		if request.Model != "" && request.Model != input.Model {
+			return nil, infraerrors.BadRequest("estimate_model_mismatch", "Request model does not match estimate model")
+		}
+		request.Model = input.Model
+		var raw map[string]any
+		if err := json.Unmarshal(input.Request, &raw); err == nil {
+			raw["model"] = input.Model
+			request.Raw = raw
+		}
+		estimate, err := h.videoService.EstimateGenerationCost(ctx, apiKey, &request, input.Count)
+		if err != nil {
+			return nil, err
+		}
+		quote.UnitKind = "second"
+		quote.Units = float64(estimate.BillableSeconds)
+		quote.UnitPrice = estimate.CreditsPerSecond
+		quote.TotalPrice = estimate.TotalCost
+		quote.ActualPrice = estimate.ActualCost
+		quote.Details = map[string]any{
+			"count": input.Count, "resolution": estimate.Resolution, "ability_code": estimate.AbilityCode,
+			"generated_seconds": estimate.GeneratedSeconds, "reference_video_seconds": estimate.ReferenceVideoSeconds,
+			"billable_seconds": estimate.BillableSeconds, "reference_video_multiplier": estimate.ReferenceVideoMultiplier,
+		}
+		quote.RequestHash = hashJSON(map[string]any{
+			"kind": input.Kind, "model": estimate.Model, "resolution": estimate.Resolution,
+			"ability_code": estimate.AbilityCode, "count": input.Count,
+			"generated_seconds": estimate.GeneratedSeconds, "reference_video_seconds": estimate.ReferenceVideoSeconds,
+		})
+	default:
+		return nil, infraerrors.BadRequest("invalid_generation_kind", "Generation kind must be image or video")
+	}
+	quote.PricingVersion = "price_" + hashJSON(map[string]any{
+		"request_hash": quote.RequestHash, "unit_price": quote.UnitPrice, "total_price": quote.TotalPrice,
+		"actual_price": quote.ActualPrice, "group_updated_at": apiKey.Group.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	})[:24]
+	return quote, nil
+}
+
+func (h *AgentHandler) GetGenerationEstimate(c *gin.Context) {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid API key"}})
+		return
+	}
+	var quote agentGenerationQuote
+	var detailsJSON []byte
+	err := h.db.QueryRowContext(c, `
+		SELECT id,kind,model,request_hash,pricing_version,unit_kind,units,count,unit_price,
+			total_price,actual_price,currency,details,created_at,expires_at
+		FROM agent_generation_quotes WHERE id=$1 AND api_key_id=$2
+	`, c.Param("id"), apiKey.ID).Scan(
+		&quote.QuoteID, &quote.Kind, &quote.Model, &quote.RequestHash, &quote.PricingVersion,
+		&quote.UnitKind, &quote.Units, &quote.Count, &quote.UnitPrice, &quote.TotalPrice,
+		&quote.ActualPrice, &quote.Currency, &detailsJSON, &quote.CreatedAt, &quote.ValidUntil,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "generation_quote_not_found", "message": "Generation quote was not found"}})
+		return
+	}
+	if err != nil || json.Unmarshal(detailsJSON, &quote.Details) != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "generation_quote_failed", "message": "Failed to read quote"}})
+		return
+	}
+	quote.Active = quote.ValidUntil.After(time.Now())
+	c.JSON(http.StatusOK, quote)
+}
+
+func hashJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (h *AgentHandler) PreflightMedia(c *gin.Context) {
+	var input service.AgentMediaPreflightRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_request", "message": "model and mode are required"}})
+		return
+	}
+	key, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid API key"}})
+		return
+	}
+	for index := range input.References {
+		if err := h.hydrateTrustedMediaMetadata(c.Request.Context(), key.ID, &input.References[index]); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"code": "trusted_media_metadata_required", "message": err.Error(), "path": fmt.Sprintf("references[%d]", index),
+			}})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, service.PreflightAgentMedia(input))
+}
+
+type trustedMediaMetadata struct {
+	Width           int     `json:"width,omitempty"`
+	Height          int     `json:"height,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds,omitempty"`
+	FPS             float64 `json:"fps,omitempty"`
+	Container       string  `json:"container,omitempty"`
+	VideoCodec      string  `json:"video_codec,omitempty"`
+	AudioCodec      string  `json:"audio_codec,omitempty"`
+	Encoding        string  `json:"encoding,omitempty"`
+	Probe           string  `json:"probe"`
+}
+
+func (h *AgentHandler) hydrateTrustedMediaMetadata(ctx context.Context, apiKeyID int64, reference *service.AgentMediaMetadata) error {
+	if reference == nil || strings.TrimSpace(reference.TemporaryAssetID) == "" {
+		return errors.New("temporary_asset_id is required for every media reference")
+	}
+	id, err := uuid.Parse(reference.TemporaryAssetID)
+	if err != nil {
+		return errors.New("temporary_asset_id is invalid")
+	}
+	var mediaType, mimeType string
+	var size int64
+	var metadataJSON []byte
+	err = h.db.QueryRowContext(ctx, `
+		SELECT media_type,mime_type,size_bytes,metadata
+		FROM temporary_assets
+		WHERE id=$1 AND api_key_id=$2 AND deleted_at IS NULL AND expires_at>NOW()
+	`, id, apiKeyID).Scan(&mediaType, &mimeType, &size, &metadataJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("temporary asset is missing, expired, or not owned by this Agent key")
+	}
+	if err != nil {
+		return errors.New("temporary asset metadata could not be read")
+	}
+	var metadata trustedMediaMetadata
+	if err := json.Unmarshal(metadataJSON, &metadata); err != nil || metadata.Probe == "" {
+		return errors.New("temporary asset has no trusted media probe")
+	}
+	reference.MediaType = mediaType
+	reference.MIMEType = mimeType
+	reference.SizeBytes = size
+	reference.Width = metadata.Width
+	reference.Height = metadata.Height
+	reference.DurationSeconds = metadata.DurationSeconds
+	reference.FPS = metadata.FPS
+	reference.Container = metadata.Container
+	reference.VideoCodec = metadata.VideoCodec
+	reference.AudioCodec = metadata.AudioCodec
+	reference.Encoding = metadata.Encoding
+	return nil
+}
+
+type mediaPolicy struct {
+	kind       string
+	limit      int64
+	extensions map[string]bool
+}
+
+var mediaPolicies = map[string]mediaPolicy{
+	"image/jpeg":      {kind: "image", limit: 30 << 20, extensions: map[string]bool{".jpg": true, ".jpeg": true}},
+	"image/png":       {kind: "image", limit: 30 << 20, extensions: map[string]bool{".png": true}},
+	"image/webp":      {kind: "image", limit: 30 << 20, extensions: map[string]bool{".webp": true}},
+	"image/gif":       {kind: "image", limit: 30 << 20, extensions: map[string]bool{".gif": true}},
+	"image/bmp":       {kind: "image", limit: 30 << 20, extensions: map[string]bool{".bmp": true}},
+	"image/tiff":      {kind: "image", limit: 30 << 20, extensions: map[string]bool{".tif": true, ".tiff": true}},
+	"image/heic":      {kind: "image", limit: 30 << 20, extensions: map[string]bool{".heic": true}},
+	"image/heif":      {kind: "image", limit: 30 << 20, extensions: map[string]bool{".heif": true}},
+	"video/mp4":       {kind: "video", limit: 200 << 20, extensions: map[string]bool{".mp4": true}},
+	"video/quicktime": {kind: "video", limit: 200 << 20, extensions: map[string]bool{".mov": true}},
+	"audio/wav":       {kind: "audio", limit: 15 << 20, extensions: map[string]bool{".wav": true}},
+	"audio/x-wav":     {kind: "audio", limit: 15 << 20, extensions: map[string]bool{".wav": true}},
+	"audio/mpeg":      {kind: "audio", limit: 15 << 20, extensions: map[string]bool{".mp3": true}},
+}
+
+func inspectMedia(file multipart.File, header *multipart.FileHeader) (mediaPolicy, string, bool) {
+	declared := strings.ToLower(strings.TrimSpace(strings.Split(header.Header.Get("Content-Type"), ";")[0]))
+	policy, ok := mediaPolicies[declared]
+	if !ok || !policy.extensions[strings.ToLower(filepath.Ext(header.Filename))] {
+		return mediaPolicy{}, "", false
+	}
+	buf := make([]byte, 512)
+	n, err := file.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return mediaPolicy{}, "", false
+	}
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return mediaPolicy{}, "", false
+	}
+	detected := detectMediaMIME(buf[:n])
+	if detected != declared {
+		// Browsers commonly report WAV with either registered MIME spelling.
+		if !(policy.kind == "audio" && (detected == "audio/wav" || detected == "audio/x-wav")) {
+			return mediaPolicy{}, detected, false
+		}
+	}
+	return policy, declared, true
+}
+
+func detectMediaMIME(header []byte) string {
+	if len(header) >= 4 {
+		if bytes.Equal(header[:4], []byte{'I', 'I', 0x2a, 0x00}) || bytes.Equal(header[:4], []byte{'M', 'M', 0x00, 0x2a}) {
+			return "image/tiff"
+		}
+	}
+	if len(header) >= 12 && bytes.Equal(header[4:8], []byte("ftyp")) {
+		brand := string(header[8:12])
+		switch brand {
+		case "heic", "heix", "hevc", "hevx":
+			return "image/heic"
+		case "mif1", "msf1", "heim", "heis":
+			return "image/heif"
+		case "qt  ":
+			return "video/quicktime"
+		default:
+			return "video/mp4"
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(header), ";")[0]))
+}
+
+func probeTrustedMedia(ctx context.Context, filePath string, policy mediaPolicy, contentType string) (trustedMediaMetadata, error) {
+	if policy.kind == "image" {
+		file, err := os.Open(filePath)
+		if err == nil {
+			config, _, decodeErr := image.DecodeConfig(file)
+			_ = file.Close()
+			if decodeErr == nil && config.Width > 0 && config.Height > 0 {
+				return trustedMediaMetadata{Width: config.Width, Height: config.Height, Probe: "go-image"}, nil
+			}
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(probeCtx, "ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration,format_name:stream=codec_type,codec_name,width,height,r_frame_rate,duration",
+		"-of", "json",
+		filePath,
+	)
+	output, err := command.Output()
+	if err != nil {
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			return trustedMediaMetadata{}, errors.New("media probe timed out")
+		}
+		return trustedMediaMetadata{}, errors.New("media cannot be decoded by the trusted probe")
+	}
+	var probe struct {
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+			CodecName string `json:"codec_name"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+			FrameRate string `json:"r_frame_rate"`
+			Duration  string `json:"duration"`
+		} `json:"streams"`
+		Format struct {
+			Duration string `json:"duration"`
+			Name     string `json:"format_name"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(output, &probe); err != nil {
+		return trustedMediaMetadata{}, errors.New("trusted probe returned invalid metadata")
+	}
+	metadata := trustedMediaMetadata{Probe: "ffprobe"}
+	metadata.DurationSeconds, _ = strconv.ParseFloat(probe.Format.Duration, 64)
+	for _, stream := range probe.Streams {
+		switch stream.CodecType {
+		case "video":
+			metadata.Width = stream.Width
+			metadata.Height = stream.Height
+			metadata.VideoCodec = normalizeProbeCodec(stream.CodecName)
+			metadata.FPS = parseFrameRate(stream.FrameRate)
+			if metadata.DurationSeconds <= 0 {
+				metadata.DurationSeconds, _ = strconv.ParseFloat(stream.Duration, 64)
+			}
+		case "audio":
+			metadata.AudioCodec = normalizeProbeCodec(stream.CodecName)
+			metadata.Encoding = metadata.AudioCodec
+			if metadata.DurationSeconds <= 0 {
+				metadata.DurationSeconds, _ = strconv.ParseFloat(stream.Duration, 64)
+			}
+		}
+	}
+	switch contentType {
+	case "video/mp4":
+		metadata.Container = "mp4"
+	case "video/quicktime":
+		metadata.Container = "mov"
+	default:
+		metadata.Container = strings.Split(probe.Format.Name, ",")[0]
+	}
+	switch policy.kind {
+	case "image":
+		if metadata.Width <= 0 || metadata.Height <= 0 {
+			return trustedMediaMetadata{}, errors.New("trusted image dimensions are unavailable")
+		}
+	case "video":
+		if metadata.Width <= 0 || metadata.Height <= 0 || metadata.DurationSeconds <= 0 || metadata.FPS <= 0 || metadata.VideoCodec == "" {
+			return trustedMediaMetadata{}, errors.New("trusted video dimensions, duration, FPS, or codec are unavailable")
+		}
+	case "audio":
+		if metadata.DurationSeconds <= 0 || metadata.AudioCodec == "" {
+			return trustedMediaMetadata{}, errors.New("trusted audio duration or codec is unavailable")
+		}
+	}
+	return metadata, nil
+}
+
+func parseFrameRate(value string) float64 {
+	parts := strings.Split(strings.TrimSpace(value), "/")
+	if len(parts) == 2 {
+		numerator, numeratorErr := strconv.ParseFloat(parts[0], 64)
+		denominator, denominatorErr := strconv.ParseFloat(parts[1], 64)
+		if numeratorErr == nil && denominatorErr == nil && denominator > 0 {
+			return numerator / denominator
+		}
+	}
+	rate, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return rate
+}
+
+func normalizeProbeCodec(codec string) string {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "h264":
+		return "h264"
+	case "hevc", "h265":
+		return "h265"
+	default:
+		return strings.ToLower(strings.TrimSpace(codec))
+	}
+}
+
+func temporaryAssetQuota() (int64, int64) {
+	maxCount, maxBytes := int64(100), int64(2<<30)
+	if raw := strings.TrimSpace(os.Getenv("AGENT_ASSETS_DAILY_MAX_COUNT")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			maxCount = parsed
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("AGENT_ASSETS_DAILY_MAX_BYTES")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			maxBytes = parsed
+		}
+	}
+	return maxCount, maxBytes
+}
+func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
+	key, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok {
+		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (200<<20)+(1<<20))
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(400, gin.H{"error": gin.H{"code": "file_required"}})
+		return
+	}
+	defer file.Close()
+	policy, contentType, ok := inspectMedia(file, header)
+	if !ok {
+		c.JSON(400, gin.H{"error": gin.H{"code": "unsupported_media"}})
+		return
+	}
+	if header.Size <= 0 || header.Size > policy.limit {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "media_too_large", "limit_bytes": policy.limit}})
+		return
+	}
+	maxCount, maxBytes := temporaryAssetQuota()
+	var currentCount, currentBytes int64
+	err = h.db.QueryRowContext(c, `SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM temporary_assets WHERE api_key_id=$1 AND user_id=$2 AND created_at>NOW()-INTERVAL '24 hours' AND deleted_at IS NULL`, key.ID, key.UserID).Scan(&currentCount, &currentBytes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if currentCount >= maxCount || currentBytes+header.Size > maxBytes {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
+			"code":             "temporary_asset_quota_exceeded",
+			"max_count_24h":    maxCount,
+			"max_bytes_24h":    maxBytes,
+			"retry_after_hint": "when prior uploads leave the rolling 24-hour window",
+		}})
+		return
+	}
+	id := uuid.New()
+	token, _ := randomToken(32)
+	dir := filepath.Join(h.dataDir, id.String())
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
+		return
+	}
+	target := filepath.Join(dir, "object")
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
+		return
+	}
+	hash := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(out, hash), io.LimitReader(file, policy.limit+1))
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil || n > policy.limit {
+		_ = os.RemoveAll(dir)
+		c.JSON(400, gin.H{"error": gin.H{"code": "upload_failed"}})
+		return
+	}
+	metadata, probeErr := probeTrustedMedia(c.Request.Context(), target, policy, contentType)
+	if probeErr != nil {
+		_ = os.RemoveAll(dir)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{
+			"code": "media_probe_failed", "message": probeErr.Error(),
+		}})
+		return
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "media_probe_failed", "message": "Failed to serialize trusted media metadata"}})
+		return
+	}
+	expires := time.Now().Add(24 * time.Hour)
+	backend, storageKey := "local", target
+	if h.objectStore != nil {
+		f, openErr := os.Open(target)
+		if openErr != nil {
+			_ = os.RemoveAll(dir)
+			c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
+			return
+		}
+		storageKey = "yingzo-agent-assets/" + id.String()
+		_, err = h.objectStore.Upload(c, storageKey, f, contentType)
+		_ = f.Close()
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
+			return
+		}
+		backend = "s3"
+		_ = os.RemoveAll(dir)
+	}
+	_, err = h.db.ExecContext(c, `INSERT INTO temporary_assets(id,user_id,api_key_id,group_id,public_token_hash,storage_backend,storage_key,original_filename,media_type,mime_type,size_bytes,sha256,metadata,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, key.UserID, key.ID, key.GroupID, hashToken(token), backend, storageKey, filepath.Base(header.Filename), policy.kind, contentType, n, hex.EncodeToString(hash.Sum(nil)), metadataJSON, expires)
+	if err != nil {
+		if backend == "s3" {
+			_ = h.objectStore.Delete(context.Background(), storageKey)
+		} else {
+			_ = os.RemoveAll(dir)
+		}
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	c.JSON(201, gin.H{"id": id, "url": publicURL(c, token), "content_type": contentType, "size": n, "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
+}
+func publicURL(c *gin.Context, token string) string {
+	scheme := "https"
+	if c.Request.TLS == nil {
+		scheme = "http"
+	}
+	return scheme + "://" + c.Request.Host + "/temporary-assets/" + token
+}
+
+func (h *AgentHandler) GetTemporaryAsset(c *gin.Context) {
+	key, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized"}})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "temporary_asset_not_found"}})
+		return
+	}
+	var filename, mediaType, mimeType, sha256sum string
+	var size int64
+	var metadataJSON []byte
+	var createdAt, expiresAt time.Time
+	var deletedAt sql.NullTime
+	err = h.db.QueryRowContext(c, `SELECT original_filename,media_type,mime_type,size_bytes,sha256,metadata,created_at,expires_at,deleted_at FROM temporary_assets WHERE id=$1 AND user_id=$2 AND api_key_id=$3`, id, key.UserID, key.ID).Scan(&filename, &mediaType, &mimeType, &size, &sha256sum, &metadataJSON, &createdAt, &expiresAt, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "temporary_asset_not_found"}})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	var metadata trustedMediaMetadata
+	if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "media_metadata_invalid"}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id":                id,
+		"original_filename": filename,
+		"media_type":        mediaType,
+		"content_type":      mimeType,
+		"size":              size,
+		"sha256":            sha256sum,
+		"metadata":          metadata,
+		"created_at":        createdAt.UTC(),
+		"expires_at":        expiresAt.UTC(),
+		"active":            !deletedAt.Valid && time.Now().Before(expiresAt),
+	})
+}
+
+func (h *AgentHandler) ServeTemporaryAsset(c *gin.Context) {
+	var backend, file, name, ct string
+	var size int64
+	var expires time.Time
+	err := h.db.QueryRowContext(c, `SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at FROM temporary_assets WHERE public_token_hash=$1 AND deleted_at IS NULL`, hashToken(c.Param("token"))).Scan(&backend, &file, &name, &ct, &size, &expires)
+	if err != nil || time.Now().After(expires) {
+		c.Status(404)
+		return
+	}
+	var f ioReadSeekCloser
+	if backend == "s3" && h.objectStore != nil {
+		var body io.ReadCloser
+		body, err = h.objectStore.Download(c, file)
+		if err == nil {
+			var data []byte
+			data, err = io.ReadAll(io.LimitReader(body, size+1))
+			_ = body.Close()
+			if err == nil && int64(len(data)) != size {
+				err = errors.New("temporary asset size mismatch")
+			}
+			if err == nil {
+				f = &memoryReadSeekCloser{Reader: bytes.NewReader(data)}
+			}
+		}
+	} else {
+		f, err = os.Open(file)
+	}
+	if err != nil {
+		c.Status(404)
+		return
+	}
+	defer f.Close()
+	c.Header("Content-Type", ct)
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
+	http.ServeContent(c.Writer, c.Request, name, time.Time{}, f)
+	_, _ = h.db.ExecContext(context.Background(), `UPDATE temporary_assets SET last_accessed_at=NOW() WHERE public_token_hash=$1`, hashToken(c.Param("token")))
+}
+
+type ioReadSeekCloser interface {
+	io.Reader
+	io.Seeker
+	io.Closer
+}
+
+type memoryReadSeekCloser struct{ *bytes.Reader }
+
+func (m *memoryReadSeekCloser) Close() error { return nil }
+
+func (h *AgentHandler) CleanupExpired(ctx context.Context) (int64, error) {
+	tx, err := h.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id,storage_backend,storage_key FROM temporary_assets WHERE expires_at<=NOW() AND deleted_at IS NULL ORDER BY expires_at LIMIT 200 FOR UPDATE SKIP LOCKED`)
+	if err != nil {
+		return 0, err
+	}
+	type expiredAsset struct {
+		id      uuid.UUID
+		backend string
+		key     string
+	}
+	assets := make([]expiredAsset, 0, 200)
+	for rows.Next() {
+		var asset expiredAsset
+		if err := rows.Scan(&asset.id, &asset.backend, &asset.key); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		assets = append(assets, asset)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, asset := range assets {
+		if asset.backend == "s3" && h.objectStore != nil {
+			err = h.objectStore.Delete(ctx, asset.key)
+		} else {
+			err = os.RemoveAll(filepath.Dir(asset.key))
+		}
+		if err != nil {
+			continue
+		}
+		res, execErr := tx.ExecContext(ctx, `UPDATE temporary_assets SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL`, asset.id)
+		if execErr == nil {
+			x, _ := res.RowsAffected()
+			n += x
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	_, _ = h.db.ExecContext(ctx, `DELETE FROM agent_generation_quotes WHERE expires_at<NOW()-INTERVAL '24 hours'`)
+	return n, nil
+}

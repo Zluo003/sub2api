@@ -55,6 +55,8 @@ func (Group) Fields() []ent.Field {
 		field.String("platform").
 			MaxLen(50).
 			Default(domain.PlatformAnthropic),
+		field.String("kind").MaxLen(20).Default("standard"),
+		field.String("system_code").MaxLen(64).Optional().Nillable(),
 		field.String("subscription_type").
 			MaxLen(20).
 			Default(domain.SubscriptionTypeStandard),

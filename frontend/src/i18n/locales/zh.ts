@@ -110,6 +110,26 @@ export default {
     }
   },
 
+  agentAuthorization: {
+    title: '授权 Yingzo（影作）',
+    description: '请核对正在申请访问您账户的安装实例。',
+    codeLabel: '设备代码',
+    codePlaceholder: '输入设备代码',
+    application: '应用',
+    installation: '安装实例',
+    expires: '有效期至',
+    permissionNotice: '批准后会为此 Yingzo 安装实例创建一枚可单独撤销的 Agent 凭证，不会暴露您已有的 API Key。',
+    continue: '继续',
+    checking: '正在检查...',
+    approve: '授权此安装实例',
+    approving: '正在授权...',
+    approvedTitle: '安装实例已授权',
+    approvedDescription: '专用凭证已准备好交付给发起请求的 Yingzo 安装实例。',
+    returnToYingzo: '现在可以返回 Yingzo 并关闭此页面。',
+    notFound: '设备代码无效、已过期或已使用。',
+    requestFailed: '无法完成授权请求，请重试。'
+  },
+
   // Key Usage Query Page
   keyUsage: {
     title: 'API Key 用量查询',

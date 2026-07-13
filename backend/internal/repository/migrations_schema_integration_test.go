@@ -136,6 +136,27 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.video_group_pricing_rules')").Scan(&videoPricingRegclass))
 	require.True(t, videoPricingRegclass.Valid, "expected video_group_pricing_rules table to exist")
 
+	var temporaryAssetsRegclass sql.NullString
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.temporary_assets')").Scan(&temporaryAssetsRegclass))
+	require.True(t, temporaryAssetsRegclass.Valid, "expected temporary_assets table to exist")
+	requireColumn(t, tx, "temporary_assets", "metadata", "jsonb", 0, false)
+
+	var generationQuotesRegclass sql.NullString
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.agent_generation_quotes')").Scan(&generationQuotesRegclass))
+	require.True(t, generationQuotesRegclass.Valid, "expected agent_generation_quotes table to exist")
+	requireIndex(t, tx, "agent_generation_quotes", "idx_agent_generation_quotes_owner_expiry")
+
+	var agentKind, agentSystemCode string
+	var agentExclusive bool
+	require.NoError(t, tx.QueryRowContext(context.Background(), `
+SELECT kind, system_code, is_exclusive
+FROM groups
+WHERE system_code = 'yingzo' AND deleted_at IS NULL
+`).Scan(&agentKind, &agentSystemCode, &agentExclusive))
+	require.Equal(t, "agent", agentKind)
+	require.Equal(t, "yingzo", agentSystemCode)
+	require.False(t, agentExclusive, "the system Agent group must remain available outside ordinary exclusive-group grants")
+
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.user_allowed_groups')").Scan(&uagRegclass))

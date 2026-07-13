@@ -34,7 +34,7 @@ func RequestLogger() gin.HandlerFunc {
 			zap.String("component", "http"),
 			zap.String("request_id", requestID),
 			zap.String("client_request_id", strings.TrimSpace(clientRequestID)),
-			zap.String("path", c.Request.URL.Path),
+			zap.String("path", safeRequestLogPath(c)),
 			zap.String("method", c.Request.Method),
 		)
 
@@ -42,4 +42,23 @@ func RequestLogger() gin.HandlerFunc {
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
+}
+
+func safeRequestLogPath(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	if route := c.FullPath(); route != "" {
+		return route
+	}
+	path := c.Request.URL.Path
+	for _, prefix := range []string{
+		"/temporary-assets/",
+		"/api/v1/agent/device/authorizations/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return prefix + ":redacted"
+		}
+	}
+	return path
 }

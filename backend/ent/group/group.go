@@ -34,6 +34,10 @@ const (
 	FieldStatus = "status"
 	// FieldPlatform holds the string denoting the platform field in the database.
 	FieldPlatform = "platform"
+	// FieldKind holds the string denoting the kind field in the database.
+	FieldKind = "kind"
+	// FieldSystemCode holds the string denoting the system_code field in the database.
+	FieldSystemCode = "system_code"
 	// FieldSubscriptionType holds the string denoting the subscription_type field in the database.
 	FieldSubscriptionType = "subscription_type"
 	// FieldDailyLimitUsd holds the string denoting the daily_limit_usd field in the database.
@@ -188,6 +192,8 @@ var Columns = []string{
 	FieldIsExclusive,
 	FieldStatus,
 	FieldPlatform,
+	FieldKind,
+	FieldSystemCode,
 	FieldSubscriptionType,
 	FieldDailyLimitUsd,
 	FieldWeeklyLimitUsd,
@@ -263,6 +269,12 @@ var (
 	DefaultPlatform string
 	// PlatformValidator is a validator for the "platform" field. It is called by the builders before save.
 	PlatformValidator func(string) error
+	// DefaultKind holds the default value on creation for the "kind" field.
+	DefaultKind string
+	// KindValidator is a validator for the "kind" field. It is called by the builders before save.
+	KindValidator func(string) error
+	// SystemCodeValidator is a validator for the "system_code" field. It is called by the builders before save.
+	SystemCodeValidator func(string) error
 	// DefaultSubscriptionType holds the default value on creation for the "subscription_type" field.
 	DefaultSubscriptionType string
 	// SubscriptionTypeValidator is a validator for the "subscription_type" field. It is called by the builders before save.
@@ -354,6 +366,16 @@ func ByStatus(opts ...sql.OrderTermOption) OrderOption {
 // ByPlatform orders the results by the platform field.
 func ByPlatform(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPlatform, opts...).ToFunc()
+}
+
+// ByKind orders the results by the kind field.
+func ByKind(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldKind, opts...).ToFunc()
+}
+
+// BySystemCode orders the results by the system_code field.
+func BySystemCode(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSystemCode, opts...).ToFunc()
 }
 
 // BySubscriptionType orders the results by the subscription_type field.

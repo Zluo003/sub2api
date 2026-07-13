@@ -100,6 +100,16 @@ func Platform(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldPlatform, v))
 }
 
+// Kind applies equality check predicate on the "kind" field. It's identical to KindEQ.
+func Kind(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldKind, v))
+}
+
+// SystemCode applies equality check predicate on the "system_code" field. It's identical to SystemCodeEQ.
+func SystemCode(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldSystemCode, v))
+}
+
 // SubscriptionType applies equality check predicate on the "subscription_type" field. It's identical to SubscriptionTypeEQ.
 func SubscriptionType(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldSubscriptionType, v))
@@ -658,6 +668,146 @@ func PlatformEqualFold(v string) predicate.Group {
 // PlatformContainsFold applies the ContainsFold predicate on the "platform" field.
 func PlatformContainsFold(v string) predicate.Group {
 	return predicate.Group(sql.FieldContainsFold(FieldPlatform, v))
+}
+
+// KindEQ applies the EQ predicate on the "kind" field.
+func KindEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldKind, v))
+}
+
+// KindNEQ applies the NEQ predicate on the "kind" field.
+func KindNEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldKind, v))
+}
+
+// KindIn applies the In predicate on the "kind" field.
+func KindIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldKind, vs...))
+}
+
+// KindNotIn applies the NotIn predicate on the "kind" field.
+func KindNotIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldKind, vs...))
+}
+
+// KindGT applies the GT predicate on the "kind" field.
+func KindGT(v string) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldKind, v))
+}
+
+// KindGTE applies the GTE predicate on the "kind" field.
+func KindGTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldKind, v))
+}
+
+// KindLT applies the LT predicate on the "kind" field.
+func KindLT(v string) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldKind, v))
+}
+
+// KindLTE applies the LTE predicate on the "kind" field.
+func KindLTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldKind, v))
+}
+
+// KindContains applies the Contains predicate on the "kind" field.
+func KindContains(v string) predicate.Group {
+	return predicate.Group(sql.FieldContains(FieldKind, v))
+}
+
+// KindHasPrefix applies the HasPrefix predicate on the "kind" field.
+func KindHasPrefix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasPrefix(FieldKind, v))
+}
+
+// KindHasSuffix applies the HasSuffix predicate on the "kind" field.
+func KindHasSuffix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasSuffix(FieldKind, v))
+}
+
+// KindEqualFold applies the EqualFold predicate on the "kind" field.
+func KindEqualFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldEqualFold(FieldKind, v))
+}
+
+// KindContainsFold applies the ContainsFold predicate on the "kind" field.
+func KindContainsFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldContainsFold(FieldKind, v))
+}
+
+// SystemCodeEQ applies the EQ predicate on the "system_code" field.
+func SystemCodeEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldSystemCode, v))
+}
+
+// SystemCodeNEQ applies the NEQ predicate on the "system_code" field.
+func SystemCodeNEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldSystemCode, v))
+}
+
+// SystemCodeIn applies the In predicate on the "system_code" field.
+func SystemCodeIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldSystemCode, vs...))
+}
+
+// SystemCodeNotIn applies the NotIn predicate on the "system_code" field.
+func SystemCodeNotIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldSystemCode, vs...))
+}
+
+// SystemCodeGT applies the GT predicate on the "system_code" field.
+func SystemCodeGT(v string) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldSystemCode, v))
+}
+
+// SystemCodeGTE applies the GTE predicate on the "system_code" field.
+func SystemCodeGTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldSystemCode, v))
+}
+
+// SystemCodeLT applies the LT predicate on the "system_code" field.
+func SystemCodeLT(v string) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldSystemCode, v))
+}
+
+// SystemCodeLTE applies the LTE predicate on the "system_code" field.
+func SystemCodeLTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldSystemCode, v))
+}
+
+// SystemCodeContains applies the Contains predicate on the "system_code" field.
+func SystemCodeContains(v string) predicate.Group {
+	return predicate.Group(sql.FieldContains(FieldSystemCode, v))
+}
+
+// SystemCodeHasPrefix applies the HasPrefix predicate on the "system_code" field.
+func SystemCodeHasPrefix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasPrefix(FieldSystemCode, v))
+}
+
+// SystemCodeHasSuffix applies the HasSuffix predicate on the "system_code" field.
+func SystemCodeHasSuffix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasSuffix(FieldSystemCode, v))
+}
+
+// SystemCodeIsNil applies the IsNil predicate on the "system_code" field.
+func SystemCodeIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldSystemCode))
+}
+
+// SystemCodeNotNil applies the NotNil predicate on the "system_code" field.
+func SystemCodeNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldSystemCode))
+}
+
+// SystemCodeEqualFold applies the EqualFold predicate on the "system_code" field.
+func SystemCodeEqualFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldEqualFold(FieldSystemCode, v))
+}
+
+// SystemCodeContainsFold applies the ContainsFold predicate on the "system_code" field.
+func SystemCodeContainsFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldContainsFold(FieldSystemCode, v))
 }
 
 // SubscriptionTypeEQ applies the EQ predicate on the "subscription_type" field.

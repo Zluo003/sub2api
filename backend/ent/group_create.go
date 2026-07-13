@@ -149,6 +149,34 @@ func (_c *GroupCreate) SetNillablePlatform(v *string) *GroupCreate {
 	return _c
 }
 
+// SetKind sets the "kind" field.
+func (_c *GroupCreate) SetKind(v string) *GroupCreate {
+	_c.mutation.SetKind(v)
+	return _c
+}
+
+// SetNillableKind sets the "kind" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableKind(v *string) *GroupCreate {
+	if v != nil {
+		_c.SetKind(*v)
+	}
+	return _c
+}
+
+// SetSystemCode sets the "system_code" field.
+func (_c *GroupCreate) SetSystemCode(v string) *GroupCreate {
+	_c.mutation.SetSystemCode(v)
+	return _c
+}
+
+// SetNillableSystemCode sets the "system_code" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableSystemCode(v *string) *GroupCreate {
+	if v != nil {
+		_c.SetSystemCode(*v)
+	}
+	return _c
+}
+
 // SetSubscriptionType sets the "subscription_type" field.
 func (_c *GroupCreate) SetSubscriptionType(v string) *GroupCreate {
 	_c.mutation.SetSubscriptionType(v)
@@ -684,6 +712,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultPlatform
 		_c.mutation.SetPlatform(v)
 	}
+	if _, ok := _c.mutation.Kind(); !ok {
+		v := group.DefaultKind
+		_c.mutation.SetKind(v)
+	}
 	if _, ok := _c.mutation.SubscriptionType(); !ok {
 		v := group.DefaultSubscriptionType
 		_c.mutation.SetSubscriptionType(v)
@@ -791,6 +823,19 @@ func (_c *GroupCreate) check() error {
 	if v, ok := _c.mutation.Platform(); ok {
 		if err := group.PlatformValidator(v); err != nil {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "Group.platform": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.Kind(); !ok {
+		return &ValidationError{Name: "kind", err: errors.New(`ent: missing required field "Group.kind"`)}
+	}
+	if v, ok := _c.mutation.Kind(); ok {
+		if err := group.KindValidator(v); err != nil {
+			return &ValidationError{Name: "kind", err: fmt.Errorf(`ent: validator failed for field "Group.kind": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.SystemCode(); ok {
+		if err := group.SystemCodeValidator(v); err != nil {
+			return &ValidationError{Name: "system_code", err: fmt.Errorf(`ent: validator failed for field "Group.system_code": %w`, err)}
 		}
 	}
 	if _, ok := _c.mutation.SubscriptionType(); !ok {
@@ -916,6 +961,14 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Platform(); ok {
 		_spec.SetField(group.FieldPlatform, field.TypeString, value)
 		_node.Platform = value
+	}
+	if value, ok := _c.mutation.Kind(); ok {
+		_spec.SetField(group.FieldKind, field.TypeString, value)
+		_node.Kind = value
+	}
+	if value, ok := _c.mutation.SystemCode(); ok {
+		_spec.SetField(group.FieldSystemCode, field.TypeString, value)
+		_node.SystemCode = &value
 	}
 	if value, ok := _c.mutation.SubscriptionType(); ok {
 		_spec.SetField(group.FieldSubscriptionType, field.TypeString, value)
@@ -1320,6 +1373,36 @@ func (u *GroupUpsert) SetPlatform(v string) *GroupUpsert {
 // UpdatePlatform sets the "platform" field to the value that was provided on create.
 func (u *GroupUpsert) UpdatePlatform() *GroupUpsert {
 	u.SetExcluded(group.FieldPlatform)
+	return u
+}
+
+// SetKind sets the "kind" field.
+func (u *GroupUpsert) SetKind(v string) *GroupUpsert {
+	u.Set(group.FieldKind, v)
+	return u
+}
+
+// UpdateKind sets the "kind" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateKind() *GroupUpsert {
+	u.SetExcluded(group.FieldKind)
+	return u
+}
+
+// SetSystemCode sets the "system_code" field.
+func (u *GroupUpsert) SetSystemCode(v string) *GroupUpsert {
+	u.Set(group.FieldSystemCode, v)
+	return u
+}
+
+// UpdateSystemCode sets the "system_code" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateSystemCode() *GroupUpsert {
+	u.SetExcluded(group.FieldSystemCode)
+	return u
+}
+
+// ClearSystemCode clears the value of the "system_code" field.
+func (u *GroupUpsert) ClearSystemCode() *GroupUpsert {
+	u.SetNull(group.FieldSystemCode)
 	return u
 }
 
@@ -1936,6 +2019,41 @@ func (u *GroupUpsertOne) SetPlatform(v string) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdatePlatform() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdatePlatform()
+	})
+}
+
+// SetKind sets the "kind" field.
+func (u *GroupUpsertOne) SetKind(v string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetKind(v)
+	})
+}
+
+// UpdateKind sets the "kind" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateKind() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateKind()
+	})
+}
+
+// SetSystemCode sets the "system_code" field.
+func (u *GroupUpsertOne) SetSystemCode(v string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSystemCode(v)
+	})
+}
+
+// UpdateSystemCode sets the "system_code" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateSystemCode() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSystemCode()
+	})
+}
+
+// ClearSystemCode clears the value of the "system_code" field.
+func (u *GroupUpsertOne) ClearSystemCode() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearSystemCode()
 	})
 }
 
@@ -2791,6 +2909,41 @@ func (u *GroupUpsertBulk) SetPlatform(v string) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdatePlatform() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdatePlatform()
+	})
+}
+
+// SetKind sets the "kind" field.
+func (u *GroupUpsertBulk) SetKind(v string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetKind(v)
+	})
+}
+
+// UpdateKind sets the "kind" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateKind() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateKind()
+	})
+}
+
+// SetSystemCode sets the "system_code" field.
+func (u *GroupUpsertBulk) SetSystemCode(v string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSystemCode(v)
+	})
+}
+
+// UpdateSystemCode sets the "system_code" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateSystemCode() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSystemCode()
+	})
+}
+
+// ClearSystemCode clears the value of the "system_code" field.
+func (u *GroupUpsertBulk) ClearSystemCode() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearSystemCode()
 	})
 }
 

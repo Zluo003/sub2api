@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -254,6 +255,41 @@ func TestLogger_AccessLogDroppedWhenLevelWarn(t *testing.T) {
 	for _, event := range events {
 		if event != nil && event.Message == "http request completed" {
 			t.Fatalf("access log should not be indexed when level=warn: %+v", event)
+		}
+	}
+}
+
+func TestLogger_RedactsTemporaryAssetTokenFromPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := initMiddlewareTestLogger(t)
+	const token = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+
+	r := gin.New()
+	r.Use(RequestLogger())
+	r.Use(Logger())
+	r.GET("/temporary-assets/:token", func(c *gin.Context) {
+		c.Status(http.StatusNotFound)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/temporary-assets/"+token, nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d", w.Code)
+	}
+	for _, event := range sink.list() {
+		if event == nil {
+			continue
+		}
+		if strings.Contains(event.Message, token) {
+			t.Fatalf("token leaked in log message: %q", event.Message)
+		}
+		for key, value := range event.Fields {
+			if strings.Contains(fmt.Sprint(value), token) {
+				t.Fatalf("token leaked in log field %q: %v", key, value)
+			}
+		}
+		if path, ok := event.Fields["path"].(string); ok && path != "/temporary-assets/:token" {
+			t.Fatalf("path=%q, want route template", path)
 		}
 	}
 }

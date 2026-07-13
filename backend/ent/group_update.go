@@ -161,6 +161,40 @@ func (_u *GroupUpdate) SetNillablePlatform(v *string) *GroupUpdate {
 	return _u
 }
 
+// SetKind sets the "kind" field.
+func (_u *GroupUpdate) SetKind(v string) *GroupUpdate {
+	_u.mutation.SetKind(v)
+	return _u
+}
+
+// SetNillableKind sets the "kind" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableKind(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetKind(*v)
+	}
+	return _u
+}
+
+// SetSystemCode sets the "system_code" field.
+func (_u *GroupUpdate) SetSystemCode(v string) *GroupUpdate {
+	_u.mutation.SetSystemCode(v)
+	return _u
+}
+
+// SetNillableSystemCode sets the "system_code" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableSystemCode(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetSystemCode(*v)
+	}
+	return _u
+}
+
+// ClearSystemCode clears the value of the "system_code" field.
+func (_u *GroupUpdate) ClearSystemCode() *GroupUpdate {
+	_u.mutation.ClearSystemCode()
+	return _u
+}
+
 // SetSubscriptionType sets the "subscription_type" field.
 func (_u *GroupUpdate) SetSubscriptionType(v string) *GroupUpdate {
 	_u.mutation.SetSubscriptionType(v)
@@ -1005,6 +1039,16 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "Group.platform": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.Kind(); ok {
+		if err := group.KindValidator(v); err != nil {
+			return &ValidationError{Name: "kind", err: fmt.Errorf(`ent: validator failed for field "Group.kind": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.SystemCode(); ok {
+		if err := group.SystemCodeValidator(v); err != nil {
+			return &ValidationError{Name: "system_code", err: fmt.Errorf(`ent: validator failed for field "Group.system_code": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.SubscriptionType(); ok {
 		if err := group.SubscriptionTypeValidator(v); err != nil {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
@@ -1062,6 +1106,15 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.Platform(); ok {
 		_spec.SetField(group.FieldPlatform, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.Kind(); ok {
+		_spec.SetField(group.FieldKind, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.SystemCode(); ok {
+		_spec.SetField(group.FieldSystemCode, field.TypeString, value)
+	}
+	if _u.mutation.SystemCodeCleared() {
+		_spec.ClearField(group.FieldSystemCode, field.TypeString)
 	}
 	if value, ok := _u.mutation.SubscriptionType(); ok {
 		_spec.SetField(group.FieldSubscriptionType, field.TypeString, value)
@@ -1733,6 +1786,40 @@ func (_u *GroupUpdateOne) SetNillablePlatform(v *string) *GroupUpdateOne {
 	if v != nil {
 		_u.SetPlatform(*v)
 	}
+	return _u
+}
+
+// SetKind sets the "kind" field.
+func (_u *GroupUpdateOne) SetKind(v string) *GroupUpdateOne {
+	_u.mutation.SetKind(v)
+	return _u
+}
+
+// SetNillableKind sets the "kind" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableKind(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetKind(*v)
+	}
+	return _u
+}
+
+// SetSystemCode sets the "system_code" field.
+func (_u *GroupUpdateOne) SetSystemCode(v string) *GroupUpdateOne {
+	_u.mutation.SetSystemCode(v)
+	return _u
+}
+
+// SetNillableSystemCode sets the "system_code" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableSystemCode(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetSystemCode(*v)
+	}
+	return _u
+}
+
+// ClearSystemCode clears the value of the "system_code" field.
+func (_u *GroupUpdateOne) ClearSystemCode() *GroupUpdateOne {
+	_u.mutation.ClearSystemCode()
 	return _u
 }
 
@@ -2593,6 +2680,16 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "Group.platform": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.Kind(); ok {
+		if err := group.KindValidator(v); err != nil {
+			return &ValidationError{Name: "kind", err: fmt.Errorf(`ent: validator failed for field "Group.kind": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.SystemCode(); ok {
+		if err := group.SystemCodeValidator(v); err != nil {
+			return &ValidationError{Name: "system_code", err: fmt.Errorf(`ent: validator failed for field "Group.system_code": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.SubscriptionType(); ok {
 		if err := group.SubscriptionTypeValidator(v); err != nil {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
@@ -2667,6 +2764,15 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.Platform(); ok {
 		_spec.SetField(group.FieldPlatform, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.Kind(); ok {
+		_spec.SetField(group.FieldKind, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.SystemCode(); ok {
+		_spec.SetField(group.FieldSystemCode, field.TypeString, value)
+	}
+	if _u.mutation.SystemCodeCleared() {
+		_spec.ClearField(group.FieldSystemCode, field.TypeString)
 	}
 	if value, ok := _u.mutation.SubscriptionType(); ok {
 		_spec.SetField(group.FieldSubscriptionType, field.TypeString, value)

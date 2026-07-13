@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -889,6 +890,25 @@ func TestVideoEstimatedBillingIncludesReferenceVideoSeconds(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 20, normalized.BillableSeconds)
 	require.InDelta(t, 4, float64(normalized.BillableSeconds)*0.2, 0.0001)
+}
+
+func TestVideoCreateTaskAllowsAgentGroupToReachVideoValidation(t *testing.T) {
+	service := NewVideoService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &config.Config{})
+	input := &VideoCreateInput{
+		APIKey: &APIKey{
+			User:  &User{ID: 1},
+			Group: &Group{ID: 2, Platform: PlatformOpenAI, Kind: "agent", SystemCode: "yingzo"},
+		},
+		Request: &VideoCreateRequest{},
+	}
+	_, err := service.CreateTask(context.Background(), input)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "video_platform_required")
+
+	input.APIKey.Group = &Group{ID: 2, Platform: PlatformOpenAI, Kind: "standard"}
+	_, err = service.CreateTask(context.Background(), input)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "video_platform_required")
 }
 
 func float64PtrForVideoTest(v float64) *float64 { return &v }

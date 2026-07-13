@@ -28,6 +28,7 @@ RUN apk add --no-cache \
     krb5-libs \
     libldap \
     libedit \
+    ffmpeg \
     && rm -rf /var/cache/apk/*
 
 # Copy pg_dump and psql from a version-matched PostgreSQL image so backup and

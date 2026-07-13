@@ -149,6 +149,22 @@ type VideoResponse struct {
 	CompletedAt *int64            `json:"completed_at,omitempty"`
 }
 
+type VideoCostEstimate struct {
+	Model                    string    `json:"model"`
+	Resolution               string    `json:"resolution"`
+	AbilityCode              string    `json:"ability_code"`
+	Count                    int       `json:"count"`
+	GeneratedSeconds         int       `json:"generated_seconds"`
+	ReferenceVideoSeconds    int       `json:"reference_video_seconds"`
+	BillableSeconds          int       `json:"billable_seconds"`
+	CreditsPerSecond         float64   `json:"credits_per_second"`
+	ReferenceVideoMultiplier float64   `json:"reference_video_multiplier"`
+	RateMultiplier           float64   `json:"rate_multiplier"`
+	TotalCost                float64   `json:"total_cost"`
+	ActualCost               float64   `json:"actual_cost"`
+	PricingRuleUpdatedAt     time.Time `json:"pricing_rule_updated_at"`
+}
+
 type VideoTaskUpdateInput struct {
 	PublicID string
 	Status   string

@@ -41,6 +41,13 @@ func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) er
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
 		SetPlatform(groupIn.Platform).
+		SetKind(normalizeGroupKind(groupIn.Kind)).
+		SetNillableSystemCode(func() *string {
+			if groupIn.SystemCode == "" {
+				return nil
+			}
+			return &groupIn.SystemCode
+		}()).
 		SetRateMultiplier(groupIn.RateMultiplier).
 		SetSortOrder(groupIn.SortOrder).
 		SetIsExclusive(groupIn.IsExclusive).
@@ -120,6 +127,13 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
 		SetPlatform(groupIn.Platform).
+		SetKind(normalizeGroupKind(groupIn.Kind)).
+		SetNillableSystemCode(func() *string {
+			if groupIn.SystemCode == "" {
+				return nil
+			}
+			return &groupIn.SystemCode
+		}()).
 		SetRateMultiplier(groupIn.RateMultiplier).
 		SetIsExclusive(groupIn.IsExclusive).
 		SetStatus(groupIn.Status).
@@ -209,6 +223,13 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group update failed: group=%d err=%v", groupIn.ID, err)
 	}
 	return nil
+}
+
+func normalizeGroupKind(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return "standard"
+	}
+	return kind
 }
 
 func (r *groupRepository) Delete(ctx context.Context, id int64) error {

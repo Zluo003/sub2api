@@ -35,13 +35,16 @@ const (
 // 同时设置 request.Context（供 Service 使用）和 gin.Context（供 Handler 快速检查）
 func ForcePlatform(platform string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 设置到 request.Context，使用 ctxkey.ForcePlatform 供 Service 层读取
-		ctx := context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, platform)
-		c.Request = c.Request.WithContext(ctx)
-		// 同时设置到 gin.Context，供 Handler 快速检查
-		c.Set(string(ContextKeyForcePlatform), platform)
+		SetForcePlatform(c, platform)
 		c.Next()
 	}
+}
+
+// SetForcePlatform updates both request and Gin contexts without advancing the handler chain.
+func SetForcePlatform(c *gin.Context, platform string) {
+	ctx := context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, platform)
+	c.Request = c.Request.WithContext(ctx)
+	c.Set(string(ContextKeyForcePlatform), platform)
 }
 
 // HasForcePlatform 检查是否有强制平台（用于 Handler 跳过分组检查）

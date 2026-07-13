@@ -1236,6 +1236,45 @@ func (s *BillingService) CalculateImageCost(model string, imageSize string, imag
 	}
 }
 
+// EstimateImageGenerationCost uses the same group pricing and effective user
+// multiplier as the OpenAI image billing path. Quote creation fails closed when
+// a user-specific multiplier cannot be read, so the UI never confirms a stale
+// fallback price that differs from the eventual charge.
+func (s *BillingService) EstimateImageGenerationCost(
+	ctx context.Context,
+	apiKey *APIKey,
+	rateRepo UserGroupRateRepository,
+	model string,
+	imageSize string,
+	imageCount int,
+) (*CostBreakdown, string, error) {
+	if apiKey == nil || apiKey.Group == nil || apiKey.GroupID == nil || apiKey.UserID <= 0 {
+		return nil, "", fmt.Errorf("agent API key group context is required")
+	}
+	if imageCount <= 0 {
+		return nil, "", fmt.Errorf("image count must be positive")
+	}
+
+	multiplier := apiKey.Group.RateMultiplier
+	if rateRepo != nil {
+		userMultiplier, err := rateRepo.GetByUserAndGroup(ctx, apiKey.UserID, *apiKey.GroupID)
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve user group rate: %w", err)
+		}
+		if userMultiplier != nil {
+			multiplier = *userMultiplier
+		}
+	}
+	multiplier = resolveImageRateMultiplier(apiKey, multiplier)
+	tier := NormalizeImageBillingTierOrDefault(imageSize)
+	groupConfig := &ImagePriceConfig{
+		Price1K: apiKey.Group.ImagePrice1K,
+		Price2K: apiKey.Group.ImagePrice2K,
+		Price4K: apiKey.Group.ImagePrice4K,
+	}
+	return s.CalculateImageCost(model, tier, imageCount, groupConfig, multiplier), tier, nil
+}
+
 // getImageUnitPrice 获取图片单价
 func (s *BillingService) getImageUnitPrice(model string, imageSize string, groupConfig *ImagePriceConfig) float64 {
 	// 优先使用分组配置的价格

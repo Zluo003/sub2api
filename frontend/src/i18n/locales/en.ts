@@ -110,6 +110,26 @@ export default {
     }
   },
 
+  agentAuthorization: {
+    title: 'Authorize Yingzo',
+    description: 'Review the installation requesting access to your account.',
+    codeLabel: 'Device code',
+    codePlaceholder: 'Enter code',
+    application: 'Application',
+    installation: 'Installation',
+    expires: 'Expires',
+    permissionNotice: 'Approval creates a dedicated, revocable Agent credential for this Yingzo installation. It does not reveal your existing API keys.',
+    continue: 'Continue',
+    checking: 'Checking...',
+    approve: 'Authorize installation',
+    approving: 'Authorizing...',
+    approvedTitle: 'Installation authorized',
+    approvedDescription: 'The dedicated credential is ready for the requesting Yingzo installation.',
+    returnToYingzo: 'You can return to Yingzo and close this page.',
+    notFound: 'This device code is invalid, expired, or already used.',
+    requestFailed: 'The authorization request could not be completed. Try again.'
+  },
+
   // Key Usage Query Page
   keyUsage: {
     title: 'API Key Usage',

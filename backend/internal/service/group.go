@@ -15,6 +15,8 @@ type Group struct {
 	Name           string
 	Description    string
 	Platform       string
+	Kind           string
+	SystemCode     string
 	RateMultiplier float64
 	IsExclusive    bool
 	Status         string
@@ -83,6 +85,7 @@ type Group struct {
 func (g *Group) IsActive() bool {
 	return g.Status == StatusActive
 }
+func (g *Group) IsAgent() bool { return g.Kind == "agent" && g.SystemCode != "" }
 
 func (g *Group) IsSubscriptionType() bool {
 	return g.SubscriptionType == SubscriptionTypeSubscription

@@ -101,6 +101,19 @@ services:
       - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
 
       # =======================================================================
+      # Yingzo Agent temporary media
+      # =======================================================================
+      - AGENT_AUTHORIZATION_URL=${AGENT_AUTHORIZATION_URL:-}
+      - AGENT_ASSETS_DAILY_MAX_COUNT=${AGENT_ASSETS_DAILY_MAX_COUNT:-100}
+      - AGENT_ASSETS_DAILY_MAX_BYTES=${AGENT_ASSETS_DAILY_MAX_BYTES:-2147483648}
+      - AGENT_ASSETS_S3_BUCKET=${AGENT_ASSETS_S3_BUCKET:-}
+      - AGENT_ASSETS_S3_ENDPOINT=${AGENT_ASSETS_S3_ENDPOINT:-}
+      - AGENT_ASSETS_S3_REGION=${AGENT_ASSETS_S3_REGION:-auto}
+      - AGENT_ASSETS_S3_ACCESS_KEY_ID=${AGENT_ASSETS_S3_ACCESS_KEY_ID:-}
+      - AGENT_ASSETS_S3_SECRET_ACCESS_KEY=${AGENT_ASSETS_S3_SECRET_ACCESS_KEY:-}
+      - AGENT_ASSETS_S3_FORCE_PATH_STYLE=${AGENT_ASSETS_S3_FORCE_PATH_STYLE:-false}
+
+      # =======================================================================
       # Timezone Configuration
       # This affects ALL time operations in the application:
       # - Database timestamps

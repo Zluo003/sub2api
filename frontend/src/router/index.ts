@@ -69,6 +69,15 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/agent/authorize',
+    name: 'AgentAuthorize',
+    component: () => import('@/views/auth/AgentAuthorizeView.vue'),
+    meta: {
+      requiresAuth: true,
+      title: 'Authorize Yingzo'
+    }
+  },
+  {
     path: '/auth/callback',
     name: 'OAuthCallback',
     alias: '/auth/oauth/callback',

@@ -15,6 +15,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestForceAgentPlatformOnlyAffectsAgentGroups(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name  string
+		group *service.Group
+		want  bool
+	}{
+		{name: "agent", group: &service.Group{Kind: "agent", SystemCode: "yingzo", Platform: service.PlatformOpenAI}, want: true},
+		{name: "ordinary", group: &service.Group{Kind: "standard", Platform: service.PlatformOpenAI}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{Group: tc.group})
+				c.Next()
+			})
+			r.Use(forceAgentPlatform(service.PlatformGemini))
+			r.GET("/test", func(c *gin.Context) {
+				platform, ok := servermiddleware.GetForcePlatformFromContext(c)
+				c.JSON(http.StatusOK, gin.H{"forced": ok, "platform": platform})
+			})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+			require.Equal(t, http.StatusOK, w.Code)
+			require.Contains(t, w.Body.String(), `"forced":`+map[bool]string{true: "true", false: "false"}[tc.want])
+			if tc.want {
+				require.Contains(t, w.Body.String(), service.PlatformGemini)
+			}
+		})
+	}
+}
+
 func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

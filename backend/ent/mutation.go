@@ -15229,6 +15229,8 @@ type GroupMutation struct {
 	is_exclusive                            *bool
 	status                                  *string
 	platform                                *string
+	kind                                    *string
+	system_code                             *string
 	subscription_type                       *string
 	daily_limit_usd                         *float64
 	adddaily_limit_usd                      *float64
@@ -15764,6 +15766,91 @@ func (m *GroupMutation) OldPlatform(ctx context.Context) (v string, err error) {
 // ResetPlatform resets all changes to the "platform" field.
 func (m *GroupMutation) ResetPlatform() {
 	m.platform = nil
+}
+
+// SetKind sets the "kind" field.
+func (m *GroupMutation) SetKind(s string) {
+	m.kind = &s
+}
+
+// Kind returns the value of the "kind" field in the mutation.
+func (m *GroupMutation) Kind() (r string, exists bool) {
+	v := m.kind
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldKind returns the old "kind" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldKind(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldKind is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldKind requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldKind: %w", err)
+	}
+	return oldValue.Kind, nil
+}
+
+// ResetKind resets all changes to the "kind" field.
+func (m *GroupMutation) ResetKind() {
+	m.kind = nil
+}
+
+// SetSystemCode sets the "system_code" field.
+func (m *GroupMutation) SetSystemCode(s string) {
+	m.system_code = &s
+}
+
+// SystemCode returns the value of the "system_code" field in the mutation.
+func (m *GroupMutation) SystemCode() (r string, exists bool) {
+	v := m.system_code
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSystemCode returns the old "system_code" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldSystemCode(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSystemCode is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSystemCode requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSystemCode: %w", err)
+	}
+	return oldValue.SystemCode, nil
+}
+
+// ClearSystemCode clears the value of the "system_code" field.
+func (m *GroupMutation) ClearSystemCode() {
+	m.system_code = nil
+	m.clearedFields[group.FieldSystemCode] = struct{}{}
+}
+
+// SystemCodeCleared returns if the "system_code" field was cleared in this mutation.
+func (m *GroupMutation) SystemCodeCleared() bool {
+	_, ok := m.clearedFields[group.FieldSystemCode]
+	return ok
+}
+
+// ResetSystemCode resets all changes to the "system_code" field.
+func (m *GroupMutation) ResetSystemCode() {
+	m.system_code = nil
+	delete(m.clearedFields, group.FieldSystemCode)
 }
 
 // SetSubscriptionType sets the "subscription_type" field.
@@ -17548,7 +17635,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 35)
+	fields := make([]string, 0, 37)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -17575,6 +17662,12 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.platform != nil {
 		fields = append(fields, group.FieldPlatform)
+	}
+	if m.kind != nil {
+		fields = append(fields, group.FieldKind)
+	}
+	if m.system_code != nil {
+		fields = append(fields, group.FieldSystemCode)
 	}
 	if m.subscription_type != nil {
 		fields = append(fields, group.FieldSubscriptionType)
@@ -17680,6 +17773,10 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.Status()
 	case group.FieldPlatform:
 		return m.Platform()
+	case group.FieldKind:
+		return m.Kind()
+	case group.FieldSystemCode:
+		return m.SystemCode()
 	case group.FieldSubscriptionType:
 		return m.SubscriptionType()
 	case group.FieldDailyLimitUsd:
@@ -17759,6 +17856,10 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldStatus(ctx)
 	case group.FieldPlatform:
 		return m.OldPlatform(ctx)
+	case group.FieldKind:
+		return m.OldKind(ctx)
+	case group.FieldSystemCode:
+		return m.OldSystemCode(ctx)
 	case group.FieldSubscriptionType:
 		return m.OldSubscriptionType(ctx)
 	case group.FieldDailyLimitUsd:
@@ -17882,6 +17983,20 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetPlatform(v)
+		return nil
+	case group.FieldKind:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetKind(v)
+		return nil
+	case group.FieldSystemCode:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSystemCode(v)
 		return nil
 	case group.FieldSubscriptionType:
 		v, ok := value.(string)
@@ -18260,6 +18375,9 @@ func (m *GroupMutation) ClearedFields() []string {
 	if m.FieldCleared(group.FieldDescription) {
 		fields = append(fields, group.FieldDescription)
 	}
+	if m.FieldCleared(group.FieldSystemCode) {
+		fields = append(fields, group.FieldSystemCode)
+	}
 	if m.FieldCleared(group.FieldDailyLimitUsd) {
 		fields = append(fields, group.FieldDailyLimitUsd)
 	}
@@ -18306,6 +18424,9 @@ func (m *GroupMutation) ClearField(name string) error {
 		return nil
 	case group.FieldDescription:
 		m.ClearDescription()
+		return nil
+	case group.FieldSystemCode:
+		m.ClearSystemCode()
 		return nil
 	case group.FieldDailyLimitUsd:
 		m.ClearDailyLimitUsd()
@@ -18368,6 +18489,12 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldPlatform:
 		m.ResetPlatform()
+		return nil
+	case group.FieldKind:
+		m.ResetKind()
+		return nil
+	case group.FieldSystemCode:
+		m.ResetSystemCode()
 		return nil
 	case group.FieldSubscriptionType:
 		m.ResetSubscriptionType()

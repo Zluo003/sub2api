@@ -53,7 +53,7 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformVideo {
+		if getGroupPlatform(c) != service.PlatformVideo && !isAgentGroup(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -67,7 +67,7 @@ func RegisterGatewayRoutes(
 		h.Video.Create(c)
 	}
 	videoGetHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformVideo {
+		if getGroupPlatform(c) != service.PlatformVideo && !isAgentGroup(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -204,6 +204,7 @@ func RegisterGatewayRoutes(
 	gemini.Use(opsErrorLogger)
 	gemini.Use(endpointNorm)
 	gemini.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
+	gemini.Use(forceAgentPlatform(service.PlatformGemini))
 	gemini.Use(requireGroupGoogle)
 	{
 		gemini.GET("/models", h.Gateway.GeminiV1BetaListModels)
@@ -338,4 +339,17 @@ func getGroupPlatform(c *gin.Context) string {
 		return ""
 	}
 	return apiKey.Group.Platform
+}
+func isAgentGroup(c *gin.Context) bool {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	return ok && apiKey.Group != nil && apiKey.Group.IsAgent()
+}
+
+func forceAgentPlatform(platform string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if isAgentGroup(c) {
+			middleware.SetForcePlatform(c, platform)
+		}
+		c.Next()
+	}
 }

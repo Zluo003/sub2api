@@ -38,6 +38,17 @@ func TestRedactText_GOCSPX(t *testing.T) {
 	}
 }
 
+func TestRedactText_YingzoAgentCredential(t *testing.T) {
+	in := "credential sk-agent-AbCdEfGhIjKlMnOpQrStUvWxYz012345 failed"
+	out := RedactText(in)
+	if strings.Contains(out, "AbCdEfGhIjKlMnOpQrStUvWxYz012345") {
+		t.Fatalf("agent credential was not redacted: %q", out)
+	}
+	if !strings.Contains(out, "sk-agent-***") {
+		t.Fatalf("agent credential marker missing: %q", out)
+	}
+}
+
 func TestRedactText_ExtraKeyCacheUsesNormalizedSortedKey(t *testing.T) {
 	clearExtraTextPatternCache()
 
