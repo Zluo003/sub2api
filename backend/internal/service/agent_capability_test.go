@@ -49,6 +49,16 @@ func TestPreflightAgentMediaPromptGuidanceIsWarningOnly(t *testing.T) {
 	require.Equal(t, "prompt_quality_length", result.Warnings[0].Code)
 }
 
+func TestPreflightAgentMediaDoesNotCountURLReferenceBytesAsJSONBody(t *testing.T) {
+	input := validSeedanceReferencePreflight()
+	input.RequestBytes = 2048
+	input.References[0].SizeBytes = 30 << 20
+	result := PreflightAgentMedia(input)
+	require.True(t, result.Valid)
+	require.Equal(t, int64(2048), result.ReferenceBudget["request_bytes"].(map[string]any)["used"])
+	require.Equal(t, int64(30<<20), result.ReferenceBudget["reference_bytes"].(map[string]any)["used"])
+}
+
 func TestPreflightAgentMediaReportsFieldLevelSeedanceErrors(t *testing.T) {
 	input := validSeedanceReferencePreflight()
 	input.RequestBytes = 65 << 20

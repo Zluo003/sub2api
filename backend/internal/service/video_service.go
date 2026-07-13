@@ -232,12 +232,16 @@ func (s *VideoService) estimateGenerationCost(
 		}
 		return nil, nil, nil, err
 	}
-	referenceMultiplier := rule.ReferenceVideoMultiplier
-	if referenceMultiplier <= 0 {
-		referenceMultiplier = 1
+	referenceMultiplier := 1.0
+	perOutputCost := float64(normalized.BillableSeconds) * rule.CreditsPerSecond
+	if apiKey.Group.IsAgent() {
+		referenceMultiplier = rule.ReferenceVideoMultiplier
+		if referenceMultiplier <= 0 {
+			referenceMultiplier = 1
+		}
+		perOutputCost = float64(normalized.GeneratedSeconds)*rule.CreditsPerSecond +
+			float64(normalized.ReferenceVideoSeconds)*rule.CreditsPerSecond*referenceMultiplier
 	}
-	perOutputCost := float64(normalized.GeneratedSeconds)*rule.CreditsPerSecond +
-		float64(normalized.ReferenceVideoSeconds)*rule.CreditsPerSecond*referenceMultiplier
 	totalCost := perOutputCost * float64(count)
 	rateMultiplier := apiKey.Group.RateMultiplier
 	if rateMultiplier <= 0 {
@@ -1327,11 +1331,12 @@ func videoResponseFromTask(task *VideoTask) *VideoResponse {
 		return nil
 	}
 	resp := &VideoResponse{
-		ID:        task.PublicID,
-		Object:    videoObject,
-		Model:     task.Model,
-		Status:    task.Status,
-		CreatedAt: task.CreatedAt.Unix(),
+		ID:           task.PublicID,
+		Object:       videoObject,
+		Model:        task.Model,
+		Status:       task.Status,
+		RefundStatus: videoRefundStatus(task),
+		CreatedAt:    task.CreatedAt.Unix(),
 	}
 	if task.Status == VideoTaskStatusCompleted {
 		resp.VideoURL = task.ResultVideoURL
@@ -1348,6 +1353,19 @@ func videoResponseFromTask(task *VideoTask) *VideoResponse {
 		}
 	}
 	return resp
+}
+
+func videoRefundStatus(task *VideoTask) string {
+	if task == nil {
+		return VideoRefundStatusNotApplicable
+	}
+	if task.RefundedAt != nil {
+		return VideoRefundStatusRefunded
+	}
+	if (task.Status == VideoTaskStatusFailed || task.Status == VideoTaskStatusCancelled) && task.BilledAt != nil && task.ActualCost > 0 {
+		return VideoRefundStatusPending
+	}
+	return VideoRefundStatusNotApplicable
 }
 
 func videoBadRequest(code, message string) error {

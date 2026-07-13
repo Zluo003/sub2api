@@ -549,6 +549,8 @@ export interface Group {
 }
 
 export interface AdminGroup extends Group {
+  kind: 'standard' | 'agent'
+  system_code: string
   // 模型路由配置（仅管理员可见，内部信息）
   model_routing: Record<string, number[]> | null
   model_routing_enabled: boolean

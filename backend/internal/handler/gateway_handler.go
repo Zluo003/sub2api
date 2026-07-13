@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -991,6 +992,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 // Falls back to default models if no whitelist is configured
 func (h *GatewayHandler) Models(c *gin.Context) {
 	apiKey, _ := middleware2.GetAPIKeyFromContext(c)
+	if apiKey != nil && apiKey.Group != nil && apiKey.Group.IsAgent() {
+		capabilities := service.AgentCapabilities()
+		modelIDs := make([]string, 0, len(capabilities))
+		for modelID := range capabilities {
+			modelIDs = append(modelIDs, modelID)
+		}
+		sort.Strings(modelIDs)
+		writeOpenAIModelsList(c, modelIDs)
+		return
+	}
 
 	var groupID *int64
 	var platform string

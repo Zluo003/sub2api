@@ -31,6 +31,14 @@ import (
 
 type sha256HexArgument struct{}
 
+type authInvalidatorSpy struct{ keys []string }
+
+func (s *authInvalidatorSpy) InvalidateAuthCacheByKey(_ context.Context, key string) {
+	s.keys = append(s.keys, key)
+}
+func (s *authInvalidatorSpy) InvalidateAuthCacheByUserID(context.Context, int64)  {}
+func (s *authInvalidatorSpy) InvalidateAuthCacheByGroupID(context.Context, int64) {}
+
 func (sha256HexArgument) Match(value driver.Value) bool {
 	s, ok := value.(string)
 	if !ok || len(s) != 64 {
@@ -225,7 +233,7 @@ func TestPollDeviceAuthorizationStatesAndCredentialReuse(t *testing.T) {
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 
-	t.Run("replays a consumed token response without creating a new key", func(t *testing.T) {
+	t.Run("rejects replay of a consumed device credential", func(t *testing.T) {
 		h, mock := newAgentHandlerMock(t)
 		authorizationID, installationID := uuid.New(), uuid.New()
 		mock.ExpectBegin()
@@ -233,13 +241,10 @@ func TestPollDeviceAuthorizationStatesAndCredentialReuse(t *testing.T) {
 			WithArgs(hashToken("consumed-device")).
 			WillReturnRows(sqlmock.NewRows([]string{"id", "installation_id", "installation_name", "status", "user_id", "expires_at"}).
 				AddRow(authorizationID, installationID, "Mac", "consumed", int64(7), time.Now().Add(time.Minute)))
-		mock.ExpectQuery("SELECT ai.api_key_id,ak.key").
-			WithArgs(installationID, int64(7)).
-			WillReturnRows(sqlmock.NewRows([]string{"api_key_id", "key"}).AddRow(int64(81), "sk-agent-existing"))
-		mock.ExpectCommit()
+		mock.ExpectRollback()
 		w := pollDevice(t, h, "consumed-device")
-		require.Equal(t, http.StatusOK, w.Code)
-		require.Contains(t, w.Body.String(), "sk-agent-existing")
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		require.Equal(t, "invalid_grant", responseCode(w))
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -283,10 +288,12 @@ func pollDevice(t *testing.T, h *AgentHandler, code string) *httptest.ResponseRe
 func TestRevokeInstallationDisablesOnlyOwnedCredential(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
+	invalidator := &authInvalidatorSpy{}
+	h.authInvalidator = invalidator
 	installationID := uuid.New()
-	mock.ExpectExec("WITH revoked AS").
+	mock.ExpectQuery("WITH revoked AS").
 		WithArgs(installationID.String(), int64(42)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"key"}).AddRow("sk-agent-revoked"))
 	r := gin.New()
 	r.DELETE("/installations/:id", func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
@@ -296,6 +303,7 @@ func TestRevokeInstallationDisablesOnlyOwnedCredential(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/installations/"+installationID.String(), nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), `"revoked":true`)
+	require.Equal(t, []string{"sk-agent-revoked"}, invalidator.keys)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -368,6 +376,58 @@ func TestPreflightMediaOverridesCallerMetadataFromOwnedTemporaryAsset(t *testing
 	require.Contains(t, w.Body.String(), `"media_type":"image"`)
 	require.Contains(t, w.Body.String(), `"width":1920`)
 	require.NotContains(t, w.Body.String(), "text/html")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestVideoSubmissionPreflightResolvesOwnedTemporaryURL(t *testing.T) {
+	h, mock := newAgentHandlerMock(t)
+	temporaryID := uuid.New()
+	token := "public-high-entropy-token"
+	mock.ExpectQuery("SELECT id FROM temporary_assets").
+		WithArgs(hashToken(token), int64(81)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(temporaryID))
+	mock.ExpectQuery("SELECT media_type,mime_type,size_bytes,metadata").
+		WithArgs(temporaryID, int64(81)).
+		WillReturnRows(sqlmock.NewRows([]string{"media_type", "mime_type", "size_bytes", "metadata"}).
+			AddRow("image", "image/png", int64(30<<20), []byte(`{"width":1920,"height":1080,"probe":"go-image"}`)))
+	duration := float64(5)
+	result, err := h.PreflightVideoSubmission(context.Background(), 81, &service.VideoCreateRequest{
+		Model:       "seedance-2.0",
+		Prompt:      "move",
+		Duration:    5,
+		Ratio:       "16:9",
+		Resolution:  "1080p",
+		AbilityCode: "video_reference_to_video",
+		Content: []service.VideoContent{{
+			Type:            "image_url",
+			Role:            "reference_image",
+			ImageURL:        &service.VideoContentURL{URL: "https://media.example.com/temporary-assets/" + token},
+			DurationSeconds: &duration,
+		}},
+	}, 2048, "https://media.example.com")
+	require.NoError(t, err)
+	require.True(t, result.Valid)
+	require.Equal(t, int64(2048), result.ReferenceBudget["request_bytes"].(map[string]any)["used"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestVideoSubmissionPreflightRejectsTemporaryURLFromAnotherOrigin(t *testing.T) {
+	h, mock := newAgentHandlerMock(t)
+	result, err := h.PreflightVideoSubmission(context.Background(), 81, &service.VideoCreateRequest{
+		Model:       "seedance-2.0",
+		Prompt:      "move",
+		Duration:    5,
+		Ratio:       "16:9",
+		Resolution:  "1080p",
+		AbilityCode: "video_reference_to_video",
+		Content: []service.VideoContent{{
+			Type:     "image_url",
+			Role:     "reference_image",
+			ImageURL: &service.VideoContentURL{URL: "https://attacker.example/temporary-assets/public-high-entropy-token"},
+		}},
+	}, 2048, "https://media.example.com")
+	require.ErrorContains(t, err, "temporary asset URL")
+	require.False(t, result.Valid)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

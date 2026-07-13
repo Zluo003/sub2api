@@ -2146,6 +2146,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
+	if group.IsAgent() {
+		if input.Platform != "" && input.Platform != group.Platform {
+			return nil, errors.New("system Agent group platform cannot be changed")
+		}
+		if input.IsExclusive != nil && !*input.IsExclusive {
+			return nil, errors.New("system Agent group must remain exclusive")
+		}
+	}
 
 	if input.Name != "" {
 		group.Name = input.Name
@@ -2156,7 +2164,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.Platform != "" {
 		group.Platform = input.Platform
 	}
-	if input.VideoPricingRules != nil && group.Platform == PlatformVideo {
+	if input.VideoPricingRules != nil && (group.Platform == PlatformVideo || group.IsAgent()) {
 		normalizedRules, err := normalizeVideoPricingRules(*input.VideoPricingRules)
 		if err != nil {
 			return nil, err
@@ -2282,14 +2290,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err := s.groupRepo.Update(ctx, group); err != nil {
 		return nil, err
 	}
-	if input.VideoPricingRules != nil && group.Platform == PlatformVideo && s.videoPricingRepo != nil {
+	if input.VideoPricingRules != nil && (group.Platform == PlatformVideo || group.IsAgent()) && s.videoPricingRepo != nil {
 		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, group.VideoPricingRules); err != nil {
 			return nil, err
 		}
 		for i := range group.VideoPricingRules {
 			group.VideoPricingRules[i].GroupID = group.ID
 		}
-	} else if group.Platform != PlatformVideo && s.videoPricingRepo != nil {
+	} else if group.Platform != PlatformVideo && !group.IsAgent() && s.videoPricingRepo != nil {
 		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, nil); err != nil {
 			return nil, err
 		}
@@ -2374,6 +2382,13 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 }
 
 func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
+	group, err := s.groupRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if group.IsAgent() {
+		return errors.New("system Agent group cannot be deleted")
+	}
 	var groupKeys []string
 	if s.authCacheInvalidator != nil {
 		keys, err := s.apiKeyRepo.ListKeysByGroupID(ctx, id)

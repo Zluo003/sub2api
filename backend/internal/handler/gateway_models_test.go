@@ -177,6 +177,24 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
 }
 
+func TestGatewayModels_AgentGroupAggregatesDeclaredCrossPlatformModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{})
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{
+		ID: 7, Platform: service.PlatformOpenAI, Kind: "agent", SystemCode: "yingzo",
+	}})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"gemini-3.5-flash", "gpt-image-2", "seedance-2.0"}, modelIDsForTest(got.Data))
+}
+
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

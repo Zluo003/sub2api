@@ -98,7 +98,7 @@ const filteredGroups = computed(() => {
       )
     } else {
       // 默认：只能选择同 platform 的分组
-      result = result.filter((g) => g.platform === props.platform)
+      result = result.filter((g) => g.platform === props.platform || g.kind === 'agent')
     }
   }
   if (isSearchable.value && searchText.value) {

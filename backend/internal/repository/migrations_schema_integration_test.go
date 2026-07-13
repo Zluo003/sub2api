@@ -155,7 +155,7 @@ WHERE system_code = 'yingzo' AND deleted_at IS NULL
 `).Scan(&agentKind, &agentSystemCode, &agentExclusive))
 	require.Equal(t, "agent", agentKind)
 	require.Equal(t, "yingzo", agentSystemCode)
-	require.False(t, agentExclusive, "the system Agent group must remain available outside ordinary exclusive-group grants")
+	require.True(t, agentExclusive, "the system Agent group must stay hidden from ordinary API Key selectors")
 
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString

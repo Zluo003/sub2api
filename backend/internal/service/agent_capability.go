@@ -9,16 +9,18 @@ import (
 )
 
 const AgentCapabilityVersion = "2026-07-13"
+const AgentAPIContractVersion = "2026-07-13.1"
 
 type AgentCapability struct {
-	Model             string         `json:"model"`
-	CapabilityVersion string         `json:"capability_version"`
-	Modes             []string       `json:"modes"`
-	InputLimits       map[string]any `json:"input_limits"`
-	OutputLimits      map[string]any `json:"output_limits"`
-	Pricing           map[string]any `json:"pricing"`
-	ConcurrencyHint   *int           `json:"concurrency_hint"`
-	Warnings          []string       `json:"warnings"`
+	AgentAPIContractVersion string         `json:"agent_api_contract_version"`
+	Model                   string         `json:"model"`
+	CapabilityVersion       string         `json:"capability_version"`
+	Modes                   []string       `json:"modes"`
+	InputLimits             map[string]any `json:"input_limits"`
+	OutputLimits            map[string]any `json:"output_limits"`
+	Pricing                 map[string]any `json:"pricing"`
+	ConcurrencyHint         *int           `json:"concurrency_hint"`
+	Warnings                []string       `json:"warnings"`
 }
 
 func AgentCapabilities() map[string]AgentCapability {
@@ -30,9 +32,10 @@ func AgentCapabilities() map[string]AgentCapability {
 	}
 	return map[string]AgentCapability{
 		"gpt-image-2": {
-			Model:             "gpt-image-2",
-			CapabilityVersion: AgentCapabilityVersion,
-			Modes:             []string{"generation", "edit"},
+			AgentAPIContractVersion: AgentAPIContractVersion,
+			Model:                   "gpt-image-2",
+			CapabilityVersion:       AgentCapabilityVersion,
+			Modes:                   []string{"generation", "edit"},
 			InputLimits: map[string]any{
 				"media_types":     []string{"image"},
 				"max_image_bytes": 30 << 20,
@@ -45,8 +48,9 @@ func AgentCapabilities() map[string]AgentCapability {
 			Warnings:        []string{},
 		},
 		"seedance-2.0": {
-			Model:             "seedance-2.0",
-			CapabilityVersion: AgentCapabilityVersion,
+			AgentAPIContractVersion: AgentAPIContractVersion,
+			Model:                   "seedance-2.0",
+			CapabilityVersion:       AgentCapabilityVersion,
 			Modes: []string{
 				videoAbilityTextToVideo,
 				videoAbilityImageToVideo,
@@ -91,9 +95,10 @@ func AgentCapabilities() map[string]AgentCapability {
 			},
 		},
 		"gemini-3.5-flash": {
-			Model:             "gemini-3.5-flash",
-			CapabilityVersion: AgentCapabilityVersion,
-			Modes:             []string{"video-analysis", "image-analysis", "multimodal-analysis"},
+			AgentAPIContractVersion: AgentAPIContractVersion,
+			Model:                   "gemini-3.5-flash",
+			CapabilityVersion:       AgentCapabilityVersion,
+			Modes:                   []string{"video-analysis", "image-analysis", "multimodal-analysis"},
 			InputLimits: map[string]any{
 				"media_types":     []string{"image", "video", "audio"},
 				"max_image_bytes": 30 << 20,
@@ -256,12 +261,13 @@ func preflightSeedance(result *AgentMediaPreflightResult) {
 		}
 	}
 	result.ReferenceBudget = map[string]any{
-		"images":        map[string]any{"used": images, "max": 9},
-		"videos":        map[string]any{"used": videos, "max": 3},
-		"audio":         map[string]any{"used": audio, "max": 3},
-		"video_seconds": map[string]any{"used": videoSeconds, "max": 15},
-		"audio_seconds": map[string]any{"used": audioSeconds, "max": 15},
-		"request_bytes": map[string]any{"used": maxAgentInt64(input.RequestBytes, referenceBytes), "max": int64(64 << 20)},
+		"images":          map[string]any{"used": images, "max": 9},
+		"videos":          map[string]any{"used": videos, "max": 3},
+		"audio":           map[string]any{"used": audio, "max": 3},
+		"video_seconds":   map[string]any{"used": videoSeconds, "max": 15},
+		"audio_seconds":   map[string]any{"used": audioSeconds, "max": 15},
+		"request_bytes":   map[string]any{"used": input.RequestBytes, "max": int64(64 << 20)},
+		"reference_bytes": map[string]any{"used": referenceBytes},
 	}
 	if images > 9 {
 		result.Errors = append(result.Errors, agentIssue("too_many_images", "references", "Seedance supports at most 9 images", images, 9, "Reduce the reference bundle"))
@@ -278,7 +284,7 @@ func preflightSeedance(result *AgentMediaPreflightResult) {
 	if audioSeconds > 15 {
 		result.Errors = append(result.Errors, agentIssue("reference_audio_total_too_long", "references", "Reference audio exceeds the 15 second total", audioSeconds, 15, "Trim or remove audio references"))
 	}
-	requestBytes := maxAgentInt64(input.RequestBytes, referenceBytes)
+	requestBytes := input.RequestBytes
 	if requestBytes > 64<<20 {
 		result.Errors = append(result.Errors, agentIssue("request_too_large", "request_bytes", "Seedance request body exceeds 64 MB", requestBytes, int64(64<<20), "Upload large references and use public URLs"))
 	}

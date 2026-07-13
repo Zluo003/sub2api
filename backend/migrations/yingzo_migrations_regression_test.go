@@ -13,6 +13,7 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		"162_yingzo_agent_generation_quotes.sql",
 		"163_yingzo_temporary_asset_metadata.sql",
 		"164_yingzo_agent_group_visibility.sql",
+		"165_yingzo_agent_group_private.sql",
 	} {
 		content, err := FS.ReadFile(name)
 		require.NoError(t, err)

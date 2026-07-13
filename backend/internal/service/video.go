@@ -21,6 +21,10 @@ const (
 	VideoTaskStatusCompleted  = "completed"
 	VideoTaskStatusFailed     = "failed"
 	VideoTaskStatusCancelled  = "cancelled"
+
+	VideoRefundStatusNotApplicable = "not-applicable"
+	VideoRefundStatusPending       = "pending"
+	VideoRefundStatusRefunded      = "refunded"
 )
 
 func IsSupportedVideoResolution(model, resolution string) bool {
@@ -139,14 +143,15 @@ type VideoCreateInput struct {
 }
 
 type VideoResponse struct {
-	ID          string            `json:"id"`
-	Object      string            `json:"object"`
-	Model       string            `json:"model"`
-	Status      string            `json:"status"`
-	VideoURL    *string           `json:"video_url,omitempty"`
-	Error       *VideoClientError `json:"error,omitempty"`
-	CreatedAt   int64             `json:"created_at"`
-	CompletedAt *int64            `json:"completed_at,omitempty"`
+	ID           string            `json:"id"`
+	Object       string            `json:"object"`
+	Model        string            `json:"model"`
+	Status       string            `json:"status"`
+	VideoURL     *string           `json:"video_url,omitempty"`
+	Error        *VideoClientError `json:"error,omitempty"`
+	RefundStatus string            `json:"refund_status"`
+	CreatedAt    int64             `json:"created_at"`
+	CompletedAt  *int64            `json:"completed_at,omitempty"`
 }
 
 type VideoCostEstimate struct {

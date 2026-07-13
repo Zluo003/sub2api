@@ -288,12 +288,45 @@ func TestVideoResponseFromTaskDoesNotExposeUpstreamFieldsOrProvider(t *testing.T
 	require.NotNil(t, resp)
 	require.Equal(t, "video_local_123", resp.ID)
 	require.Equal(t, VideoTaskStatusCompleted, resp.Status)
+	require.Equal(t, VideoRefundStatusNotApplicable, resp.RefundStatus)
 	require.Equal(t, resultURL, *resp.VideoURL)
 
 	rendered := mustJSONForVideoTest(t, resp)
 	require.NotContains(t, strings.ToLower(rendered), "aigod")
 	require.NotContains(t, rendered, "upstream")
 	require.NotContains(t, rendered, "aigod_task_123")
+}
+
+func TestVideoResponseFromFailedTaskReportsDurableRefundState(t *testing.T) {
+	now := time.Unix(1782700000, 0)
+	billed := now.Add(time.Second)
+	base := &VideoTask{
+		PublicID:   "video_local_refund",
+		Model:      VideoModelSeedance20,
+		Status:     VideoTaskStatusFailed,
+		ActualCost: 2,
+		BilledAt:   &billed,
+		CreatedAt:  now,
+	}
+	require.Equal(t, VideoRefundStatusPending, videoResponseFromTask(base).RefundStatus)
+
+	refunded := now.Add(2 * time.Second)
+	require.Equal(t, VideoRefundStatusRefunded, videoResponseFromTask(&VideoTask{
+		PublicID:   base.PublicID,
+		Model:      base.Model,
+		Status:     base.Status,
+		ActualCost: base.ActualCost,
+		BilledAt:   base.BilledAt,
+		RefundedAt: &refunded,
+		CreatedAt:  now,
+	}).RefundStatus)
+
+	require.Equal(t, VideoRefundStatusNotApplicable, videoResponseFromTask(&VideoTask{
+		PublicID:  base.PublicID,
+		Model:     base.Model,
+		Status:    base.Status,
+		CreatedAt: now,
+	}).RefundStatus)
 }
 
 func TestVideoResponseFromFailedTaskSanitizesStoredErrorFallback(t *testing.T) {

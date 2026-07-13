@@ -18,8 +18,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	urlpath "path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -47,6 +49,7 @@ type AgentHandler struct {
 	videoService      *service.VideoService
 	accountRepo       service.AccountRepository
 	userGroupRateRepo service.UserGroupRateRepository
+	authInvalidator   service.APIKeyAuthCacheInvalidator
 	cleanupMu         sync.Mutex
 	cleanupStop       context.CancelFunc
 	cleanupDone       chan struct{}
@@ -59,6 +62,7 @@ func NewAgentHandler(
 	videoService *service.VideoService,
 	userGroupRateRepo service.UserGroupRateRepository,
 	accountRepo service.AccountRepository,
+	authInvalidator service.APIKeyAuthCacheInvalidator,
 ) *AgentHandler {
 	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
 	_ = os.MkdirAll(dir, 0700)
@@ -69,6 +73,7 @@ func NewAgentHandler(
 		videoService:      videoService,
 		userGroupRateRepo: userGroupRateRepo,
 		accountRepo:       accountRepo,
+		authInvalidator:   authInvalidator,
 	}
 	if bucket := os.Getenv("AGENT_ASSETS_S3_BUCKET"); bucket != "" {
 		s3Config := &service.BackupS3Config{
@@ -287,17 +292,17 @@ func (h *AgentHandler) PollDeviceAuthorization(c *gin.Context) {
 		c.JSON(428, gin.H{"error": gin.H{"code": "authorization_pending"}})
 		return
 	}
-	if (status != "approved" && status != "consumed") || !userID.Valid {
+	if status == "consumed" {
+		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
+		return
+	}
+	if status != "approved" || !userID.Valid {
 		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
 		return
 	}
 	var keyID int64
 	var key string
 	err = tx.QueryRowContext(c, `SELECT ai.api_key_id,ak.key FROM agent_installations ai JOIN api_keys ak ON ak.id=ai.api_key_id WHERE ai.id=$1 AND ai.user_id=$2 AND ai.status='active' AND ak.status='active' AND ak.deleted_at IS NULL`, installID, userID.Int64).Scan(&keyID, &key)
-	if status == "consumed" && errors.Is(err, sql.ErrNoRows) {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
-		return
-	}
 	if errors.Is(err, sql.ErrNoRows) {
 		key = "sk-agent-" + mustToken(24)
 		var groupID int64
@@ -319,11 +324,9 @@ func (h *AgentHandler) PollDeviceAuthorization(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "credential_provision_failed"}})
 		return
 	}
-	if status == "approved" {
-		if _, err = tx.ExecContext(c, `UPDATE agent_device_authorizations SET status='consumed',consumed_at=NOW() WHERE id=$1`, id); err != nil {
-			c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-			return
-		}
+	if _, err = tx.ExecContext(c, `UPDATE agent_device_authorizations SET status='consumed',consumed_at=NOW() WHERE id=$1 AND status='approved'`, id); err != nil {
+		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
+		return
 	}
 	if err = tx.Commit(); err != nil {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
@@ -346,13 +349,20 @@ func (h *AgentHandler) RevokeInstallation(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	res, err := h.db.ExecContext(c, `WITH revoked AS (UPDATE agent_installations SET status='revoked',revoked_at=NOW(),updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='active' RETURNING api_key_id) UPDATE api_keys SET status='disabled',updated_at=NOW() WHERE id IN(SELECT api_key_id FROM revoked)`, id, subject.UserID)
+	var key string
+	err := h.db.QueryRowContext(c, `WITH revoked AS (UPDATE agent_installations SET status='revoked',revoked_at=NOW(),updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='active' RETURNING api_key_id), disabled AS (UPDATE api_keys SET status='disabled',updated_at=NOW() WHERE id IN(SELECT api_key_id FROM revoked) RETURNING key) SELECT key FROM disabled`, id, subject.UserID).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(200, gin.H{"revoked": false})
+		return
+	}
 	if err != nil {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	n, _ := res.RowsAffected()
-	c.JSON(200, gin.H{"revoked": n > 0})
+	if h.authInvalidator != nil {
+		h.authInvalidator.InvalidateAuthCacheByKey(c.Request.Context(), key)
+	}
+	c.JSON(200, gin.H{"revoked": true})
 }
 
 func (h *AgentHandler) ListModels(c *gin.Context) {
@@ -369,7 +379,7 @@ func (h *AgentHandler) ListModels(c *gin.Context) {
 	data := make([]gin.H, 0, len(ids))
 	for _, id := range ids {
 		capability := service.AgentCapabilities()[id]
-		data = append(data, gin.H{"id": id, "capability_version": capability.CapabilityVersion})
+		data = append(data, gin.H{"id": id, "capability_version": capability.CapabilityVersion, "agent_api_contract_version": capability.AgentAPIContractVersion})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data})
 }
@@ -652,6 +662,127 @@ func (h *AgentHandler) PreflightMedia(c *gin.Context) {
 	c.JSON(http.StatusOK, service.PreflightAgentMedia(input))
 }
 
+func (h *AgentHandler) PreflightVideoSubmission(ctx context.Context, apiKeyID int64, request *service.VideoCreateRequest, requestBytes int64, publicBaseURL string) (service.AgentMediaPreflightResult, error) {
+	if request == nil {
+		return service.AgentMediaPreflightResult{}, errors.New("video request is required")
+	}
+	references := make([]service.AgentMediaMetadata, 0, len(request.Content))
+	for _, item := range request.Content {
+		var mediaType, rawURL string
+		switch item.Type {
+		case "image_url":
+			mediaType = "image"
+			if item.ImageURL != nil {
+				rawURL = item.ImageURL.URL
+			}
+		case "video_url":
+			mediaType = "video"
+			if item.VideoURL != nil {
+				rawURL = item.VideoURL.URL
+			}
+		case "audio_url":
+			mediaType = "audio"
+			if item.AudioURL != nil {
+				rawURL = item.AudioURL.URL
+			}
+		default:
+			continue
+		}
+		assetID, err := h.temporaryAssetIDFromURL(ctx, apiKeyID, rawURL, publicBaseURL)
+		if err != nil {
+			return service.AgentMediaPreflightResult{}, err
+		}
+		reference := service.AgentMediaMetadata{
+			TemporaryAssetID: assetID.String(),
+			Role:             item.Role,
+			MediaType:        mediaType,
+		}
+		if item.DurationSeconds != nil {
+			reference.DurationSeconds = *item.DurationSeconds
+		}
+		if err := h.hydrateTrustedMediaMetadata(ctx, apiKeyID, &reference); err != nil {
+			return service.AgentMediaPreflightResult{}, err
+		}
+		references = append(references, reference)
+	}
+	mode := strings.TrimSpace(request.AbilityCode)
+	if mode == "" {
+		mode = inferAgentVideoMode(references)
+	}
+	result := service.PreflightAgentMedia(service.AgentMediaPreflightRequest{
+		Model:           request.Model,
+		Mode:            mode,
+		Prompt:          request.Prompt,
+		RequestBytes:    requestBytes,
+		DurationSeconds: int(request.Duration),
+		Ratio:           firstNonEmptyAgent(request.Ratio, request.AspectRatio, request.AspectRatioCamel),
+		Resolution:      request.Resolution,
+		References:      references,
+	})
+	return result, nil
+}
+
+func (h *AgentHandler) temporaryAssetIDFromURL(ctx context.Context, apiKeyID int64, rawURL string, publicBaseURL string) (uuid.UUID, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	base, baseErr := url.Parse(strings.TrimSpace(publicBaseURL))
+	if err != nil || baseErr != nil || !sameTemporaryAssetOrigin(parsed, base) {
+		return uuid.Nil, errors.New("Agent video references must use a temporary asset URL")
+	}
+	expectedDirectory := strings.TrimRight(base.Path, "/") + "/temporary-assets"
+	if parsed.RawQuery != "" || parsed.Fragment != "" || urlpath.Dir(parsed.Path) != expectedDirectory {
+		return uuid.Nil, errors.New("Agent video references must use a temporary asset URL")
+	}
+	token, err := url.PathUnescape(urlpath.Base(parsed.EscapedPath()))
+	if err != nil || token == "" {
+		return uuid.Nil, errors.New("temporary asset URL is invalid")
+	}
+	var id uuid.UUID
+	err = h.db.QueryRowContext(ctx, `SELECT id FROM temporary_assets WHERE public_token_hash=$1 AND api_key_id=$2 AND deleted_at IS NULL AND expires_at>NOW()`, hashToken(token), apiKeyID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, errors.New("temporary asset URL is expired or not owned by this credential")
+	}
+	return id, err
+}
+
+func sameTemporaryAssetOrigin(candidate, base *url.URL) bool {
+	return candidate != nil && base != nil &&
+		(candidate.Scheme == "http" || candidate.Scheme == "https") &&
+		strings.EqualFold(candidate.Scheme, base.Scheme) &&
+		strings.EqualFold(candidate.Host, base.Host) &&
+		candidate.User == nil && base.User == nil && base.RawQuery == "" && base.Fragment == ""
+}
+
+func inferAgentVideoMode(references []service.AgentMediaMetadata) string {
+	if len(references) == 0 {
+		return "text_to_video"
+	}
+	firstFrames, lastFrames := 0, 0
+	for _, reference := range references {
+		if reference.Role == "first_frame" {
+			firstFrames++
+		}
+		if reference.Role == "last_frame" {
+			lastFrames++
+		}
+	}
+	if len(references) == 1 && firstFrames == 1 {
+		return "image_to_video"
+	}
+	if len(references) == 2 && firstFrames == 1 && lastFrames == 1 {
+		return "start_end_to_video"
+	}
+	return "video_reference_to_video"
+}
+
+func firstNonEmptyAgent(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 type trustedMediaMetadata struct {
 	Width           int     `json:"width,omitempty"`
 	Height          int     `json:"height,omitempty"`
@@ -904,6 +1035,11 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
 		return
 	}
+	publicBaseURL, err := agentAssetsPublicBaseURL(c.Request)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "temporary_asset_public_url_invalid"}})
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (200<<20)+(1<<20))
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -1001,14 +1137,29 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	c.JSON(201, gin.H{"id": id, "url": publicURL(c, token), "content_type": contentType, "size": n, "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
+	c.JSON(201, gin.H{"id": id, "url": temporaryAssetPublicURL(publicBaseURL, token), "content_type": contentType, "size": n, "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
 }
-func publicURL(c *gin.Context, token string) string {
-	scheme := "https"
-	if c.Request.TLS == nil {
-		scheme = "http"
+
+func agentAssetsPublicBaseURL(request *http.Request) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("AGENT_ASSETS_PUBLIC_BASE_URL"))
+	if raw == "" && request != nil {
+		scheme := "https"
+		if request.TLS == nil {
+			scheme = "http"
+		}
+		raw = scheme + "://" + request.Host
 	}
-	return scheme + "://" + c.Request.Host + "/temporary-assets/" + token
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("AGENT_ASSETS_PUBLIC_BASE_URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String(), nil
+}
+
+func temporaryAssetPublicURL(publicBaseURL, token string) string {
+	return strings.TrimRight(publicBaseURL, "/") + "/temporary-assets/" + url.PathEscape(token)
 }
 
 func (h *AgentHandler) GetTemporaryAsset(c *gin.Context) {
