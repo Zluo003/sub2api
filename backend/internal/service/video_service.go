@@ -1295,12 +1295,12 @@ func (s *VideoService) recordVideoAccountFailure(ctx context.Context, account *A
 	if message == "" {
 		message = "Video service request failed"
 	}
-	switch {
-	case mapped.StatusCode == http.StatusUnauthorized || mapped.StatusCode == http.StatusForbidden:
+	switch mapped.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
 		_ = s.accountRepo.SetError(ctx, account.ID, message)
-	case mapped.StatusCode == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		_ = s.accountRepo.SetRateLimited(ctx, account.ID, time.Now().UTC().Add(1*time.Minute))
-	case mapped.StatusCode == 0:
+	case 0:
 		reason := "video service temporary failure"
 		if cause != nil {
 			reason = "video service temporary failure: " + cause.Error()
@@ -1404,17 +1404,6 @@ func SanitizeVideoClientError(code, message string) (string, string) {
 	return code, message
 }
 
-func (e mappedVideoClientError) toApplicationError() error {
-	switch e.Code {
-	case "video_service_busy":
-		return infraerrors.TooManyRequests(e.Code, e.Message)
-	case "video_provider_unavailable", "video_service_unavailable":
-		return infraerrors.ServiceUnavailable(e.Code, e.Message)
-	default:
-		return infraerrors.InternalServer(e.Code, e.Message)
-	}
-}
-
 func videoErrorJSON(err VideoClientError) map[string]any {
 	return map[string]any{"code": err.Code, "message": err.Message}
 }
@@ -1475,9 +1464,6 @@ func videoDefaultAPIPathForProvider(provider string) string {
 func videoAccountDuration(account *Account, key string, fallback time.Duration) time.Duration {
 	ms := accountExtraInt(account, key)
 	if ms <= 0 {
-		if key == "connect_timeout_ms" {
-			ms = accountExtraInt(account, key)
-		}
 		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond

@@ -46,7 +46,7 @@ func TestAgentCapabilities(t *testing.T) {
 		Platform: service.PlatformVideo, Type: service.AccountTypeAPIKey,
 		Credentials: map[string]any{"api_key": "sk-video"},
 	}}}
-	agentHandler := handler.NewAgentHandler(db, cfg, service.NewBillingService(cfg, nil), video, nil, accounts, nil)
+	agentHandler := handler.NewAgentHandler(db, cfg, nil, service.NewBillingService(cfg, nil), video, nil, accounts, nil)
 	t.Cleanup(agentHandler.StopCleanupWorker)
 	r := gin.New()
 	v := r.Group("/api/v1")

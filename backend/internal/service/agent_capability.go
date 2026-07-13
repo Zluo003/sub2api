@@ -439,13 +439,6 @@ func containsAgentString(values []string, value string) bool {
 	return false
 }
 
-func maxAgentInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func sortedAgentModelIDs() []string {
 	return []string{"gemini-3.5-flash", "gpt-image-2", "seedance-2.0"}
 }

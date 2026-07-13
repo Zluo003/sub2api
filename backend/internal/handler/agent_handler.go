@@ -31,7 +31,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -58,6 +57,7 @@ type AgentHandler struct {
 func NewAgentHandler(
 	db *sql.DB,
 	cfg *config.Config,
+	objectStoreFactory service.BackupObjectStoreFactory,
 	billingService *service.BillingService,
 	videoService *service.VideoService,
 	userGroupRateRepo service.UserGroupRateRepository,
@@ -88,7 +88,10 @@ func NewAgentHandler(
 		if !s3Config.IsConfigured() {
 			panic("AGENT_ASSETS_S3_BUCKET requires access key ID and secret access key")
 		}
-		store, err := repository.NewS3BackupStoreFactory()(context.Background(), s3Config)
+		if objectStoreFactory == nil {
+			panic("AGENT_ASSETS_S3_BUCKET requires an object store factory")
+		}
+		store, err := objectStoreFactory(context.Background(), s3Config)
 		if err != nil {
 			panic(fmt.Sprintf("initialize Agent S3 storage: %v", err))
 		}
@@ -270,7 +273,7 @@ func (h *AgentHandler) PollDeviceAuthorization(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var id, installID uuid.UUID
 	var name, status string
 	var userID sql.NullInt64
@@ -365,6 +368,28 @@ func (h *AgentHandler) RevokeInstallation(c *gin.Context) {
 	c.JSON(200, gin.H{"revoked": true})
 }
 
+func (h *AgentHandler) RevokeCurrentInstallation(c *gin.Context) {
+	key, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key"}})
+		return
+	}
+	var revokedKey string
+	err := h.db.QueryRowContext(c, `WITH revoked AS (UPDATE agent_installations SET status='revoked',revoked_at=NOW(),updated_at=NOW() WHERE api_key_id=$1 AND user_id=$2 AND status='active' RETURNING api_key_id), disabled AS (UPDATE api_keys SET status='disabled',updated_at=NOW() WHERE id IN(SELECT api_key_id FROM revoked) AND status='active' RETURNING key) SELECT key FROM disabled`, key.ID, key.UserID).Scan(&revokedKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusOK, gin.H{"revoked": false})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if h.authInvalidator != nil {
+		h.authInvalidator.InvalidateAuthCacheByKey(c.Request.Context(), revokedKey)
+	}
+	c.JSON(http.StatusOK, gin.H{"revoked": true})
+}
+
 func (h *AgentHandler) ListModels(c *gin.Context) {
 	available, err := h.availableAgentModels(c.Request.Context(), c)
 	if err != nil {
@@ -401,7 +426,7 @@ func (h *AgentHandler) GetModelCapability(c *gin.Context) {
 func (h *AgentHandler) availableAgentModels(ctx context.Context, c *gin.Context) (map[string]service.AgentCapability, error) {
 	apiKey, ok := middleware.GetAPIKeyFromContext(c)
 	if !ok || apiKey.Group == nil || apiKey.Group.ID <= 0 || h.accountRepo == nil {
-		return nil, errors.New("Agent account pool is unavailable")
+		return nil, errors.New("agent account pool is unavailable")
 	}
 	accounts, err := h.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, apiKey.Group.ID, []string{
 		service.PlatformOpenAI, service.PlatformVideo, service.PlatformGemini,
@@ -726,11 +751,11 @@ func (h *AgentHandler) temporaryAssetIDFromURL(ctx context.Context, apiKeyID int
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	base, baseErr := url.Parse(strings.TrimSpace(publicBaseURL))
 	if err != nil || baseErr != nil || !sameTemporaryAssetOrigin(parsed, base) {
-		return uuid.Nil, errors.New("Agent video references must use a temporary asset URL")
+		return uuid.Nil, errors.New("agent video references must use a temporary asset URL")
 	}
 	expectedDirectory := strings.TrimRight(base.Path, "/") + "/temporary-assets"
 	if parsed.RawQuery != "" || parsed.Fragment != "" || urlpath.Dir(parsed.Path) != expectedDirectory {
-		return uuid.Nil, errors.New("Agent video references must use a temporary asset URL")
+		return uuid.Nil, errors.New("agent video references must use a temporary asset URL")
 	}
 	token, err := url.PathUnescape(urlpath.Base(parsed.EscapedPath()))
 	if err != nil || token == "" {
@@ -874,7 +899,7 @@ func inspectMedia(file multipart.File, header *multipart.FileHeader) (mediaPolic
 	detected := detectMediaMIME(buf[:n])
 	if detected != declared {
 		// Browsers commonly report WAV with either registered MIME spelling.
-		if !(policy.kind == "audio" && (detected == "audio/wav" || detected == "audio/x-wav")) {
+		if policy.kind != "audio" || (detected != "audio/wav" && detected != "audio/x-wav") {
 			return mediaPolicy{}, detected, false
 		}
 	}
@@ -1046,7 +1071,7 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(400, gin.H{"error": gin.H{"code": "file_required"}})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	policy, contentType, ok := inspectMedia(file, header)
 	if !ok {
 		c.JSON(400, gin.H{"error": gin.H{"code": "unsupported_media"}})
@@ -1237,7 +1262,7 @@ func (h *AgentHandler) ServeTemporaryAsset(c *gin.Context) {
 		c.Status(404)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	c.Header("Content-Type", ct)
 	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
 	http.ServeContent(c.Writer, c.Request, name, time.Time{}, f)
@@ -1259,7 +1284,7 @@ func (h *AgentHandler) CleanupExpired(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `SELECT id,storage_backend,storage_key FROM temporary_assets WHERE expires_at<=NOW() AND deleted_at IS NULL ORDER BY expires_at LIMIT 200 FOR UPDATE SKIP LOCKED`)
 	if err != nil {
 		return 0, err

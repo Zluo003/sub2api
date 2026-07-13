@@ -108,6 +108,7 @@ services:
       # Yingzo Agent temporary media
       # =======================================================================
       - AGENT_AUTHORIZATION_URL=${AGENT_AUTHORIZATION_URL:-}
+      - AGENT_ASSETS_PUBLIC_BASE_URL=${AGENT_ASSETS_PUBLIC_BASE_URL:-}
       - AGENT_ASSETS_DAILY_MAX_COUNT=${AGENT_ASSETS_DAILY_MAX_COUNT:-100}
       - AGENT_ASSETS_DAILY_MAX_BYTES=${AGENT_ASSETS_DAILY_MAX_BYTES:-2147483648}
       - AGENT_ASSETS_S3_BUCKET=${AGENT_ASSETS_S3_BUCKET:-}

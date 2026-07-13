@@ -24,6 +24,7 @@
     "POST /api/v1/agent/generation/estimates",
     "POST /api/v1/agent/assets",
     "GET /api/v1/agent/assets/:id",
+    "DELETE /api/v1/agent/installation",
     "POST /v1/images/generations",
     "POST /v1/images/edits",
     "POST /v1/videos",

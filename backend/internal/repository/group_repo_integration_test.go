@@ -270,8 +270,15 @@ func (s *GroupRepoSuite) TestListWithFilters_IsExclusive() {
 	isExclusive := true
 	groups, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", &isExclusive)
 	s.Require().NoError(err)
-	s.Require().Len(groups, 1)
-	s.Require().True(groups[0].IsExclusive)
+	s.Require().NotEmpty(groups)
+	found := false
+	for _, group := range groups {
+		s.Require().True(group.IsExclusive)
+		if group.Name == "g2" {
+			found = true
+		}
+	}
+	s.Require().True(found, "exclusive filter must include the test group alongside system groups")
 }
 
 func (s *GroupRepoSuite) TestListWithFilters_Search() {

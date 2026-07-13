@@ -257,7 +257,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	openAIGatewayHandler := handler.NewOpenAIGatewayHandler(openAIGatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, configConfig)
 	videoTaskRepository := repository.NewVideoTaskRepository(client)
 	videoService := service.NewVideoService(accountRepository, videoTaskRepository, videoGroupPricingRuleRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, apiKeyService, billingCacheService, deferredService, balanceNotifyService, serviceUserPlatformQuotaRepository, httpUpstream, configConfig)
-	agentHandler := handler.NewAgentHandler(db, configConfig, billingService, videoService, userGroupRateRepository, accountRepository, apiKeyAuthCacheInvalidator)
+	agentHandler := handler.NewAgentHandler(db, configConfig, backupObjectStoreFactory, billingService, videoService, userGroupRateRepository, accountRepository, apiKeyAuthCacheInvalidator)
 	videoHandler := handler.NewVideoHandler(videoService, agentHandler)
 	handlerSettingHandler := handler.ProvideSettingHandler(settingService, buildInfo, notificationEmailService)
 	totpHandler := handler.NewTotpHandler(totpService)

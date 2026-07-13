@@ -307,6 +307,27 @@ func TestRevokeInstallationDisablesOnlyOwnedCredential(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestRevokeCurrentInstallationDisablesCallingAgentCredential(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	invalidator := &authInvalidatorSpy{}
+	h.authInvalidator = invalidator
+	mock.ExpectQuery("WITH revoked AS").
+		WithArgs(int64(81), int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"key"}).AddRow("sk-agent-current"))
+	r := gin.New()
+	r.DELETE("/installation", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 81, UserID: 42})
+		h.RevokeCurrentInstallation(c)
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/installation", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), `"revoked":true`)
+	require.Equal(t, []string{"sk-agent-current"}, invalidator.keys)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestEstimateImageGenerationPersistsAuthoritativeQuote(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
@@ -407,7 +428,9 @@ func TestVideoSubmissionPreflightResolvesOwnedTemporaryURL(t *testing.T) {
 	}, 2048, "https://media.example.com")
 	require.NoError(t, err)
 	require.True(t, result.Valid)
-	require.Equal(t, int64(2048), result.ReferenceBudget["request_bytes"].(map[string]any)["used"])
+	requestBudget, ok := result.ReferenceBudget["request_bytes"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, int64(2048), requestBudget["used"])
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -956,9 +956,6 @@ func mustJSONForVideoTest(t *testing.T, v any) string {
 }
 
 func jsonMarshalForVideoTest(v any) ([]byte, error) {
-	type jsonMarshaler interface {
-		Marshal(v any) ([]byte, error)
-	}
 	return videoTestJSON{}.Marshal(v)
 }
 

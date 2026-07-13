@@ -26,6 +26,7 @@ func RegisterAgentRoutes(r *gin.Engine, v1 *gin.RouterGroup, h *handler.Handlers
 	g.GET("/generation/estimates/:id", h.Agent.GetGenerationEstimate)
 	g.POST("/assets", h.Agent.UploadTemporaryAsset)
 	g.GET("/assets/:id", h.Agent.GetTemporaryAsset)
+	g.DELETE("/installation", h.Agent.RevokeCurrentInstallation)
 	r.GET("/temporary-assets/:token", h.Agent.ServeTemporaryAsset)
 	r.HEAD("/temporary-assets/:token", h.Agent.ServeTemporaryAsset)
 }
