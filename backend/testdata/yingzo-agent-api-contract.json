@@ -1,26 +1,12 @@
 {
   "schema_version": "1.0.0",
-  "agent_api_contract_version": "2026-07-13.1",
+  "agent_api_contract_version": "2026-07-13.2",
   "models": [
-    "gemini-3.5-flash",
     "gpt-image-2",
     "seedance-2.0"
   ],
-  "capability_required_fields": [
-    "agent_api_contract_version",
-    "model",
-    "capability_version",
-    "modes",
-    "input_limits",
-    "output_limits",
-    "pricing",
-    "concurrency_hint",
-    "warnings"
-  ],
   "endpoints": [
-    "GET /api/v1/agent/models",
-    "GET /api/v1/agent/models/:id/capabilities",
-    "POST /api/v1/agent/media/preflight",
+    "GET /v1/models",
     "POST /api/v1/agent/generation/estimates",
     "POST /api/v1/agent/assets",
     "GET /api/v1/agent/assets/:id",
@@ -28,8 +14,7 @@
     "POST /v1/images/generations",
     "POST /v1/images/edits",
     "POST /v1/videos",
-    "GET /v1/videos/:id",
-    "POST /v1beta/models/:model:generateContent"
+    "GET /v1/videos/:id"
   ],
   "video_response_required_fields": [
     "id",

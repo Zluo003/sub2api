@@ -17,11 +17,10 @@ import (
 
 type VideoHandler struct {
 	videoService *service.VideoService
-	agentHandler *AgentHandler
 }
 
-func NewVideoHandler(videoService *service.VideoService, agentHandler *AgentHandler) *VideoHandler {
-	return &VideoHandler{videoService: videoService, agentHandler: agentHandler}
+func NewVideoHandler(videoService *service.VideoService) *VideoHandler {
+	return &VideoHandler{videoService: videoService}
 }
 
 func (h *VideoHandler) Create(c *gin.Context) {
@@ -55,28 +54,6 @@ func (h *VideoHandler) Create(c *gin.Context) {
 	if err := json.Unmarshal(body, &raw); err == nil {
 		req.Raw = raw
 	}
-	if apiKey.Group != nil && apiKey.Group.IsAgent() {
-		if h.agentHandler == nil {
-			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "agent_preflight_unavailable", "Agent media preflight is unavailable")
-			return
-		}
-		publicBaseURL, publicBaseErr := agentAssetsPublicBaseURL(c.Request)
-		if publicBaseErr != nil {
-			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "temporary_asset_public_url_invalid", publicBaseErr.Error())
-			return
-		}
-		preflight, preflightErr := h.agentHandler.PreflightVideoSubmission(c.Request.Context(), apiKey.ID, &req, int64(len(body)), publicBaseURL)
-		if preflightErr != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "trusted_media_metadata_required", preflightErr.Error())
-			return
-		}
-		if !preflight.Valid {
-			issue := preflight.Errors[0]
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", issue.Code, issue.Message)
-			return
-		}
-	}
-
 	setOpsRequestContext(c, req.Model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeVideo))
 	inboundEndpoint := GetInboundEndpoint(c)

@@ -21,9 +21,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	urlpath "path"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,7 +44,6 @@ type AgentHandler struct {
 	objectStore       service.BackupObjectStore
 	billingService    *service.BillingService
 	videoService      *service.VideoService
-	accountRepo       service.AccountRepository
 	userGroupRateRepo service.UserGroupRateRepository
 	authInvalidator   service.APIKeyAuthCacheInvalidator
 	cleanupMu         sync.Mutex
@@ -61,7 +58,6 @@ func NewAgentHandler(
 	billingService *service.BillingService,
 	videoService *service.VideoService,
 	userGroupRateRepo service.UserGroupRateRepository,
-	accountRepo service.AccountRepository,
 	authInvalidator service.APIKeyAuthCacheInvalidator,
 ) *AgentHandler {
 	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
@@ -72,7 +68,6 @@ func NewAgentHandler(
 		billingService:    billingService,
 		videoService:      videoService,
 		userGroupRateRepo: userGroupRateRepo,
-		accountRepo:       accountRepo,
 		authInvalidator:   authInvalidator,
 	}
 	if bucket := os.Getenv("AGENT_ASSETS_S3_BUCKET"); bucket != "" {
@@ -390,78 +385,6 @@ func (h *AgentHandler) RevokeCurrentInstallation(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"revoked": true})
 }
 
-func (h *AgentHandler) ListModels(c *gin.Context) {
-	available, err := h.availableAgentModels(c.Request.Context(), c)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "model_discovery_failed", "message": "Unable to inspect the Agent account pool"}})
-		return
-	}
-	ids := make([]string, 0, len(available))
-	for id := range available {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	data := make([]gin.H, 0, len(ids))
-	for _, id := range ids {
-		capability := service.AgentCapabilities()[id]
-		data = append(data, gin.H{"id": id, "capability_version": capability.CapabilityVersion, "agent_api_contract_version": capability.AgentAPIContractVersion})
-	}
-	c.JSON(http.StatusOK, gin.H{"data": data})
-}
-
-func (h *AgentHandler) GetModelCapability(c *gin.Context) {
-	available, err := h.availableAgentModels(c.Request.Context(), c)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "model_discovery_failed", "message": "Unable to inspect the Agent account pool"}})
-		return
-	}
-	capability, ok := available[c.Param("id")]
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "model_not_found", "message": "model is not available to the Agent group"}})
-		return
-	}
-	c.JSON(http.StatusOK, capability)
-}
-
-func (h *AgentHandler) availableAgentModels(ctx context.Context, c *gin.Context) (map[string]service.AgentCapability, error) {
-	apiKey, ok := middleware.GetAPIKeyFromContext(c)
-	if !ok || apiKey.Group == nil || apiKey.Group.ID <= 0 || h.accountRepo == nil {
-		return nil, errors.New("agent account pool is unavailable")
-	}
-	accounts, err := h.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, apiKey.Group.ID, []string{
-		service.PlatformOpenAI, service.PlatformVideo, service.PlatformGemini,
-	})
-	if err != nil {
-		return nil, err
-	}
-	available := make(map[string]service.AgentCapability)
-	for _, account := range accounts {
-		for model, platform := range map[string]string{
-			"gpt-image-2":      service.PlatformOpenAI,
-			"seedance-2.0":     service.PlatformVideo,
-			"gemini-3.5-flash": service.PlatformGemini,
-		} {
-			if account.Platform != platform || !account.IsModelSupported(model) {
-				continue
-			}
-			if platform == service.PlatformVideo && (account.Type != service.AccountTypeAPIKey || strings.TrimSpace(account.GetCredential("api_key")) == "") {
-				continue
-			}
-			available[model] = service.AgentCapabilities()[model]
-		}
-	}
-	if _, hasVideo := available[service.VideoModelSeedance20]; hasVideo {
-		priced, pricingErr := h.videoService.HasEnabledPricing(ctx, apiKey.Group.ID, service.VideoModelSeedance20)
-		if pricingErr != nil {
-			return nil, pricingErr
-		}
-		if !priced {
-			delete(available, service.VideoModelSeedance20)
-		}
-	}
-	return available, nil
-}
-
 type agentGenerationEstimateRequest struct {
 	Kind    string          `json:"kind" binding:"required"`
 	Model   string          `json:"model" binding:"required"`
@@ -501,11 +424,6 @@ func (h *AgentHandler) EstimateGeneration(c *gin.Context) {
 	}
 	input.Kind = strings.TrimSpace(strings.ToLower(input.Kind))
 	input.Model = strings.TrimSpace(input.Model)
-	if _, available := service.AgentCapabilities()[input.Model]; !available {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "model_not_found", "message": "model is not available to the Agent group"}})
-		return
-	}
-
 	quote, err := h.calculateGenerationQuote(c.Request.Context(), apiKey, input)
 	if err != nil {
 		status, body := infraerrors.ToHTTP(err)
@@ -665,149 +583,6 @@ func hashJSON(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *AgentHandler) PreflightMedia(c *gin.Context) {
-	var input service.AgentMediaPreflightRequest
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_request", "message": "model and mode are required"}})
-		return
-	}
-	key, ok := middleware.GetAPIKeyFromContext(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid API key"}})
-		return
-	}
-	for index := range input.References {
-		if err := h.hydrateTrustedMediaMetadata(c.Request.Context(), key.ID, &input.References[index]); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"code": "trusted_media_metadata_required", "message": err.Error(), "path": fmt.Sprintf("references[%d]", index),
-			}})
-			return
-		}
-	}
-	c.JSON(http.StatusOK, service.PreflightAgentMedia(input))
-}
-
-func (h *AgentHandler) PreflightVideoSubmission(ctx context.Context, apiKeyID int64, request *service.VideoCreateRequest, requestBytes int64, publicBaseURL string) (service.AgentMediaPreflightResult, error) {
-	if request == nil {
-		return service.AgentMediaPreflightResult{}, errors.New("video request is required")
-	}
-	references := make([]service.AgentMediaMetadata, 0, len(request.Content))
-	for _, item := range request.Content {
-		var mediaType, rawURL string
-		switch item.Type {
-		case "image_url":
-			mediaType = "image"
-			if item.ImageURL != nil {
-				rawURL = item.ImageURL.URL
-			}
-		case "video_url":
-			mediaType = "video"
-			if item.VideoURL != nil {
-				rawURL = item.VideoURL.URL
-			}
-		case "audio_url":
-			mediaType = "audio"
-			if item.AudioURL != nil {
-				rawURL = item.AudioURL.URL
-			}
-		default:
-			continue
-		}
-		assetID, err := h.temporaryAssetIDFromURL(ctx, apiKeyID, rawURL, publicBaseURL)
-		if err != nil {
-			return service.AgentMediaPreflightResult{}, err
-		}
-		reference := service.AgentMediaMetadata{
-			TemporaryAssetID: assetID.String(),
-			Role:             item.Role,
-			MediaType:        mediaType,
-		}
-		if item.DurationSeconds != nil {
-			reference.DurationSeconds = *item.DurationSeconds
-		}
-		if err := h.hydrateTrustedMediaMetadata(ctx, apiKeyID, &reference); err != nil {
-			return service.AgentMediaPreflightResult{}, err
-		}
-		references = append(references, reference)
-	}
-	mode := strings.TrimSpace(request.AbilityCode)
-	if mode == "" {
-		mode = inferAgentVideoMode(references)
-	}
-	result := service.PreflightAgentMedia(service.AgentMediaPreflightRequest{
-		Model:           request.Model,
-		Mode:            mode,
-		Prompt:          request.Prompt,
-		RequestBytes:    requestBytes,
-		DurationSeconds: int(request.Duration),
-		Ratio:           firstNonEmptyAgent(request.Ratio, request.AspectRatio, request.AspectRatioCamel),
-		Resolution:      request.Resolution,
-		References:      references,
-	})
-	return result, nil
-}
-
-func (h *AgentHandler) temporaryAssetIDFromURL(ctx context.Context, apiKeyID int64, rawURL string, publicBaseURL string) (uuid.UUID, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	base, baseErr := url.Parse(strings.TrimSpace(publicBaseURL))
-	if err != nil || baseErr != nil || !sameTemporaryAssetOrigin(parsed, base) {
-		return uuid.Nil, errors.New("agent video references must use a temporary asset URL")
-	}
-	expectedDirectory := strings.TrimRight(base.Path, "/") + "/temporary-assets"
-	if parsed.RawQuery != "" || parsed.Fragment != "" || urlpath.Dir(parsed.Path) != expectedDirectory {
-		return uuid.Nil, errors.New("agent video references must use a temporary asset URL")
-	}
-	token, err := url.PathUnescape(urlpath.Base(parsed.EscapedPath()))
-	if err != nil || token == "" {
-		return uuid.Nil, errors.New("temporary asset URL is invalid")
-	}
-	var id uuid.UUID
-	err = h.db.QueryRowContext(ctx, `SELECT id FROM temporary_assets WHERE public_token_hash=$1 AND api_key_id=$2 AND deleted_at IS NULL AND expires_at>NOW()`, hashToken(token), apiKeyID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return uuid.Nil, errors.New("temporary asset URL is expired or not owned by this credential")
-	}
-	return id, err
-}
-
-func sameTemporaryAssetOrigin(candidate, base *url.URL) bool {
-	return candidate != nil && base != nil &&
-		(candidate.Scheme == "http" || candidate.Scheme == "https") &&
-		strings.EqualFold(candidate.Scheme, base.Scheme) &&
-		strings.EqualFold(candidate.Host, base.Host) &&
-		candidate.User == nil && base.User == nil && base.RawQuery == "" && base.Fragment == ""
-}
-
-func inferAgentVideoMode(references []service.AgentMediaMetadata) string {
-	if len(references) == 0 {
-		return "text_to_video"
-	}
-	firstFrames, lastFrames := 0, 0
-	for _, reference := range references {
-		if reference.Role == "first_frame" {
-			firstFrames++
-		}
-		if reference.Role == "last_frame" {
-			lastFrames++
-		}
-	}
-	if len(references) == 1 && firstFrames == 1 {
-		return "image_to_video"
-	}
-	if len(references) == 2 && firstFrames == 1 && lastFrames == 1 {
-		return "start_end_to_video"
-	}
-	return "video_reference_to_video"
-}
-
-func firstNonEmptyAgent(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 type trustedMediaMetadata struct {
 	Width           int     `json:"width,omitempty"`
 	Height          int     `json:"height,omitempty"`
@@ -818,46 +593,6 @@ type trustedMediaMetadata struct {
 	AudioCodec      string  `json:"audio_codec,omitempty"`
 	Encoding        string  `json:"encoding,omitempty"`
 	Probe           string  `json:"probe"`
-}
-
-func (h *AgentHandler) hydrateTrustedMediaMetadata(ctx context.Context, apiKeyID int64, reference *service.AgentMediaMetadata) error {
-	if reference == nil || strings.TrimSpace(reference.TemporaryAssetID) == "" {
-		return errors.New("temporary_asset_id is required for every media reference")
-	}
-	id, err := uuid.Parse(reference.TemporaryAssetID)
-	if err != nil {
-		return errors.New("temporary_asset_id is invalid")
-	}
-	var mediaType, mimeType string
-	var size int64
-	var metadataJSON []byte
-	err = h.db.QueryRowContext(ctx, `
-		SELECT media_type,mime_type,size_bytes,metadata
-		FROM temporary_assets
-		WHERE id=$1 AND api_key_id=$2 AND deleted_at IS NULL AND expires_at>NOW()
-	`, id, apiKeyID).Scan(&mediaType, &mimeType, &size, &metadataJSON)
-	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("temporary asset is missing, expired, or not owned by this Agent key")
-	}
-	if err != nil {
-		return errors.New("temporary asset metadata could not be read")
-	}
-	var metadata trustedMediaMetadata
-	if err := json.Unmarshal(metadataJSON, &metadata); err != nil || metadata.Probe == "" {
-		return errors.New("temporary asset has no trusted media probe")
-	}
-	reference.MediaType = mediaType
-	reference.MIMEType = mimeType
-	reference.SizeBytes = size
-	reference.Width = metadata.Width
-	reference.Height = metadata.Height
-	reference.DurationSeconds = metadata.DurationSeconds
-	reference.FPS = metadata.FPS
-	reference.Container = metadata.Container
-	reference.VideoCodec = metadata.VideoCodec
-	reference.AudioCodec = metadata.AudioCodec
-	reference.Encoding = metadata.Encoding
-	return nil
 }
 
 type mediaPolicy struct {

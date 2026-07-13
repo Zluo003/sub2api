@@ -192,7 +192,7 @@ func TestGatewayModels_AgentGroupAggregatesDeclaredCrossPlatformModels(t *testin
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gemini-3.5-flash", "gpt-image-2", "seedance-2.0"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-image-2", "seedance-2.0"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {

@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"os"
-	"sort"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 type yingzoAgentContractFixture struct {
 	AgentAPIContractVersion     string   `json:"agent_api_contract_version"`
 	Models                      []string `json:"models"`
-	CapabilityRequiredFields    []string `json:"capability_required_fields"`
+	Endpoints                   []string `json:"endpoints"`
 	VideoResponseRequiredFields []string `json:"video_response_required_fields"`
 	VideoRefundStatusValues     []string `json:"video_refund_status_values"`
 }
@@ -25,21 +24,10 @@ func TestYingzoAgentContractFixtureMatchesService(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &fixture))
 	require.Equal(t, AgentAPIContractVersion, fixture.AgentAPIContractVersion)
 
-	capabilities := AgentCapabilities()
-	models := make([]string, 0, len(capabilities))
-	for model := range capabilities {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-	require.Equal(t, fixture.Models, models)
-
-	encodedCapability, err := json.Marshal(capabilities["gemini-3.5-flash"])
-	require.NoError(t, err)
-	var capabilityFields map[string]any
-	require.NoError(t, json.Unmarshal(encodedCapability, &capabilityFields))
-	for _, field := range fixture.CapabilityRequiredFields {
-		require.Contains(t, capabilityFields, field)
-	}
+	require.Equal(t, fixture.Models, YingzoAgentModelIDs())
+	require.Contains(t, fixture.Endpoints, "GET /v1/models")
+	require.NotContains(t, fixture.Endpoints, "GET /api/v1/agent/models/:id/capabilities")
+	require.NotContains(t, fixture.Endpoints, "POST /api/v1/agent/media/preflight")
 
 	encodedVideo, err := json.Marshal(videoResponseFromTask(&VideoTask{
 		PublicID:  "video_contract",
