@@ -133,6 +133,7 @@ func (s *APIKeyRepoSuite) TestGetByKeyForAuth_PreservesAgentGroupIdentity() {
 		SetKind("agent").
 		SetSystemCode("yingzo-auth-integration").
 		SetIsExclusive(true).
+		SetAllowImageGeneration(true).
 		SetStatus(service.StatusActive).
 		SetSubscriptionType(service.SubscriptionTypeStandard).
 		SetRateMultiplier(1).

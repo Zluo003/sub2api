@@ -2208,6 +2208,7 @@ export default {
         editTitle: 'Configuring a system Agent group',
         editDescription: 'This group aggregates model account pools from multiple platforms for Yingzo. Rates, RPM, account pools, and model pricing are editable; platform, system code, exclusive access, and deletion are protected.',
         exclusiveLocked: 'System Agent groups must stay exclusive and cannot be selected by ordinary API keys.',
+        imageGenerationLocked: 'System Agents must keep image generation enabled. Available models and prices are controlled by the enabled image model rules below.',
       },
       agentPricing: {
         title: 'Model pricing',

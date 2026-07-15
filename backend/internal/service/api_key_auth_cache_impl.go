@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 14 // v14: hydrate system Agent identity in auth repository queries
+const apiKeyAuthSnapshotVersion = 15 // v15: refresh the required system Agent image permission
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int

@@ -85,6 +85,7 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesAgentGroupIdentity_SQLite(t *
 		SetKind("agent").
 		SetSystemCode("yingzo").
 		SetIsExclusive(true).
+		SetAllowImageGeneration(true).
 		SetStatus(service.StatusActive).
 		SetSubscriptionType(service.SubscriptionTypeStandard).
 		SetRateMultiplier(1).

@@ -2057,6 +2057,28 @@
           </div>
         </div>
 
+        <div
+          v-if="editingGroup.kind === 'agent'"
+          data-testid="agent-image-generation-required"
+          class="border-t pt-4"
+        >
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.imagePricing.title") }}
+          </label>
+          <label class="mt-3 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              v-model="editForm.allow_image_generation"
+              type="checkbox"
+              disabled
+              class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+            />
+            {{ t("admin.groups.imagePricing.allowImageGeneration") }}
+          </label>
+          <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            {{ t("admin.groups.agent.imageGenerationLocked") }}
+          </p>
+        </div>
+
         <AgentModelPricingEditor
           v-if="editingGroup.kind === 'agent'"
           v-model="agentPricingRules"
@@ -4364,7 +4386,8 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.daily_limit_usd = group.daily_limit_usd;
   editForm.weekly_limit_usd = group.weekly_limit_usd;
   editForm.monthly_limit_usd = group.monthly_limit_usd;
-  editForm.allow_image_generation = group.allow_image_generation ?? false;
+  editForm.allow_image_generation =
+    group.kind === "agent" ? true : (group.allow_image_generation ?? false);
   editForm.image_rate_independent = group.image_rate_independent ?? false;
   editForm.image_rate_multiplier = group.image_rate_multiplier ?? 1;
   editForm.image_price_1k = group.image_price_1k;

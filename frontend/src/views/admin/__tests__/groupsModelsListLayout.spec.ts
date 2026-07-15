@@ -33,4 +33,14 @@ describe("system Agent pricing layout", () => {
     expect(agentPricingSource).toContain("enabled: false");
     expect(agentPricingSource).not.toContain("enabled: true");
   });
+
+  it("shows the required Agent image-generation permission as locked on", () => {
+    expect(groupsViewSource).toContain(
+      'data-testid="agent-image-generation-required"',
+    );
+    expect(groupsViewSource).toContain('group.kind === "agent" ? true');
+    expect(groupsViewSource).toContain(
+      't("admin.groups.agent.imageGenerationLocked")',
+    );
+  });
 });

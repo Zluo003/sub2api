@@ -2153,6 +2153,10 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		if input.IsExclusive != nil && !*input.IsExclusive {
 			return nil, errors.New("system Agent group must remain exclusive")
 		}
+		if input.AllowImageGeneration != nil && !*input.AllowImageGeneration {
+			return nil, errors.New("system Agent group must allow image generation")
+		}
+		group.AllowImageGeneration = true
 	}
 
 	if input.Name != "" {

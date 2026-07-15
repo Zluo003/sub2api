@@ -537,6 +537,40 @@ func TestAdminService_UpdateGroup_AgentCopiesAccountsAcrossPlatforms(t *testing.
 	require.Equal(t, []int64{21, 31}, repo.boundAccountIDs)
 }
 
+func TestAdminService_UpdateGroup_AgentAlwaysEnablesImageGeneration(t *testing.T) {
+	agentGroup := &Group{
+		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
+		Kind: "agent", SystemCode: "yingzo", IsExclusive: true, Status: StatusActive,
+		AllowImageGeneration: false,
+	}
+	repo := &groupRepoStubForAdmin{getByID: agentGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.updated)
+	require.True(t, repo.updated.AllowImageGeneration)
+}
+
+func TestAdminService_UpdateGroup_RejectsDisablingAgentImageGeneration(t *testing.T) {
+	agentGroup := &Group{
+		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
+		Kind: "agent", SystemCode: "yingzo", IsExclusive: true, Status: StatusActive,
+		AllowImageGeneration: true,
+	}
+	repo := &groupRepoStubForAdmin{getByID: agentGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+	disabled := false
+
+	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{
+		AllowImageGeneration: &disabled,
+	})
+	require.EqualError(t, err, "system Agent group must allow image generation")
+	require.Nil(t, group)
+	require.Nil(t, repo.updated)
+}
+
 func TestAdminService_ListGroups_WithSearch(t *testing.T) {
 	// 测试：
 	// 1. search 参数正常传递到 repository 层

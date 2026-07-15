@@ -2351,6 +2351,7 @@ export default {
         editTitle: '正在配置系统 Agent 分组',
         editDescription: '此分组为 Yingzo 聚合不同平台的模型账号池。可以调整费率、RPM、账号池和 Seedance 价格；平台、系统代码、专属属性和删除操作受保护。',
         exclusiveLocked: '系统 Agent 分组必须保持专属，普通 API Key 不能手动绑定。',
+        imageGenerationLocked: '系统 Agent 必须保持图片生成能力开启；具体可用模型和价格由下方启用的图片模型规则决定。',
       },
       agentPricing: {
         title: '模型定价',

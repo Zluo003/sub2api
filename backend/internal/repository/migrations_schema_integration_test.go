@@ -147,15 +147,26 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireIndex(t, tx, "agent_generation_quotes", "idx_agent_generation_quotes_owner_expiry")
 
 	var agentKind, agentSystemCode string
-	var agentExclusive bool
+	var agentExclusive, agentAllowImageGeneration bool
 	require.NoError(t, tx.QueryRowContext(context.Background(), `
-SELECT kind, system_code, is_exclusive
+SELECT kind, system_code, is_exclusive, allow_image_generation
 FROM groups
 WHERE system_code = 'yingzo' AND deleted_at IS NULL
-`).Scan(&agentKind, &agentSystemCode, &agentExclusive))
+`).Scan(&agentKind, &agentSystemCode, &agentExclusive, &agentAllowImageGeneration))
 	require.Equal(t, "agent", agentKind)
 	require.Equal(t, "yingzo", agentSystemCode)
 	require.True(t, agentExclusive, "the system Agent group must stay hidden from ordinary API Key selectors")
+	require.True(t, agentAllowImageGeneration, "the system Agent group must always allow image generation")
+	requireConstraintDefinitionContains(
+		t,
+		tx,
+		"groups",
+		"groups_agent_image_generation_required",
+		"kind",
+		"agent",
+		"system_code IS NULL",
+		"allow_image_generation",
+	)
 
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString

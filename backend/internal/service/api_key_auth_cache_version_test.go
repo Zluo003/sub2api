@@ -82,3 +82,47 @@ func TestAPIKeyService_RejectsV13AuthSnapshotWithoutHydratedAgentIdentity(t *tes
 		t.Fatalf("expected no API key from stale snapshot, got %#v", apiKey)
 	}
 }
+
+func TestAPIKeyService_RejectsV14AuthSnapshotWithDisabledAgentImageGeneration(t *testing.T) {
+	groupID := int64(9)
+	svc := &APIKeyService{}
+
+	apiKey, ok, err := svc.applyAuthCacheEntry("sk-agent-v14", &APIKeyAuthCacheEntry{
+		Snapshot: &APIKeyAuthSnapshot{
+			Version:  14,
+			APIKeyID: 1,
+			UserID:   2,
+			GroupID:  &groupID,
+			Status:   StatusActive,
+			User: APIKeyAuthUserSnapshot{
+				ID:          2,
+				Status:      StatusActive,
+				Role:        RoleUser,
+				Balance:     10,
+				Concurrency: 3,
+			},
+			Group: &APIKeyAuthGroupSnapshot{
+				ID:                   groupID,
+				Name:                 "Yingzo Agent",
+				Platform:             PlatformOpenAI,
+				Kind:                 "agent",
+				SystemCode:           "yingzo",
+				IsExclusive:          true,
+				AllowImageGeneration: false,
+				Status:               StatusActive,
+				SubscriptionType:     SubscriptionTypeStandard,
+				RateMultiplier:       1,
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("expected stale snapshot to be ignored without error, got %v", err)
+	}
+	if ok {
+		t.Fatalf("expected v14 auth snapshot to be rejected after Agent image generation became mandatory")
+	}
+	if apiKey != nil {
+		t.Fatalf("expected no API key from stale snapshot, got %#v", apiKey)
+	}
+}
