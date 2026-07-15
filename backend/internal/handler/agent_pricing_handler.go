@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,6 +36,116 @@ type agentModelPricingRule struct {
 
 type agentModelPricingRequest struct {
 	Items []agentModelPricingRule `json:"items" binding:"required"`
+}
+
+type agentPricingSnapshotRule struct {
+	Model               string  `json:"model"`
+	Platform            string  `json:"platform"`
+	MediaType           string  `json:"media_type"`
+	Resolution          string  `json:"resolution"`
+	UnitKind            string  `json:"unit_kind"`
+	UnitPrice           float64 `json:"unit_price"`
+	EffectiveUnitPrice  float64 `json:"effective_unit_price"`
+	BillingMultiplier   float64 `json:"billing_multiplier"`
+	ReferenceMultiplier float64 `json:"reference_multiplier"`
+}
+
+type agentPricingSnapshot struct {
+	SchemaVersion  string                     `json:"schema_version"`
+	PricingVersion string                     `json:"pricing_version"`
+	Currency       string                     `json:"currency"`
+	Rules          []agentPricingSnapshotRule `json:"rules"`
+	FetchedAt      time.Time                  `json:"fetched_at"`
+	ValidUntil     time.Time                  `json:"valid_until"`
+}
+
+const agentPricingSnapshotTTL = 24 * time.Hour
+
+// GetAgentPricingSnapshot returns the current image/video price table for the
+// authenticated Agent installation. It is a display and local-estimation
+// contract; the gateway's actual usage record remains the billing authority.
+func (h *AgentHandler) GetAgentPricingSnapshot(c *gin.Context) {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok || apiKey.Group == nil || apiKey.GroupID == nil || !apiKey.Group.IsAgent() {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid Agent API key"}})
+		return
+	}
+
+	imageMultiplier := apiKey.Group.RateMultiplier
+	if h.userGroupRateRepo != nil {
+		userMultiplier, err := h.userGroupRateRepo.GetByUserAndGroup(c.Request.Context(), apiKey.UserID, *apiKey.GroupID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "agent_pricing_unavailable", "message": "Unable to resolve current user pricing"}})
+			return
+		}
+		if userMultiplier != nil {
+			imageMultiplier = *userMultiplier
+		}
+	}
+	if apiKey.Group.ImageRateIndependent {
+		imageMultiplier = apiKey.Group.ImageRateMultiplier
+	}
+	if imageMultiplier < 0 {
+		imageMultiplier = 0
+	}
+	videoMultiplier := apiKey.Group.RateMultiplier
+	if videoMultiplier <= 0 {
+		videoMultiplier = 1
+	}
+
+	rows, err := h.db.QueryContext(c, `
+		SELECT model_code,platform,media_type,resolution,unit_price,rate_multiplier,reference_multiplier
+		FROM agent_model_pricing
+		WHERE group_id=$1 AND enabled=true AND media_type IN ('image','video')
+		ORDER BY CASE media_type WHEN 'image' THEN 1 ELSE 2 END,model_code,resolution,id
+	`, apiKey.Group.ID)
+	if err != nil {
+		writeAgentPricingError(c, err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	rules := make([]agentPricingSnapshotRule, 0)
+	for rows.Next() {
+		var rule agentPricingSnapshotRule
+		var configuredUnitPrice, configuredMultiplier float64
+		if err := rows.Scan(
+			&rule.Model, &rule.Platform, &rule.MediaType, &rule.Resolution,
+			&configuredUnitPrice, &configuredMultiplier, &rule.ReferenceMultiplier,
+		); err != nil {
+			writeAgentPricingError(c, err)
+			return
+		}
+		rule.UnitPrice = configuredUnitPrice * configuredMultiplier
+		switch rule.MediaType {
+		case "image":
+			rule.UnitKind = "image"
+			rule.BillingMultiplier = imageMultiplier
+			rule.ReferenceMultiplier = 1
+		case "video":
+			rule.UnitKind = "second"
+			rule.BillingMultiplier = videoMultiplier
+			if rule.ReferenceMultiplier <= 0 {
+				rule.ReferenceMultiplier = 1
+			}
+		}
+		rule.EffectiveUnitPrice = rule.UnitPrice * rule.BillingMultiplier
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		writeAgentPricingError(c, err)
+		return
+	}
+
+	fetchedAt := time.Now().UTC()
+	c.JSON(http.StatusOK, agentPricingSnapshot{
+		SchemaVersion:  "1.0.0",
+		PricingVersion: service.AgentPricingVersion(apiKey.Group),
+		Currency:       "credit",
+		Rules:          rules,
+		FetchedAt:      fetchedAt,
+		ValidUntil:     fetchedAt.Add(agentPricingSnapshotTTL),
+	})
 }
 
 func (h *AgentHandler) ListAgentGroupPricing(c *gin.Context) {

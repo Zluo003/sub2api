@@ -1,12 +1,13 @@
 {
   "schema_version": "1.0.0",
-  "agent_api_contract_version": "2026-07-13.2",
+  "agent_api_contract_version": "2026-07-15.1",
   "models": [
     "gpt-image-2",
     "seedance-2.0"
   ],
   "endpoints": [
     "GET /v1/models",
+    "GET /api/v1/agent/pricing",
     "POST /api/v1/agent/generation/estimates",
     "POST /api/v1/agent/assets",
     "GET /api/v1/agent/assets/:id",
