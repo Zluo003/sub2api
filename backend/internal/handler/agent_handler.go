@@ -315,6 +315,9 @@ func (h *AgentHandler) PollDeviceAuthorization(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
+	if h.authInvalidator != nil {
+		h.authInvalidator.InvalidateAuthCacheByKey(c.Request.Context(), key)
+	}
 	c.JSON(200, gin.H{"access_token": key, "token_type": "Bearer"})
 }
 func mustToken(n int) string {

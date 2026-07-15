@@ -169,6 +169,8 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldID,
 				group.FieldName,
 				group.FieldPlatform,
+				group.FieldKind,
+				group.FieldSystemCode,
 				group.FieldIsExclusive,
 				group.FieldStatus,
 				group.FieldSubscriptionType,

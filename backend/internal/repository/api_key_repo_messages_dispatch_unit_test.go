@@ -73,3 +73,37 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.NotNil(t, got.Group)
 	require.Equal(t, group.MessagesDispatchModelConfig, got.Group.MessagesDispatchModelConfig)
 }
+
+func TestAPIKeyRepository_GetByKeyForAuth_PreservesAgentGroupIdentity_SQLite(t *testing.T) {
+	repo, client := newAPIKeyRepoSQLite(t)
+	ctx := context.Background()
+	user := mustCreateAPIKeyRepoUser(t, ctx, client, "getbykey-auth-agent-unit@test.com")
+
+	group, err := client.Group.Create().
+		SetName("Yingzo Agent").
+		SetPlatform(service.PlatformOpenAI).
+		SetKind("agent").
+		SetSystemCode("yingzo").
+		SetIsExclusive(true).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeStandard).
+		SetRateMultiplier(1).
+		Save(ctx)
+	require.NoError(t, err)
+
+	key := &service.APIKey{
+		UserID:  user.ID,
+		Key:     "sk-getbykey-auth-agent-unit",
+		Name:    "Yingzo Agent Unit Key",
+		GroupID: &group.ID,
+		Status:  service.StatusActive,
+	}
+	require.NoError(t, repo.Create(ctx, key))
+
+	got, err := repo.GetByKeyForAuth(ctx, key.Key)
+	require.NoError(t, err)
+	require.NotNil(t, got.Group)
+	require.Equal(t, "agent", got.Group.Kind)
+	require.Equal(t, "yingzo", got.Group.SystemCode)
+	require.True(t, got.Group.IsAgent())
+}

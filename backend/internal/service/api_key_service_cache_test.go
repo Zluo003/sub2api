@@ -397,6 +397,77 @@ func TestAPIKeyService_GetByKey_IgnoresLegacyAuthCacheSnapshotWithoutMessagesDis
 	require.Equal(t, "gpt-5.4-nano", apiKey.Group.MessagesDispatchModelConfig.OpusMappedModel)
 }
 
+func TestAPIKeyService_GetByKey_RefreshesV13SnapshotWithAgentIdentity(t *testing.T) {
+	cache := &authCacheStub{}
+	var repoCalls int32
+	groupID := int64(9)
+	repo := &authRepoStub{
+		getByKeyForAuth: func(ctx context.Context, key string) (*APIKey, error) {
+			atomic.AddInt32(&repoCalls, 1)
+			return &APIKey{
+				ID:      1,
+				UserID:  2,
+				GroupID: &groupID,
+				Status:  StatusActive,
+				User: &User{
+					ID:          2,
+					Status:      StatusActive,
+					Role:        RoleUser,
+					Balance:     10,
+					Concurrency: 3,
+				},
+				Group: &Group{
+					ID:               groupID,
+					Name:             "Yingzo Agent",
+					Platform:         PlatformOpenAI,
+					Kind:             "agent",
+					SystemCode:       "yingzo",
+					IsExclusive:      true,
+					Status:           StatusActive,
+					SubscriptionType: SubscriptionTypeStandard,
+					RateMultiplier:   1,
+				},
+			}, nil
+		},
+	}
+	cfg := &config.Config{APIKeyAuth: config.APIKeyAuthCacheConfig{L2TTLSeconds: 60}}
+	svc := NewAPIKeyService(repo, nil, nil, nil, nil, cache, cfg)
+	cache.getAuthCache = func(ctx context.Context, key string) (*APIKeyAuthCacheEntry, error) {
+		return &APIKeyAuthCacheEntry{
+			Snapshot: &APIKeyAuthSnapshot{
+				Version:  13,
+				APIKeyID: 1,
+				UserID:   2,
+				GroupID:  &groupID,
+				Status:   StatusActive,
+				User: APIKeyAuthUserSnapshot{
+					ID:          2,
+					Status:      StatusActive,
+					Role:        RoleUser,
+					Balance:     10,
+					Concurrency: 3,
+				},
+				Group: &APIKeyAuthGroupSnapshot{
+					ID:               groupID,
+					Name:             "Yingzo Agent",
+					Platform:         PlatformOpenAI,
+					IsExclusive:      true,
+					Status:           StatusActive,
+					SubscriptionType: SubscriptionTypeStandard,
+					RateMultiplier:   1,
+				},
+			},
+		}, nil
+	}
+
+	apiKey, err := svc.GetByKey(context.Background(), "sk-agent-legacy")
+	require.NoError(t, err)
+	require.Equal(t, int32(1), atomic.LoadInt32(&repoCalls))
+	require.NotNil(t, apiKey.Group)
+	require.True(t, apiKey.Group.IsAgent())
+	require.Len(t, cache.setAuthKeys, 1)
+}
+
 func TestAPIKeyService_GetByKey_NegativeCache(t *testing.T) {
 	cache := &authCacheStub{}
 	repo := &authRepoStub{

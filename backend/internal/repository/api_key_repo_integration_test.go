@@ -125,6 +125,37 @@ func (s *APIKeyRepoSuite) TestGetByKeyForAuth_PreservesMessagesDispatchModelConf
 	s.Require().Equal("gpt-5.4-nano", got.Group.MessagesDispatchModelConfig.ExactModelMappings["claude-sonnet-4.5"])
 }
 
+func (s *APIKeyRepoSuite) TestGetByKeyForAuth_PreservesAgentGroupIdentity() {
+	user := s.mustCreateUser("getbykey-auth-agent@test.com")
+	group, err := s.client.Group.Create().
+		SetName("Yingzo Agent Auth Integration").
+		SetPlatform(service.PlatformOpenAI).
+		SetKind("agent").
+		SetSystemCode("yingzo-auth-integration").
+		SetIsExclusive(true).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeStandard).
+		SetRateMultiplier(1).
+		Save(s.ctx)
+	s.Require().NoError(err)
+
+	key := &service.APIKey{
+		UserID:  user.ID,
+		Key:     "sk-getbykey-auth-agent",
+		Name:    "Yingzo Agent Key",
+		GroupID: &group.ID,
+		Status:  service.StatusActive,
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, key))
+
+	got, err := s.repo.GetByKeyForAuth(s.ctx, key.Key)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.Group)
+	s.Require().Equal("agent", got.Group.Kind)
+	s.Require().Equal("yingzo-auth-integration", got.Group.SystemCode)
+	s.Require().True(got.Group.IsAgent())
+}
+
 // --- Update ---
 
 func (s *APIKeyRepoSuite) TestUpdate() {

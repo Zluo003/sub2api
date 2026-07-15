@@ -213,6 +213,8 @@ func TestPollDeviceAuthorizationStatesAndCredentialReuse(t *testing.T) {
 
 	t.Run("reuses active installation credential", func(t *testing.T) {
 		h, mock := newAgentHandlerMock(t)
+		invalidator := &authInvalidatorSpy{}
+		h.authInvalidator = invalidator
 		authorizationID, installationID := uuid.New(), uuid.New()
 		mock.ExpectBegin()
 		mock.ExpectQuery("SELECT id,installation_id,installation_name,status,user_id,expires_at").
@@ -229,6 +231,7 @@ func TestPollDeviceAuthorizationStatesAndCredentialReuse(t *testing.T) {
 		w := pollDevice(t, h, "approved-device")
 		require.Equal(t, http.StatusOK, w.Code)
 		require.Contains(t, w.Body.String(), "sk-agent-existing")
+		require.Equal(t, []string{"sk-agent-existing"}, invalidator.keys)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 
