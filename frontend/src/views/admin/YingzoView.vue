@@ -29,7 +29,7 @@
           <h2 class="text-base font-semibold text-gray-900 dark:text-white">上传新版本</h2>
           <div class="mt-5 grid gap-3 sm:grid-cols-2">
             <label class="text-xs font-medium text-gray-600 dark:text-gray-400">版本
-              <input v-model="uploadForm.version" required class="input mt-1 w-full" placeholder="0.1.0-beta.2" />
+              <input v-model="uploadForm.version" required class="input mt-1 w-full" placeholder="0.1.3" />
             </label>
             <label class="text-xs font-medium text-gray-600 dark:text-gray-400">私有安装包
               <input ref="fileInput" required type="file" accept=".gz,application/gzip" class="input mt-1 w-full py-1.5" @change="onFileChange" />
@@ -39,9 +39,6 @@
             </label>
             <label class="text-xs font-medium text-gray-600 dark:text-gray-400">最低 Claude Code 版本
               <input v-model="uploadForm.minClaude" class="input mt-1 w-full" placeholder="2.1.201" />
-            </label>
-            <label class="text-xs font-medium text-gray-600 sm:col-span-2 dark:text-gray-400">SHA-256（可选，服务端始终重新计算）
-              <input v-model="uploadForm.sha256" class="input mt-1 w-full font-mono" maxlength="64" />
             </label>
             <label class="text-xs font-medium text-gray-600 sm:col-span-2 dark:text-gray-400">发行签名（可选）
               <input v-model="uploadForm.signature" class="input mt-1 w-full font-mono" />
@@ -116,7 +113,7 @@ const selectedFile = ref<File | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const message = ref('')
 const messageKind = ref<'success' | 'error'>('success')
-const uploadForm = reactive({ version: '', minCodex: '0.143.0', minClaude: '2.1.201', sha256: '', signature: '', notes: '' })
+const uploadForm = reactive({ version: '', minCodex: '0.143.0', minClaude: '2.1.201', signature: '', notes: '' })
 
 function showMessage(text: string, kind: 'success' | 'error' = 'success') { message.value = text; messageKind.value = kind }
 function onFileChange(event: Event) { selectedFile.value = (event.target as HTMLInputElement).files?.[0] || null }
@@ -150,16 +147,20 @@ async function uploadRelease() {
   form.set('version', uploadForm.version)
   form.set('min_codex_version', uploadForm.minCodex)
   form.set('min_claude_version', uploadForm.minClaude)
-  form.set('sha256', uploadForm.sha256)
   form.set('signature', uploadForm.signature)
   form.set('release_notes', uploadForm.notes)
   try {
     await uploadYingzoRelease(form)
     showMessage(`版本 ${uploadForm.version} 已上传并通过 SHA-256 校验，等待发布。`)
-    uploadForm.version = ''; uploadForm.sha256 = ''; uploadForm.signature = ''; uploadForm.notes = ''; selectedFile.value = null
+    uploadForm.version = ''; uploadForm.signature = ''; uploadForm.notes = ''; selectedFile.value = null
     if (fileInput.value) fileInput.value.value = ''
     await loadAll()
-  } catch (error) { showMessage('上传失败。请检查版本是否重复、文件格式和 SHA-256。', 'error'); console.error(error) }
+  } catch (error) {
+    const response = (error as { response?: { data?: { error?: { message?: string; code?: string } } } }).response
+    const detail = response?.data?.error?.message || response?.data?.error?.code
+    showMessage(detail ? `上传失败：${detail}` : '上传失败。请检查版本是否重复以及安装包文件名和内容。', 'error')
+    console.error(error)
+  }
   finally { uploading.value = false }
 }
 

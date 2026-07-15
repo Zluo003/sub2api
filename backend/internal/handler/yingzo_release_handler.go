@@ -227,8 +227,9 @@ func (h *AgentHandler) UploadYingzoRelease(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_version"}})
 		return
 	}
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".tar.gz") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_package_type"}})
+	packageFilename, err := validateYingzoPackageFilename(header.Filename, version)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_package_filename", "message": err.Error()}})
 		return
 	}
 	id := uuid.New()
@@ -253,22 +254,16 @@ func (h *AgentHandler) UploadYingzoRelease(c *gin.Context) {
 		return
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
-	if supplied := strings.ToLower(strings.TrimSpace(c.PostForm("sha256"))); supplied != "" && supplied != digest {
-		_ = os.Remove(temporary)
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "checksum_mismatch", "actual_sha256": digest}})
-		return
-	}
 	if err := os.Rename(temporary, target); err != nil {
 		_ = os.Remove(temporary)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "storage_error"}})
 		return
 	}
-	if err := validateYingzoArchive(target, version); err != nil {
+	if err := validateYingzoArchive(target, packageFilename); err != nil {
 		_ = os.Remove(target)
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"code": "invalid_release_archive", "message": err.Error()}})
 		return
 	}
-	packageFilename := "yingzo-private-beta-" + version + ".tar.gz"
 	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,package_filename,storage_backend,storage_key,size_bytes,sha256,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',$3,'local',$4,$5,$6,$7,$8,$9,$10,$11)`, id, version, packageFilename, target, size, digest, strings.TrimSpace(c.PostForm("signature")), strings.TrimSpace(c.PostForm("min_codex_version")), strings.TrimSpace(c.PostForm("min_claude_version")), strings.TrimSpace(c.PostForm("release_notes")), subject.UserID)
 	if err != nil {
 		_ = os.Remove(target)
@@ -449,6 +444,7 @@ func publicYingzoRelease(release *yingzoRelease) gin.H {
 }
 
 func yingzoInstallPrompt(host string, release *yingzoRelease, downloadURL string) string {
+	archiveRoot := strings.TrimSuffix(release.PackageFilename, ".tar.gz")
 	common := fmt.Sprintf(`请安装或升级 Yingzo（影作）私有插件到版本 %s。下载地址：%s
 预期 SHA-256：%s
 请先下载到临时文件并校验 SHA-256；不一致立即停止。把包解压到 ~/.yingzo/releases/%s，保留现有 ~/.yingzo/auth.json，禁止把凭证写入项目、日志或安装目录。安装完成后验证插件和 MCP 工具，并告诉我结果。`, release.Version, downloadURL, release.SHA256, release.Version)
@@ -457,13 +453,23 @@ func yingzoInstallPrompt(host string, release *yingzoRelease, downloadURL string
 	}
 	if host == "codex" {
 		return common + fmt.Sprintf(`
-你正在 Codex 中执行此任务。解压后的 marketplace 目录是 ~/.yingzo/releases/%s/yingzo-private-beta-%s/marketplace。若旧版本存在，先运行 codex plugin remove yingzo@yingzo-private --json，再运行 codex plugin marketplace remove yingzo-private --json。然后运行 codex plugin marketplace add <上述 marketplace 绝对路径> --json，最后运行 codex plugin add yingzo@yingzo-private --json。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Codex 任务以加载新工具。`, release.Version, release.Version)
+你正在 Codex 中执行此任务。解压后的 marketplace 目录是 ~/.yingzo/releases/%s/%s/marketplace。若旧版本存在，先运行 codex plugin remove yingzo@yingzo-private --json，再运行 codex plugin marketplace remove yingzo-private --json。然后运行 codex plugin marketplace add <上述 marketplace 绝对路径> --json，最后运行 codex plugin add yingzo@yingzo-private --json。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Codex 任务以加载新工具。`, release.Version, archiveRoot)
 	}
 	return common + fmt.Sprintf(`
-你正在 Claude Code 中执行此任务。解压后的 marketplace 目录是 ~/.yingzo/releases/%s/yingzo-private-beta-%s/marketplace。若旧版本存在，先运行 claude plugin uninstall yingzo@yingzo-private --scope user --keep-data，再运行 claude plugin marketplace remove yingzo-private --scope user。然后运行 claude plugin marketplace add <上述 marketplace 绝对路径> --scope user，最后运行 claude plugin install yingzo@yingzo-private --scope user。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Claude Code 会话以加载新工具。`, release.Version, release.Version)
+你正在 Claude Code 中执行此任务。解压后的 marketplace 目录是 ~/.yingzo/releases/%s/%s/marketplace。若旧版本存在，先运行 claude plugin uninstall yingzo@yingzo-private --scope user --keep-data，再运行 claude plugin marketplace remove yingzo-private --scope user。然后运行 claude plugin marketplace add <上述 marketplace 绝对路径> --scope user，最后运行 claude plugin install yingzo@yingzo-private --scope user。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Claude Code 会话以加载新工具。`, release.Version, archiveRoot)
 }
 
-func validateYingzoArchive(filename, version string) error {
+func validateYingzoPackageFilename(filename, version string) (string, error) {
+	filename = filepath.Base(strings.TrimSpace(filename))
+	stable := "yingzo-private-" + version + ".tar.gz"
+	legacy := "yingzo-private-beta-" + version + ".tar.gz"
+	if filename != stable && filename != legacy {
+		return "", fmt.Errorf("package filename must be %s (or legacy %s)", stable, legacy)
+	}
+	return filename, nil
+}
+
+func validateYingzoArchive(filename, packageFilename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -475,7 +481,7 @@ func validateYingzoArchive(filename, version string) error {
 	}
 	defer func() { _ = gzipReader.Close() }()
 	tarReader := tar.NewReader(gzipReader)
-	root := "yingzo-private-beta-" + version + "/marketplace/"
+	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
 	required := map[string]bool{
 		root + ".agents/plugins/marketplace.json":         false,
 		root + ".claude-plugin/marketplace.json":          false,
