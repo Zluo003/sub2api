@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -122,7 +122,7 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	if h.redisClient == nil {
+	if h.yingzoTicketStore == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "download_ticket_unavailable"}})
 		return
 	}
@@ -132,7 +132,7 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 		return
 	}
 	payload, _ := json.Marshal(yingzoInstallTicket{ReleaseID: release.ID, UserID: subject.UserID, Host: input.Host})
-	if err := h.redisClient.Set(c, "yingzo:download:"+ticket, payload, yingzoTicketTTL).Err(); err != nil {
+	if err := h.yingzoTicketStore.Store(c.Request.Context(), ticket, payload, yingzoTicketTTL); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "download_ticket_unavailable"}})
 		return
 	}
@@ -155,12 +155,12 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 }
 
 func (h *AgentHandler) DownloadYingzoRelease(c *gin.Context) {
-	if h.redisClient == nil {
+	if h.yingzoTicketStore == nil {
 		c.Status(http.StatusServiceUnavailable)
 		return
 	}
-	raw, err := h.redisClient.GetDel(c, "yingzo:download:"+c.Param("ticket")).Bytes()
-	if errors.Is(err, redis.Nil) {
+	raw, err := h.yingzoTicketStore.Consume(c.Request.Context(), c.Param("ticket"))
+	if errors.Is(err, service.ErrYingzoDownloadTicketNotFound) {
 		c.Status(http.StatusNotFound)
 		return
 	}

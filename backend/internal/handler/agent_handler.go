@@ -32,7 +32,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -49,7 +48,7 @@ type AgentHandler struct {
 	userGroupRateRepo service.UserGroupRateRepository
 	authInvalidator   service.APIKeyAuthCacheInvalidator
 	settingRepo       service.SettingRepository
-	redisClient       *redis.Client
+	yingzoTicketStore service.YingzoDownloadTicketStore
 	cleanupMu         sync.Mutex
 	cleanupStop       context.CancelFunc
 	cleanupDone       chan struct{}
@@ -65,7 +64,7 @@ func NewAgentHandler(
 	userGroupRateRepo service.UserGroupRateRepository,
 	authInvalidator service.APIKeyAuthCacheInvalidator,
 	settingRepo service.SettingRepository,
-	redisClient *redis.Client,
+	yingzoTicketStore service.YingzoDownloadTicketStore,
 ) *AgentHandler {
 	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
 	if fileStorage != nil {
@@ -81,7 +80,7 @@ func NewAgentHandler(
 		userGroupRateRepo: userGroupRateRepo,
 		authInvalidator:   authInvalidator,
 		settingRepo:       settingRepo,
-		redisClient:       redisClient,
+		yingzoTicketStore: yingzoTicketStore,
 		fileStorage:       fileStorage,
 	}
 	h.StartCleanupWorker(time.Hour)

@@ -276,7 +276,7 @@ func requireAgentGroup(ctx context.Context, db agentPricingDB, groupID int64) er
 }
 
 var (
-	errAgentPricingGroupNotFound = errors.New("Agent group not found")
+	errAgentPricingGroupNotFound = errors.New("agent group not found")
 	errAgentPricingNotAgentGroup = errors.New("pricing can only be configured for a system Agent group")
 	errAgentPricingSharedChannel = errors.New("system Agent pricing requires a dedicated channel")
 )
