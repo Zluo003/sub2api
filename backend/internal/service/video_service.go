@@ -29,7 +29,7 @@ const (
 	videoDefaultAPIPath          = "/v1/videos"
 	videoDefaultJingyuBaseURL    = "https://api.jingyuapi.art"
 	videoDefaultJingyuAPIPath    = "/v1/video/generations"
-	videoJingyuSeedanceModel     = "seedance-api-2.0"
+	videoJingyuSeedanceModel     = "jing-video-2-pro"
 	videoDefaultPollInterval     = 2 * time.Second
 	videoDefaultPollTimeout      = 5 * time.Minute
 	videoDefaultRequestTimeout   = 60 * time.Second
@@ -102,7 +102,7 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 	if input == nil || input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil || input.Request == nil {
 		return nil, videoBadRequest("invalid_video_request", "Invalid video request")
 	}
-	if input.APIKey.Group.Platform != PlatformVideo && !input.APIKey.Group.IsAgent() {
+	if input.APIKey.Group.Platform != PlatformSeedance && !input.APIKey.Group.IsAgent() {
 		return nil, videoBadRequest("video_platform_required", "Video API is not available for this API key group")
 	}
 
@@ -281,13 +281,13 @@ func (s *VideoService) GetTask(ctx context.Context, publicID string, apiKey *API
 }
 
 func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model string, resolution string) (*Account, error) {
-	accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, PlatformVideo)
+	accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, PlatformSeedance)
 	if err != nil {
 		return nil, err
 	}
 	candidates := make([]Account, 0, len(accounts))
 	for _, account := range accounts {
-		if account.Platform != PlatformVideo || account.Type != AccountTypeAPIKey || !account.IsSchedulable() {
+		if account.Platform != PlatformSeedance || account.Type != AccountTypeAPIKey || !account.IsSchedulable() {
 			continue
 		}
 		if strings.TrimSpace(account.GetCredential("api_key")) == "" {
@@ -358,7 +358,10 @@ func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account,
 	if err := json.Unmarshal(respBody, &payload); err != nil {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: err}
 	}
-	id := strings.TrimSpace(stringFromMap(payload, "id"))
+	id := firstNonEmptyVideoString(
+		stringFromMap(payload, "id"),
+		stringFromMap(payload, "task_id"),
+	)
 	if id == "" {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing upstream task id")}
 	}
@@ -394,9 +397,9 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 	status := normalizeVideoUpstreamStatus(stringFromMap(payload, "status"))
 	result := &videoPollResult{Status: status, Raw: payload}
 	if status == VideoTaskStatusCompleted {
-		result.VideoURL = strings.TrimSpace(stringFromMap(payload, "video_url"))
+		result.VideoURL = videoResultURLFromPayload(payload)
 		if result.VideoURL == "" {
-			return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing video_url")}
+			return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing video result URL")}
 		}
 	}
 	return result, nil
@@ -733,7 +736,7 @@ func (s *VideoService) applyVideoUsageBilling(ctx context.Context, usageLog *Usa
 		IsSubscriptionBill:    isSubscriptionBill,
 		AccountRateMultiplier: account.BillingRateMultiplier(),
 		APIKeyService:         s.apiKeyService,
-		Platform:              PlatformVideo,
+		Platform:              PlatformSeedance,
 	}, s.billingDeps(), s.usageBillingRepo)
 	if billingErr != nil {
 		return billingErr
@@ -760,7 +763,7 @@ func (s *VideoService) finalizeVideoRefundCache(ctx context.Context, usageLog *U
 		s.billingCache.QueueUpdateAPIKeyRateLimitUsage(apiKey.ID, -refund)
 	}
 	if task != nil {
-		s.billingCache.RollbackUserPlatformQuotaUsage(ctx, apiKey.User.ID, PlatformVideo, refund)
+		s.billingCache.RollbackUserPlatformQuotaUsage(ctx, apiKey.User.ID, PlatformSeedance, refund)
 	}
 }
 
@@ -918,7 +921,15 @@ func (r *normalizedVideoRequest) JingyuUpstreamBody(upstreamModel string) map[st
 		"prompt":       r.Prompt,
 		"duration":     r.GeneratedSeconds,
 		"aspect_ratio": r.Ratio,
-		"resolution":   VideoResolution720P,
+		"resolution":   r.Resolution,
+	}
+	if r.GenerateAudio != nil {
+		body["generate_audio"] = *r.GenerateAudio
+	}
+	if r.Raw != nil {
+		if seed, ok := r.Raw["seed"]; ok && seed != nil {
+			body["seed"] = seed
+		}
 	}
 	if refs := jingyuReferencesFromContent(r.Content); len(refs) > 0 {
 		body["references"] = refs
@@ -1517,6 +1528,22 @@ func firstNonEmptyVideoString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func videoResultURLFromPayload(payload map[string]any) string {
+	resultURL := firstNonEmptyVideoString(
+		stringFromMap(payload, "video_url"),
+		stringFromMap(payload, "url"),
+		stringFromMap(payload, "result_asset_url"),
+	)
+	if resultURL != "" {
+		return resultURL
+	}
+	metadata, ok := mapFromAny(payload["metadata"])
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(stringFromMap(metadata, "url"))
 }
 
 func stringFromMap(raw map[string]any, key string) string {

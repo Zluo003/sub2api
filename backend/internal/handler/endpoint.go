@@ -97,7 +97,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	case service.PlatformGemini:
 		return EndpointGeminiModels
 
-	case service.PlatformVideo:
+	case service.PlatformSeedance:
 		return EndpointVideos
 
 	case service.PlatformAntigravity:

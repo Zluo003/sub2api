@@ -162,16 +162,16 @@
           </button>
           <button
             type="button"
-            @click="form.platform = 'video'"
+            @click="form.platform = 'seedance'"
             :class="[
               'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'video'
+              form.platform === 'seedance'
                 ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-600 dark:text-cyan-300'
                 : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
             ]"
           >
-            <PlatformIcon platform="video" size="sm" />
-            Video
+            <PlatformIcon platform="seedance" size="sm" />
+            Seedance
           </button>
         </div>
       </div>
@@ -401,7 +401,7 @@
       </div>
 
       <!-- Upstream Platform Selection (Video) -->
-      <div v-if="form.platform === 'video'">
+      <div v-if="form.platform === 'seedance'">
         <label class="input-label">{{ t('admin.accounts.video.upstreamPlatform') }}</label>
         <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-type">
           <button
@@ -1159,14 +1159,14 @@
                 ? 'https://api.openai.com'
                 : form.platform === 'gemini'
                   ? 'https://generativelanguage.googleapis.com'
-                  : form.platform === 'video'
+                  : form.platform === 'seedance'
                     ? videoProviderDefaults.baseUrl
                   : 'https://api.anthropic.com'
             "
           />
           <p class="input-hint">{{ baseUrlHint }}</p>
         </div>
-        <div v-if="form.platform === 'video'">
+        <div v-if="form.platform === 'seedance'">
           <label class="input-label">{{ t('admin.accounts.video.apiPath') }}</label>
           <input
             v-model="videoAPIPath"
@@ -1176,7 +1176,7 @@
           />
           <p class="input-hint">{{ t('admin.accounts.video.apiPathHint') }}</p>
         </div>
-        <div v-if="form.platform === 'video'" class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div v-if="form.platform === 'seedance'" class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div>
             <label class="input-label">{{ t('admin.accounts.video.pollIntervalMs') }}</label>
             <input v-model.number="videoPollIntervalMs" type="number" min="250" step="250" class="input" />
@@ -1206,7 +1206,7 @@
                 ? 'sk-proj-...'
                 : form.platform === 'gemini'
                   ? 'AIza...'
-                  : form.platform === 'video'
+                  : form.platform === 'seedance'
                     ? 'sk-...'
                   : 'sk-ant-...'
             "
@@ -3460,7 +3460,7 @@ const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return t('admin.accounts.grok.baseUrlHint')
-  if (form.platform === 'video') return t('admin.accounts.video.baseUrlHint')
+  if (form.platform === 'seedance') return t('admin.accounts.video.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -3468,7 +3468,7 @@ const apiKeyHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return t('admin.accounts.grok.apiKeyHint')
-  if (form.platform === 'video') return t('admin.accounts.video.apiKeyHint')
+  if (form.platform === 'seedance') return t('admin.accounts.video.apiKeyHint')
   return t('admin.accounts.apiKeyHint')
 })
 
@@ -3598,7 +3598,7 @@ const applyVideoProviderModelDefaults = () => {
   if (videoProvider.value === 'jingyu') {
     modelRestrictionMode.value = 'mapping'
     allowedModels.value = []
-    modelMappings.value = [{ from: 'seedance-2.0', to: 'seedance-api-2.0' }]
+    modelMappings.value = [{ from: 'seedance-2.0', to: 'jing-video-2-pro' }]
     return
   }
   modelRestrictionMode.value = 'whitelist'
@@ -3923,7 +3923,7 @@ const isOAuthFlow = computed(() => {
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
     return false
   }
-  if (form.platform === 'video') {
+  if (form.platform === 'seedance') {
     return false
   }
   // Bedrock 类型不需要 OAuth 流程
@@ -3999,7 +3999,7 @@ watch(
       form.type = 'apikey'
       return
     }
-    if (form.platform === 'video') {
+    if (form.platform === 'seedance') {
       form.type = 'apikey'
       return
     }
@@ -4031,7 +4031,7 @@ watch(
           ? 'https://generativelanguage.googleapis.com'
           : newPlatform === 'grok'
             ? 'https://api.x.ai/v1'
-            : newPlatform === 'video'
+            : newPlatform === 'seedance'
               ? 'https://api.aigod.one'
               : 'https://api.anthropic.com'
     // Clear model-related settings
@@ -4060,7 +4060,7 @@ watch(
       form.concurrency = 1
       form.load_factor = null
     }
-    if (newPlatform === 'video') {
+    if (newPlatform === 'seedance') {
       accountCategory.value = 'apikey'
       addMethod.value = 'oauth'
       form.concurrency = 1
@@ -4124,7 +4124,7 @@ watch(videoProvider, (_newProvider, oldProvider) => {
   if (!videoAPIPath.value.trim() || videoAPIPath.value.trim() === previousDefaults.apiPath) {
     videoAPIPath.value = videoProviderDefaults.value.apiPath
   }
-  if (form.platform === 'video') {
+  if (form.platform === 'seedance') {
     applyVideoProviderModelDefaults()
   }
 })
@@ -4895,7 +4895,7 @@ const handleSubmit = async () => {
       ? 'https://api.openai.com'
       : form.platform === 'gemini'
         ? 'https://generativelanguage.googleapis.com'
-        : form.platform === 'video'
+        : form.platform === 'seedance'
           ? videoProviderDefaults.value.baseUrl
         : 'https://api.anthropic.com'
 
@@ -4945,7 +4945,7 @@ const handleSubmit = async () => {
   }
 
   form.credentials = credentials
-  const extra = form.platform === 'video'
+  const extra = form.platform === 'seedance'
     ? {
         video_provider: videoProvider.value,
         base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,

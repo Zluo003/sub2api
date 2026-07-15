@@ -92,7 +92,7 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 		"user_platform_quotas",
 		"user_platform_quotas_platform_check",
 		"'grok'",
-		"'video'",
+		"'seedance'",
 	)
 
 	// usage_billing_dedup: billing idempotency narrow table

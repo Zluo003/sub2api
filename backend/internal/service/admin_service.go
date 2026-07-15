@@ -1793,7 +1793,7 @@ func (s *adminServiceImpl) hydrateVideoPricingRules(ctx context.Context, groups 
 		return
 	}
 	for i := range groups {
-		if groups[i].Platform != PlatformVideo {
+		if groups[i].Platform != PlatformSeedance && !groups[i].IsAgent() {
 			continue
 		}
 		rules, err := s.videoPricingRepo.ListByGroupID(ctx, groups[i].ID)
@@ -1806,7 +1806,7 @@ func (s *adminServiceImpl) hydrateVideoPricingRules(ctx context.Context, groups 
 }
 
 func (s *adminServiceImpl) hydrateVideoPricingRule(ctx context.Context, group *Group) {
-	if group == nil || group.Platform != PlatformVideo || s.videoPricingRepo == nil {
+	if group == nil || (group.Platform != PlatformSeedance && !group.IsAgent()) || s.videoPricingRepo == nil {
 		return
 	}
 	rules, err := s.videoPricingRepo.ListByGroupID(ctx, group.ID)
@@ -1856,7 +1856,7 @@ func normalizeVideoPricingRules(rules []VideoGroupPricingRule) ([]VideoGroupPric
 
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
-	case PlatformVideo:
+	case PlatformSeedance:
 		return []string{VideoModelSeedance20, VideoModelSeedance20Fast}
 	case PlatformOpenAI:
 		return openai.DefaultModelIDs()
@@ -1894,7 +1894,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		platform = PlatformAnthropic
 	}
 	videoPricingRules := input.VideoPricingRules
-	if platform == PlatformVideo {
+	if platform == PlatformSeedance {
 		normalizedRules, err := normalizeVideoPricingRules(videoPricingRules)
 		if err != nil {
 			return nil, err
@@ -2014,7 +2014,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
 	}
-	if platform == PlatformVideo && s.videoPricingRepo != nil {
+	if platform == PlatformSeedance && s.videoPricingRepo != nil {
 		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, videoPricingRules); err != nil {
 			return nil, err
 		}
@@ -2164,7 +2164,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.Platform != "" {
 		group.Platform = input.Platform
 	}
-	if input.VideoPricingRules != nil && (group.Platform == PlatformVideo || group.IsAgent()) {
+	if input.VideoPricingRules != nil && (group.Platform == PlatformSeedance || group.IsAgent()) {
 		normalizedRules, err := normalizeVideoPricingRules(*input.VideoPricingRules)
 		if err != nil {
 			return nil, err
@@ -2290,14 +2290,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err := s.groupRepo.Update(ctx, group); err != nil {
 		return nil, err
 	}
-	if input.VideoPricingRules != nil && (group.Platform == PlatformVideo || group.IsAgent()) && s.videoPricingRepo != nil {
+	if input.VideoPricingRules != nil && (group.Platform == PlatformSeedance || group.IsAgent()) && s.videoPricingRepo != nil {
 		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, group.VideoPricingRules); err != nil {
 			return nil, err
 		}
 		for i := range group.VideoPricingRules {
 			group.VideoPricingRules[i].GroupID = group.ID
 		}
-	} else if group.Platform != PlatformVideo && !group.IsAgent() && s.videoPricingRepo != nil {
+	} else if group.Platform != PlatformSeedance && !group.IsAgent() && s.videoPricingRepo != nil {
 		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, nil); err != nil {
 			return nil, err
 		}
@@ -2327,13 +2327,16 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			}
 		}
 
-		// 校验源分组的平台是否与当前分组一致
+		// 普通分组保持单平台；系统 Agent 分组可以聚合不同平台的标准分组。
 		for _, srcGroupID := range uniqueSourceGroupIDs {
 			srcGroup, err := s.groupRepo.GetByIDLite(ctx, srcGroupID)
 			if err != nil {
 				return nil, fmt.Errorf("source group %d not found: %w", srcGroupID, err)
 			}
-			if srcGroup.Platform != group.Platform {
+			if srcGroup.IsAgent() {
+				return nil, fmt.Errorf("source group %d cannot be another Agent group", srcGroupID)
+			}
+			if !group.IsAgent() && srcGroup.Platform != group.Platform {
 				return nil, fmt.Errorf("source group %d platform mismatch: expected %s, got %s", srcGroupID, group.Platform, srcGroup.Platform)
 			}
 		}

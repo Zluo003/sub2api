@@ -56,6 +56,31 @@ sub2api:dev
 
 不会从远程镜像仓库拉取应用镜像。
 
+## Yingzo 私有发行
+
+sub2api 是 Yingzo（影作）的公开产品入口、授权网关和私有安装包分发端。Yingzo 源码与安装包不得提交到 sub2api 的公开 Git 仓库。
+
+管理员流程：
+
+1. 打开 `/admin/yingzo`。
+2. 将通信域名保存为 `https://api-key.cc`。该值保存在数据库设置中，不使用 `.env`。
+3. 上传 Yingzo 生成的 `.tar.gz`；可同时填写 CI 生成的 SHA-256 和签名。
+4. 服务端重新计算 SHA-256；只有校验成功的包会进入草稿列表。
+5. 发布草稿版本。系统保证同一时间只有一个当前发布版本。
+6. 出现问题时可回滚到历史版本，或停用当前版本。
+
+安装包默认保存在 sub2api 的私有数据目录 `agent-assets/releases/`，不会进入 Git。公开产品页位于 `/yingzo`。登录用户选择 Codex 或 Claude Code 后，可复制包含十分钟有效一次性下载地址、版本、SHA-256 和对应宿主安装命令的提示词。安装过程必须保留 `~/.yingzo/auth.json`。
+
+临时参考素材可使用本地文件、MinIO、R2 或其他 S3 兼容对象存储作为内部后端，但绝不向模型暴露对象键或预签名 URL。模型收到的地址统一为：
+
+```text
+https://api-key.cc/media/{asset-uuid}/asset.png
+https://api-key.cc/media/{asset-uuid}/asset.mp4
+https://api-key.cc/media/{asset-uuid}/asset.mp3
+```
+
+这些 URL 没有查询参数，以真实媒体扩展名结尾。UUIDv4 提供不可猜测性，sub2api 负责代理 `GET`、`HEAD` 和 `Range` 请求；旧的 `/temporary-assets/:token` 路由仅用于向后兼容。对象在 24 小时过期后由服务端从本地或 S3 兼容存储删除。
+
 ## 一键 Docker 准备脚本
 
 可以在空目录中生成 `docker-compose.yml`、`.env` 和数据目录：

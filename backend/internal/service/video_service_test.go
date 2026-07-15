@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -77,13 +78,15 @@ func TestNormalizeVideoCreateRequestBuildsSeedancePayloadAndBillingSeconds(t *te
 }
 
 func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
+	generateAudio := true
 	rawExtra := map[string]any{"seedance": map[string]any{"camera": "slow_push"}}
 	req := &VideoCreateRequest{
-		Model:       VideoModelSeedance20,
-		Prompt:      "runway shot",
-		Duration:    5,
-		Resolution:  VideoResolution720P,
-		AspectRatio: "9:16",
+		Model:         VideoModelSeedance20,
+		Prompt:        "runway shot",
+		Duration:      5,
+		Resolution:    VideoResolution720P,
+		AspectRatio:   "9:16",
+		GenerateAudio: &generateAudio,
 		Content: []VideoContent{
 			{
 				Type:     "image_url",
@@ -96,18 +99,20 @@ func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
 				AudioURL: &VideoContentURL{URL: "https://cdn.example.com/music.mp3"},
 			},
 		},
-		Raw: map[string]any{"extra": rawExtra},
+		Raw: map[string]any{"seed": float64(12345), "extra": rawExtra},
 	}
 
 	normalized, err := normalizeVideoCreateRequest(req)
 	require.NoError(t, err)
 	body := normalized.JingyuUpstreamBody(videoJingyuSeedanceModel)
 
-	require.Equal(t, "seedance-api-2.0", body["model"])
+	require.Equal(t, "jing-video-2-pro", body["model"])
 	require.Equal(t, "runway shot", body["prompt"])
 	require.Equal(t, 5, body["duration"])
 	require.Equal(t, "9:16", body["aspect_ratio"])
 	require.Equal(t, VideoResolution720P, body["resolution"])
+	require.Equal(t, true, body["generate_audio"])
+	require.Equal(t, float64(12345), body["seed"])
 	require.NotContains(t, body, "content")
 	require.NotContains(t, body, "ratio")
 
@@ -122,6 +127,32 @@ func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
 	require.NotContains(t, refs[0], "subject_type")
 	require.Equal(t, "audio", refs[1]["type"])
 	require.Equal(t, rawExtra, body["extra"])
+}
+
+func TestJingyuUpstreamBodyForwardsSupportedResolutions(t *testing.T) {
+	adapter := jingyuVideoProviderAdapter{}
+	for _, resolution := range []string{
+		VideoResolution480P,
+		VideoResolution720P,
+		VideoResolution1080P,
+		VideoResolution4K,
+	} {
+		t.Run(resolution, func(t *testing.T) {
+			require.True(t, adapter.Compatible(VideoModelSeedance20, resolution))
+			normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+				Model:      VideoModelSeedance20,
+				Prompt:     "runway shot",
+				Duration:   5,
+				Resolution: resolution,
+			})
+			require.NoError(t, err)
+
+			body := normalized.JingyuUpstreamBody(videoJingyuSeedanceModel)
+			require.Equal(t, resolution, body["resolution"])
+			require.Equal(t, "jing-video-2-pro", body["model"])
+		})
+	}
+	require.False(t, adapter.Compatible(VideoModelSeedance20Fast, VideoResolution720P))
 }
 
 func TestNormalizeVideoCreateRequestRequiresReferenceVideoDuration(t *testing.T) {
@@ -228,6 +259,20 @@ func TestNormalizeVideoCreateRequestSupportsSeedance1080P(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, VideoResolution1080P, normalized.Resolution)
 	require.Equal(t, "seedance-2.0-1080p", SeedanceUpstreamModel(normalized.Model, normalized.Resolution))
+}
+
+func TestNormalizeVideoCreateRequestSupportsSeedance4K(t *testing.T) {
+	req := &VideoCreateRequest{
+		Model:      VideoModelSeedance20,
+		Prompt:     "a cinematic shot",
+		Duration:   8,
+		Resolution: VideoResolution4K,
+	}
+
+	normalized, err := normalizeVideoCreateRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, VideoResolution4K, normalized.Resolution)
+	require.Equal(t, "seedance-2.0-4K", SeedanceUpstreamModel(normalized.Model, normalized.Resolution))
 }
 
 func TestNormalizeVideoCreateRequestRejectsFast1080P(t *testing.T) {
@@ -412,11 +457,11 @@ func TestVideoServiceCreateTaskReturnsQueuedLocalTaskAndStartsLifecycle(t *testi
 		UserID:  100,
 		GroupID: &groupID,
 		User:    &User{ID: 100, Balance: 100},
-		Group:   &Group{ID: groupID, Platform: PlatformVideo, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
 	}
 	account := Account{
 		ID:          30,
-		Platform:    PlatformVideo,
+		Platform:    PlatformSeedance,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
@@ -487,11 +532,11 @@ func TestVideoServiceCreateTaskUsesJingyuProviderPayload(t *testing.T) {
 		UserID:  100,
 		GroupID: &groupID,
 		User:    &User{ID: 100, Balance: 100},
-		Group:   &Group{ID: groupID, Platform: PlatformVideo, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
 	}
 	account := Account{
 		ID:          30,
-		Platform:    PlatformVideo,
+		Platform:    PlatformSeedance,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
@@ -577,11 +622,11 @@ func TestVideoServiceCreateTaskUsesManualVideoModelMapping(t *testing.T) {
 		UserID:  100,
 		GroupID: &groupID,
 		User:    &User{ID: 100, Balance: 100},
-		Group:   &Group{ID: groupID, Platform: PlatformVideo, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
 	}
 	account := Account{
 		ID:          30,
-		Platform:    PlatformVideo,
+		Platform:    PlatformSeedance,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
@@ -632,11 +677,11 @@ func TestVideoServiceCreateTaskUsesManualVideoModelMapping(t *testing.T) {
 	require.Equal(t, "custom-video-upstream-model", task.UpstreamModel)
 }
 
-func TestVideoAccountCompatibilitySkipsJingyuForUnsupportedResolution(t *testing.T) {
+func TestVideoAccountCompatibilityUsesJingyuForSupportedBaseModelOnly(t *testing.T) {
 	groupID := int64(20)
 	jingyu := Account{
 		ID:          30,
-		Platform:    PlatformVideo,
+		Platform:    PlatformSeedance,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
@@ -649,7 +694,7 @@ func TestVideoAccountCompatibilitySkipsJingyuForUnsupportedResolution(t *testing
 	}
 	aigod := Account{
 		ID:          31,
-		Platform:    PlatformVideo,
+		Platform:    PlatformSeedance,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
@@ -676,11 +721,20 @@ func TestVideoAccountCompatibilitySkipsJingyuForUnsupportedResolution(t *testing
 		nil,
 	)
 
-	selected, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20, VideoResolution1080P)
-	require.NoError(t, err)
-	require.Equal(t, aigod.ID, selected.ID)
+	for _, resolution := range []string{
+		VideoResolution480P,
+		VideoResolution720P,
+		VideoResolution1080P,
+		VideoResolution4K,
+	} {
+		selected, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20, resolution)
+		require.NoError(t, err)
+		require.Equal(t, jingyu.ID, selected.ID)
+	}
 
-	_, err = service.selectAccount(context.Background(), groupID, VideoModelSeedance20Fast, VideoResolution720P)
+	require.False(t, isVideoAccountCompatible(&aigod, VideoModelSeedance20, VideoResolution4K))
+
+	_, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20Fast, VideoResolution720P)
 	require.ErrorIs(t, err, ErrVideoAccountNotFound)
 }
 
@@ -691,6 +745,51 @@ func TestVideoAccountEndpointUsesJingyuDefaults(t *testing.T) {
 	require.Equal(t, "https://api.jingyuapi.art/v1/video/generations", endpoint)
 }
 
+func TestVideoServiceParsesJingyuTaskIDAndResultURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == videoDefaultJingyuAPIPath:
+			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","status":"queued"}`))
+		case r.Method == http.MethodGet && r.URL.Path == videoDefaultJingyuAPIPath+"/jingyu-task-1":
+			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","status":"succeeded","metadata":{"url":"https://cdn.example.com/result.mp4"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	account := &Account{
+		ID:       30,
+		Platform: PlatformSeedance,
+		Extra: map[string]any{
+			"video_provider": videoProviderJingyu,
+			"base_url":       server.URL,
+		},
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+	service := &VideoService{}
+
+	created, err := service.createUpstreamTask(context.Background(), account, map[string]any{"model": videoJingyuSeedanceModel})
+	require.NoError(t, err)
+	require.Equal(t, "jingyu-task-1", created.ID)
+
+	polled, err := service.pollUpstreamTask(context.Background(), account, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, VideoTaskStatusCompleted, polled.Status)
+	require.Equal(t, "https://cdn.example.com/result.mp4", polled.VideoURL)
+}
+
+func TestVideoResultURLFromPayloadAcceptsUnifiedJingyuFields(t *testing.T) {
+	for _, payload := range []map[string]any{
+		{"url": "https://cdn.example.com/url.mp4"},
+		{"result_asset_url": "https://cdn.example.com/asset.mp4"},
+		{"metadata": map[string]any{"url": "https://cdn.example.com/metadata.mp4"}},
+	} {
+		require.NotEmpty(t, videoResultURLFromPayload(payload))
+	}
+}
+
 func TestVideoPrebillingDoesNotMarkTaskBilledWhenBillingFails(t *testing.T) {
 	groupID := int64(20)
 	apiKey := &APIKey{
@@ -698,11 +797,11 @@ func TestVideoPrebillingDoesNotMarkTaskBilledWhenBillingFails(t *testing.T) {
 		UserID:  100,
 		GroupID: &groupID,
 		User:    &User{ID: 100, Balance: 100},
-		Group:   &Group{ID: groupID, Platform: PlatformVideo, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
 	}
 	account := Account{
 		ID:          30,
-		Platform:    PlatformVideo,
+		Platform:    PlatformSeedance,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
@@ -758,11 +857,11 @@ func TestVideoServiceRefundsFailedPrebilledTaskOnce(t *testing.T) {
 		UserID:  100,
 		GroupID: &groupID,
 		User:    &User{ID: 100, Balance: 100},
-		Group:   &Group{ID: groupID, Platform: PlatformVideo, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
 	}
 	account := &Account{
 		ID:       30,
-		Platform: PlatformVideo,
+		Platform: PlatformSeedance,
 		Type:     AccountTypeAPIKey,
 		Status:   StatusActive,
 	}
@@ -841,11 +940,11 @@ func TestVideoCompletionUpdatesChargeUsageLogResultWithoutBillingAgain(t *testin
 		UserID:  100,
 		GroupID: &groupID,
 		User:    &User{ID: 100, Balance: 100},
-		Group:   &Group{ID: groupID, Platform: PlatformVideo, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
 	}
 	account := &Account{
 		ID:       30,
-		Platform: PlatformVideo,
+		Platform: PlatformSeedance,
 		Type:     AccountTypeAPIKey,
 		Status:   StatusActive,
 	}

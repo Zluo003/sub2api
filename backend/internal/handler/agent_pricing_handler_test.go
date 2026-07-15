@@ -1,0 +1,153 @@
+package handler
+
+import (
+	"database/sql/driver"
+	"math"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/require"
+)
+
+type approximateFloat struct {
+	want    float64
+	epsilon float64
+}
+
+func (a approximateFloat) Match(value driver.Value) bool {
+	actual, ok := value.(float64)
+	return ok && math.Abs(actual-a.want) <= a.epsilon
+}
+
+func TestNormalizeAgentModelPricingRules(t *testing.T) {
+	rules, err := normalizeAgentModelPricingRules([]agentModelPricingRule{
+		{
+			Model:          " gpt-image-2 ",
+			Platform:       " OpenAI ",
+			MediaType:      " IMAGE ",
+			Resolution:     " 2k ",
+			UnitPrice:      0.08,
+			RateMultiplier: 1.25,
+			Enabled:        true,
+		},
+		{
+			Model:                     " claude-sonnet-4 ",
+			Platform:                  " ANTHROPIC ",
+			MediaType:                 " TEXT ",
+			Resolution:                "ignored",
+			InputPricePerMillion:      3,
+			OutputPricePerMillion:     15,
+			CacheWritePricePerMillion: 3.75,
+			CacheReadPricePerMillion:  0.3,
+			RateMultiplier:            0.9,
+			Enabled:                   true,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "gpt-image-2", rules[0].Model)
+	require.Equal(t, "openai", rules[0].Platform)
+	require.Equal(t, "image", rules[0].MediaType)
+	require.Equal(t, "2K", rules[0].Resolution)
+	require.Equal(t, "anthropic", rules[1].Platform)
+	require.Equal(t, "text", rules[1].MediaType)
+	require.Empty(t, rules[1].Resolution)
+}
+
+func TestNormalizeAgentModelPricingRulesRejectsInvalidShapes(t *testing.T) {
+	validImage := agentModelPricingRule{
+		Model: "gpt-image-2", Platform: "openai", MediaType: "image",
+		Resolution: "2K", RateMultiplier: 1, ReferenceMultiplier: 1,
+	}
+
+	tests := []struct {
+		name  string
+		rules []agentModelPricingRule
+	}{
+		{name: "missing image resolution", rules: []agentModelPricingRule{{Model: "gpt-image-2", Platform: "openai", MediaType: "image", RateMultiplier: 1}}},
+		{name: "unknown platform", rules: []agentModelPricingRule{{Model: "model", Platform: "other", MediaType: "text", RateMultiplier: 1}}},
+		{name: "duplicate tier", rules: []agentModelPricingRule{validImage, validImage}},
+		{name: "negative price", rules: []agentModelPricingRule{{Model: "model", Platform: "openai", MediaType: "text", InputPricePerMillion: -1, RateMultiplier: 1}}},
+		{name: "non finite multiplier", rules: []agentModelPricingRule{{Model: "model", Platform: "openai", MediaType: "text", RateMultiplier: math.Inf(1)}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := normalizeAgentModelPricingRules(tt.rules)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestCompileAgentPricingBuildsExistingBillingRules(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	require.NoError(t, err)
+
+	mock.ExpectExec("DELETE FROM channel_model_pricing").
+		WithArgs(int64(17)).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec("DELETE FROM video_group_pricing_rules").
+		WithArgs(int64(5)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("INSERT INTO channel_model_pricing").
+		WithArgs(
+			int64(17), "claude-sonnet-4",
+			approximateFloat{want: 2.5e-6, epsilon: 1e-12},
+			approximateFloat{want: 5e-6, epsilon: 1e-12},
+			approximateFloat{want: 3.75e-6, epsilon: 1e-12},
+			approximateFloat{want: 0.625e-6, epsilon: 1e-12},
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO video_group_pricing_rules").
+		WithArgs(
+			int64(5), "seedance-2.0", "720p",
+			approximateFloat{want: 0.3, epsilon: 1e-12}, 1.2,
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("INSERT INTO channel_model_pricing").
+		WithArgs(int64(17), "gpt-image-2").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(101)))
+	mock.ExpectExec("INSERT INTO channel_pricing_intervals").
+		WithArgs(int64(101), "2K", approximateFloat{want: 0.2, epsilon: 1e-12}, 0).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO channel_pricing_intervals").
+		WithArgs(int64(101), "4K", approximateFloat{want: 0.3, epsilon: 1e-12}, 1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE groups").
+		WithArgs(
+			int64(5),
+			approximateFloat{want: 0.2, epsilon: 1e-12},
+			approximateFloat{want: 0.3, epsilon: 1e-12},
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectRollback()
+
+	rules := []agentModelPricingRule{
+		{
+			Model: "claude-sonnet-4", Platform: "anthropic", MediaType: "text",
+			InputPricePerMillion: 2, OutputPricePerMillion: 4,
+			CacheWritePricePerMillion: 3, CacheReadPricePerMillion: 0.5,
+			RateMultiplier: 1.25, Enabled: true,
+		},
+		{
+			Model: "seedance-2.0", Platform: "seedance", MediaType: "video", Resolution: "720p",
+			UnitPrice: 0.2, RateMultiplier: 1.5, ReferenceMultiplier: 1.2, Enabled: true,
+		},
+		{
+			Model: "gpt-image-2", Platform: "openai", MediaType: "image", Resolution: "2K",
+			UnitPrice: 0.1, RateMultiplier: 2, ReferenceMultiplier: 1, Enabled: true,
+		},
+		{
+			Model: "gpt-image-2", Platform: "openai", MediaType: "image", Resolution: "4K",
+			UnitPrice: 0.2, RateMultiplier: 1.5, ReferenceMultiplier: 1, Enabled: true,
+		},
+	}
+
+	require.NoError(t, compileAgentPricing(t.Context(), tx, 5, 17, rules))
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
+}

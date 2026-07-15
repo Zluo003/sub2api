@@ -18,7 +18,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +32,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -44,8 +44,11 @@ type AgentHandler struct {
 	objectStore       service.BackupObjectStore
 	billingService    *service.BillingService
 	videoService      *service.VideoService
+	channelService    *service.ChannelService
 	userGroupRateRepo service.UserGroupRateRepository
 	authInvalidator   service.APIKeyAuthCacheInvalidator
+	settingRepo       service.SettingRepository
+	redisClient       *redis.Client
 	cleanupMu         sync.Mutex
 	cleanupStop       context.CancelFunc
 	cleanupDone       chan struct{}
@@ -57,8 +60,11 @@ func NewAgentHandler(
 	objectStoreFactory service.BackupObjectStoreFactory,
 	billingService *service.BillingService,
 	videoService *service.VideoService,
+	channelService *service.ChannelService,
 	userGroupRateRepo service.UserGroupRateRepository,
 	authInvalidator service.APIKeyAuthCacheInvalidator,
+	settingRepo service.SettingRepository,
+	redisClient *redis.Client,
 ) *AgentHandler {
 	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
 	_ = os.MkdirAll(dir, 0700)
@@ -67,8 +73,11 @@ func NewAgentHandler(
 		dataDir:           dir,
 		billingService:    billingService,
 		videoService:      videoService,
+		channelService:    channelService,
 		userGroupRateRepo: userGroupRateRepo,
 		authInvalidator:   authInvalidator,
+		settingRepo:       settingRepo,
+		redisClient:       redisClient,
 	}
 	if bucket := os.Getenv("AGENT_ASSETS_S3_BUCKET"); bucket != "" {
 		s3Config := &service.BackupS3Config{
@@ -183,18 +192,12 @@ func (h *AgentHandler) StartDeviceAuthorization(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error", "message": "could not create authorization"}})
 		return
 	}
-	verificationURI := strings.TrimRight(os.Getenv("AGENT_AUTHORIZATION_URL"), "/")
-	if verificationURI == "" {
-		origin := strings.TrimRight(c.Request.Header.Get("Origin"), "/")
-		if origin == "" {
-			scheme := "https"
-			if c.Request.TLS == nil {
-				scheme = "http"
-			}
-			origin = scheme + "://" + c.Request.Host
-		}
-		verificationURI = origin + "/agent/authorize"
+	origin, err := h.publicOrigin(c)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "yingzo_origin_invalid"}})
+		return
 	}
+	verificationURI := origin + "/agent/authorize"
 	c.JSON(201, gin.H{"device_code": device, "user_code": user, "verification_uri": verificationURI, "verification_uri_complete": fmt.Sprintf("%s?user_code=%s", verificationURI, user), "expires_in": 600, "interval": 3})
 }
 
@@ -795,7 +798,7 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
 		return
 	}
-	publicBaseURL, err := agentAssetsPublicBaseURL(c.Request)
+	publicBaseURL, err := h.publicOrigin(c)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "temporary_asset_public_url_invalid"}})
 		return
@@ -897,29 +900,11 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	c.JSON(201, gin.H{"id": id, "url": temporaryAssetPublicURL(publicBaseURL, token), "content_type": contentType, "size": n, "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
+	c.JSON(201, gin.H{"id": id, "url": temporaryAssetPublicURL(publicBaseURL, id, contentType), "content_type": contentType, "size": n, "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
 }
 
-func agentAssetsPublicBaseURL(request *http.Request) (string, error) {
-	raw := strings.TrimSpace(os.Getenv("AGENT_ASSETS_PUBLIC_BASE_URL"))
-	if raw == "" && request != nil {
-		scheme := "https"
-		if request.TLS == nil {
-			scheme = "http"
-		}
-		raw = scheme + "://" + request.Host
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("AGENT_ASSETS_PUBLIC_BASE_URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
-	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/")
-	return parsed.String(), nil
-}
-
-func temporaryAssetPublicURL(publicBaseURL, token string) string {
-	return strings.TrimRight(publicBaseURL, "/") + "/temporary-assets/" + url.PathEscape(token)
+func temporaryAssetPublicURL(publicBaseURL string, id uuid.UUID, contentType string) string {
+	return strings.TrimRight(publicBaseURL, "/") + "/media/" + id.String() + "/asset" + canonicalMediaExtension(contentType)
 }
 
 func (h *AgentHandler) GetTemporaryAsset(c *gin.Context) {
@@ -1002,6 +987,82 @@ func (h *AgentHandler) ServeTemporaryAsset(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
 	http.ServeContent(c.Writer, c.Request, name, time.Time{}, f)
 	_, _ = h.db.ExecContext(context.Background(), `UPDATE temporary_assets SET last_accessed_at=NOW() WHERE public_token_hash=$1`, hashToken(c.Param("token")))
+}
+
+func (h *AgentHandler) ServeCleanTemporaryAsset(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	var backend, file, name, ct string
+	var size int64
+	var expires time.Time
+	err = h.db.QueryRowContext(c, `SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at FROM temporary_assets WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&backend, &file, &name, &ct, &size, &expires)
+	if err != nil || time.Now().After(expires) || c.Param("filename") != "asset"+canonicalMediaExtension(ct) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if !h.serveTemporaryAssetContent(c, backend, file, name, ct, size) {
+		return
+	}
+	_, _ = h.db.ExecContext(context.Background(), `UPDATE temporary_assets SET last_accessed_at=NOW() WHERE id=$1`, id)
+}
+
+func (h *AgentHandler) serveTemporaryAssetContent(c *gin.Context, backend, file, name, contentType string, size int64) bool {
+	var f ioReadSeekCloser
+	var err error
+	if backend == "s3" && h.objectStore != nil {
+		var body io.ReadCloser
+		body, err = h.objectStore.Download(c, file)
+		if err == nil {
+			var data []byte
+			data, err = io.ReadAll(io.LimitReader(body, size+1))
+			_ = body.Close()
+			if err == nil && int64(len(data)) != size {
+				err = errors.New("temporary asset size mismatch")
+			}
+			if err == nil {
+				f = &memoryReadSeekCloser{Reader: bytes.NewReader(data)}
+			}
+		}
+	} else {
+		f, err = os.Open(file)
+	}
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
+	http.ServeContent(c.Writer, c.Request, name, time.Time{}, f)
+	return true
+}
+
+func canonicalMediaExtension(contentType string) string {
+	switch contentType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "audio/mp4":
+		return ".m4a"
+	default:
+		return ".bin"
+	}
 }
 
 type ioReadSeekCloser interface {

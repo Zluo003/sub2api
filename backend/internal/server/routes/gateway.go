@@ -53,7 +53,7 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformVideo && !isAgentGroup(c) {
+		if getGroupPlatform(c) != service.PlatformSeedance && !isAgentGroup(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -67,7 +67,7 @@ func RegisterGatewayRoutes(
 		h.Video.Create(c)
 	}
 	videoGetHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformVideo && !isAgentGroup(c) {
+		if getGroupPlatform(c) != service.PlatformSeedance && !isAgentGroup(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{

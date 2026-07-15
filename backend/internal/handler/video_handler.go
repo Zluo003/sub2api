@@ -57,7 +57,7 @@ func (h *VideoHandler) Create(c *gin.Context) {
 	setOpsRequestContext(c, req.Model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeVideo))
 	inboundEndpoint := GetInboundEndpoint(c)
-	upstreamEndpoint := GetUpstreamEndpoint(c, service.PlatformVideo)
+	upstreamEndpoint := GetUpstreamEndpoint(c, service.PlatformSeedance)
 
 	requestID, _ := c.Request.Context().Value(ctxkey.RequestID).(string)
 	resp, err := h.videoService.CreateTask(c.Request.Context(), &service.VideoCreateInput{

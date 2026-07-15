@@ -30,3 +30,13 @@ describe('AppSidebar header styles', () => {
     expect(sidebarBrandBlockMatch?.[0]).not.toContain('overflow: hidden;')
   })
 })
+
+describe('AppSidebar Yingzo navigation', () => {
+  it('shows Yingzo after the user dashboard and exposes admin release management', () => {
+    const dashboardIndex = componentSource.indexOf("items.push({ path: '/dashboard'")
+    const yingzoIndex = componentSource.indexOf("items.push({ path: '/yingzo'")
+    expect(dashboardIndex).toBeGreaterThan(-1)
+    expect(yingzoIndex).toBeGreaterThan(dashboardIndex)
+    expect(componentSource).toContain("{ path: '/admin/yingzo', label: t('nav.yingzoManagement')")
+  })
+})

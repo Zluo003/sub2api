@@ -39,7 +39,7 @@ const PLATFORM_VENDOR: Record<string, string> = {
   openai: 'OpenAI',
   gemini: 'Google',
   grok: 'xAI',
-  video: 'Video AI'
+  seedance: 'ByteDance'
 }
 
 export function getModelIdentity(model: string, platform: string): ModelIdentity {

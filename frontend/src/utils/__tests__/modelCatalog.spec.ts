@@ -9,7 +9,7 @@ describe('modelCatalog', () => {
     ['grok-4', 'grok', 'xAI'],
     ['deepseek-reasoner', 'openai', 'DeepSeek'],
     ['qwen3-coder', 'openai', 'Alibaba Cloud'],
-    ['seedance-1-5-pro', 'video', 'ByteDance']
+    ['seedance-1-5-pro', 'seedance', 'ByteDance']
   ])('infers %s as %s', (model, platform, vendor) => {
     expect(getModelIdentity(model, platform).vendor).toBe(vendor)
   })

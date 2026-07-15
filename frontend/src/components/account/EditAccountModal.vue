@@ -28,7 +28,7 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
-        <div v-if="account.platform === 'video'">
+        <div v-if="account.platform === 'seedance'">
           <label class="input-label">{{ t('admin.accounts.video.provider') }}</label>
           <select v-model="editVideoProvider" class="input">
             <option value="aigod">{{ t('admin.accounts.video.providers.aigod') }}</option>
@@ -49,14 +49,14 @@
                   ? 'https://generativelanguage.googleapis.com'
                   : account.platform === 'antigravity'
                     ? 'https://cloudcode-pa.googleapis.com'
-                    : account.platform === 'video'
+                    : account.platform === 'seedance'
                       ? editVideoProviderDefaults.baseUrl
                     : 'https://api.anthropic.com'
             "
           />
           <p class="input-hint">{{ baseUrlHint }}</p>
         </div>
-        <div v-if="account.platform === 'video'">
+        <div v-if="account.platform === 'seedance'">
           <label class="input-label">{{ t('admin.accounts.video.apiPath') }}</label>
           <input
             v-model="editVideoAPIPath"
@@ -66,7 +66,7 @@
           />
           <p class="input-hint">{{ t('admin.accounts.video.apiPathHint') }}</p>
         </div>
-        <div v-if="account.platform === 'video'" class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div v-if="account.platform === 'seedance'" class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div>
             <label class="input-label">{{ t('admin.accounts.video.pollIntervalMs') }}</label>
             <input v-model.number="editVideoPollIntervalMs" type="number" min="250" step="250" class="input" />
@@ -101,7 +101,7 @@
                   ? 'AIza...'
                   : account.platform === 'antigravity'
                     ? 'sk-...'
-                    : account.platform === 'video'
+                    : account.platform === 'seedance'
                       ? 'sk-...'
                     : 'sk-ant-...'
             "
@@ -2499,7 +2499,7 @@ const baseUrlHint = computed(() => {
   if (!props.account) return t('admin.accounts.baseUrlHint')
   if (props.account.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
-  if (props.account.platform === 'video') return t('admin.accounts.video.baseUrlHint')
+  if (props.account.platform === 'seedance') return t('admin.accounts.video.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -3192,16 +3192,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         ? 'https://api.openai.com'
         : newAccount.platform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
-          : newAccount.platform === 'video'
+          : newAccount.platform === 'seedance'
             ? (extra?.video_provider === 'jingyu' ? 'https://api.jingyuapi.art' : 'https://api.aigod.one')
           : 'https://api.anthropic.com'
-    if (newAccount.platform === 'video') {
+    if (newAccount.platform === 'seedance') {
       editVideoProvider.value = extra?.video_provider === 'jingyu' ? 'jingyu' : 'aigod'
     }
-    editBaseUrl.value = newAccount.platform === 'video'
+    editBaseUrl.value = newAccount.platform === 'seedance'
       ? ((extra?.base_url as string) || (credentials.base_url as string) || platformDefaultUrl)
       : ((credentials.base_url as string) || platformDefaultUrl)
-    if (newAccount.platform === 'video') {
+    if (newAccount.platform === 'seedance') {
       editVideoAPIPath.value = (extra?.api_path as string) || editVideoProviderDefaults.value.apiPath
       editVideoPollIntervalMs.value = Number(extra?.poll_interval_ms ?? 2000)
       editVideoPollTimeoutMs.value = Number(extra?.poll_timeout_ms ?? 300000)
@@ -3800,7 +3800,7 @@ const handleSubmit = async () => {
       const newCredentials: Record<string, unknown> = {
         ...currentCredentials,
       }
-      if (props.account.platform !== 'video') {
+      if (props.account.platform !== 'seedance') {
         newCredentials.base_url = newBaseUrl
       } else {
         delete newCredentials.base_url
@@ -3873,7 +3873,7 @@ const handleSubmit = async () => {
       }
 
       updatePayload.credentials = newCredentials
-      if (props.account.platform === 'video') {
+      if (props.account.platform === 'seedance') {
         const currentExtra = (updatePayload.extra as Record<string, unknown>) ||
           (props.account.extra as Record<string, unknown>) || {}
         updatePayload.extra = {

@@ -111,9 +111,8 @@ func TestStartDeviceAuthorizationStoresOnlyTokenHashes(t *testing.T) {
 	r := gin.New()
 	r.POST("/device", h.StartDeviceAuthorization)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/device", strings.NewReader(`{"installation_id":"`+installationID.String()+`","installation_name":"Mac Studio"}`))
+	req := httptest.NewRequest(http.MethodPost, "https://staging.example.com/device", strings.NewReader(`{"installation_id":"`+installationID.String()+`","installation_name":"Mac Studio"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "https://staging.example.com")
 	r.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
@@ -388,6 +387,7 @@ func multipartRequest(t *testing.T, filename, contentType string, data []byte) (
 func uploadRouter(h *AgentHandler) *gin.Engine {
 	r := gin.New()
 	r.POST("/assets", func(c *gin.Context) {
+		c.Request.Header.Set("X-Forwarded-Proto", "https")
 		groupID := int64(3)
 		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 2, UserID: 1, GroupID: &groupID})
 		h.UploadTemporaryAsset(c)
@@ -425,11 +425,12 @@ func TestTemporaryAssetUploadServeRangeHeadAndExpiry(t *testing.T) {
 		URL string `json:"url"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
-	token := response.URL[strings.LastIndex(response.URL, "/")+1:]
-	require.Len(t, token, 43)
-	require.NotContains(t, token, "+")
-	require.NotContains(t, token, "/")
-	require.NotContains(t, token, "=")
+	parts := strings.Split(strings.TrimRight(response.URL, "/"), "/")
+	require.GreaterOrEqual(t, len(parts), 2)
+	assetID, err := uuid.Parse(parts[len(parts)-2])
+	require.NoError(t, err)
+	require.Equal(t, "asset.png", parts[len(parts)-1])
+	require.NotContains(t, response.URL, "?")
 	files, err := filepath.Glob(filepath.Join(h.dataDir, "*", "object"))
 	require.NoError(t, err)
 	require.Len(t, files, 1)
@@ -440,18 +441,18 @@ func TestTemporaryAssetUploadServeRangeHeadAndExpiry(t *testing.T) {
 			expires = time.Now().Add(-time.Hour)
 		}
 		mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
-			WithArgs(hashToken(token)).
+			WithArgs(assetID).
 			WillReturnRows(sqlmock.NewRows([]string{"storage_backend", "storage_key", "original_filename", "mime_type", "size_bytes", "expires_at"}).
 				AddRow("local", files[0], "pixel.png", "image/png", len(png), expires))
 		if !expired {
 			mock.ExpectExec("UPDATE temporary_assets SET last_accessed_at").
-				WithArgs(hashToken(token)).
+				WithArgs(assetID).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 		}
 		r := gin.New()
-		r.Handle(method, "/temporary-assets/:token", h.ServeTemporaryAsset)
+		r.Handle(method, "/media/:id/:filename", h.ServeCleanTemporaryAsset)
 		out := httptest.NewRecorder()
-		request := httptest.NewRequest(method, "/temporary-assets/"+token, nil)
+		request := httptest.NewRequest(method, "/media/"+assetID.String()+"/asset.png", nil)
 		if method == http.MethodGet && !expired {
 			request.Header.Set("Range", "bytes=1-3")
 		}
@@ -580,18 +581,21 @@ func TestTemporaryAssetS3UploadAndRange(t *testing.T) {
 		URL string `json:"url"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
-	token := response.URL[strings.LastIndex(response.URL, "/")+1:]
+	parts := strings.Split(strings.TrimRight(response.URL, "/"), "/")
+	assetID, err := uuid.Parse(parts[len(parts)-2])
+	require.NoError(t, err)
+	require.Equal(t, "asset.png", parts[len(parts)-1])
 	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
-		WithArgs(hashToken(token)).
+		WithArgs(assetID).
 		WillReturnRows(sqlmock.NewRows([]string{"storage_backend", "storage_key", "original_filename", "mime_type", "size_bytes", "expires_at"}).
 			AddRow("s3", storageKey, "pixel.png", "image/png", len(png), time.Now().Add(time.Hour)))
 	mock.ExpectExec("UPDATE temporary_assets SET last_accessed_at").
-		WithArgs(hashToken(token)).
+		WithArgs(assetID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	r := gin.New()
-	r.GET("/temporary-assets/:token", h.ServeTemporaryAsset)
+	r.GET("/media/:id/:filename", h.ServeCleanTemporaryAsset)
 	get := httptest.NewRecorder()
-	getRequest := httptest.NewRequest(http.MethodGet, "/temporary-assets/"+token, nil)
+	getRequest := httptest.NewRequest(http.MethodGet, "/media/"+assetID.String()+"/asset.png", nil)
 	getRequest.Header.Set("Range", "bytes=4-7")
 	r.ServeHTTP(get, getRequest)
 	require.Equal(t, http.StatusPartialContent, get.Code)

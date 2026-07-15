@@ -614,7 +614,7 @@ async function fileToBase64(file) {
       notice:
         'Seedance 参考图片和参考视频必须传 subject_type: "person"，否则无法通过真人认证。参考视频还必须提供 duration_seconds 用于本地计费。',
       bullets: [
-        { title: '模型', text: 'seedance-2.0 支持 480p、720p、1080p；seedance-2.0-fast 仅支持 480p、720p。' },
+        { title: '模型', text: 'seedance-2.0 支持 480p、720p、1080p、4K；seedance-2.0-fast 仅支持 480p、720p。' },
         { title: '生成时长', text: 'duration 必须是整数秒，Seedance 2.0 系列支持 4-15 秒；当前接口不支持 -1 智能时长。' },
         { title: '计费秒数', text: 'billableSeconds = ceil(duration) + sum(ceil(reference video duration_seconds))。失败任务会退费。' },
         { title: '状态', text: 'queued、processing、completed、failed、cancelled。completed 时返回 video_url。' },
@@ -635,7 +635,7 @@ async function fileToBase64(file) {
           headers: ['项目', '限制', '说明'],
           rows: [
             ['生成视频时长', '4-15 秒，必须为整数秒', '当前接口要求显式传 duration，不支持 -1 智能时长。'],
-            ['输出分辨率', 'seedance-2.0: 480p / 720p / 1080p；seedance-2.0-fast: 480p / 720p', '1080p 只适用于 seedance-2.0，fast 不支持。'],
+            ['输出分辨率', 'seedance-2.0: 480p / 720p / 1080p / 4K；seedance-2.0-fast: 480p / 720p', '1080p 和 4K 只适用于 seedance-2.0，fast 不支持。'],
             ['输出比例', '16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive', '当前接口兼容 ratio、aspect_ratio、aspectRatio。'],
             ['参考图片数量', '首帧模式 1 张；首尾帧模式 2 张；参考模式 1-9 张', '参考模式图片 role 必须为 reference_image；首尾帧模式与参考模式不能混用。'],
             ['参考图片格式', 'jpeg / png / webp / bmp / tiff / gif / heic / heif', 'URL 或 data:image/<format>;base64,<base64>；大文件建议使用可公开访问 URL。'],
@@ -1160,7 +1160,7 @@ async function fileToBase64(file) {
       notice:
         'Seedance reference images and reference videos must send subject_type: "person"; otherwise real-person verification cannot pass. Reference videos must also include duration_seconds for local billing.',
       bullets: [
-        { title: 'Models', text: 'seedance-2.0 supports 480p, 720p, and 1080p; seedance-2.0-fast only supports 480p and 720p.' },
+        { title: 'Models', text: 'seedance-2.0 supports 480p, 720p, 1080p, and 4K; seedance-2.0-fast only supports 480p and 720p.' },
         { title: 'Generated duration', text: 'duration must be an integer number of seconds. Seedance 2.0 series supports 4-15 seconds; this endpoint does not support -1 smart duration.' },
         { title: 'Billable seconds', text: 'billableSeconds = ceil(duration) + sum(ceil(reference video duration_seconds)). Failed tasks are refunded.' },
         { title: 'Statuses', text: 'queued, processing, completed, failed, cancelled. completed responses include video_url.' },
@@ -1181,7 +1181,7 @@ async function fileToBase64(file) {
           headers: ['Item', 'Limit', 'Notes'],
           rows: [
             ['Generated duration', '4-15 seconds, integer seconds only', 'This endpoint requires explicit duration and does not support -1 smart duration.'],
-            ['Output resolution', 'seedance-2.0: 480p / 720p / 1080p; seedance-2.0-fast: 480p / 720p', '1080p is only available on seedance-2.0. Fast does not support 1080p.'],
+            ['Output resolution', 'seedance-2.0: 480p / 720p / 1080p / 4K; seedance-2.0-fast: 480p / 720p', '1080p and 4K are only available on seedance-2.0. Fast supports neither.'],
             ['Output ratio', '16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive', 'This endpoint accepts ratio, aspect_ratio, and aspectRatio.'],
             ['Reference image count', 'First-frame mode: 1 image; start-end mode: 2 images; reference mode: 1-9 images', 'Reference-mode image role must be reference_image. Start/end-frame mode and reference mode cannot be mixed.'],
             ['Reference image formats', 'jpeg / png / webp / bmp / tiff / gif / heic / heif', 'Use a URL or data:image/<format>;base64,<base64>. Public URLs are recommended for large files.'],

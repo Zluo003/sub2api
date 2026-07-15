@@ -66,7 +66,7 @@ type Group struct {
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelsListConfig            GroupModelsListConfig
 
-	// 视频平台按模型/分辨率/秒计费规则（仅 video 平台使用）
+	// 视频平台按模型/分辨率/秒计费规则（仅 seedance 平台使用）
 	VideoPricingRules []VideoGroupPricingRule
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。

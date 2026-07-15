@@ -15,6 +15,7 @@ const (
 	VideoResolution480P  = "480p"
 	VideoResolution720P  = "720p"
 	VideoResolution1080P = "1080p"
+	VideoResolution4K    = "4K"
 
 	VideoTaskStatusQueued     = "queued"
 	VideoTaskStatusProcessing = "processing"
@@ -34,7 +35,8 @@ func IsSupportedVideoResolution(model, resolution string) bool {
 	case VideoModelSeedance20:
 		return resolution == VideoResolution480P ||
 			resolution == VideoResolution720P ||
-			resolution == VideoResolution1080P
+			resolution == VideoResolution1080P ||
+			resolution == VideoResolution4K
 	case VideoModelSeedance20Fast:
 		return resolution == VideoResolution480P ||
 			resolution == VideoResolution720P

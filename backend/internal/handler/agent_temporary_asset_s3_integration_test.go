@@ -80,6 +80,7 @@ func TestTemporaryAssetMinIOUploadRangeAndCleanup(t *testing.T) {
 	png := onePixelPNG(t)
 	expectTemporaryAssetInsert(mock, "s3", int64(len(png)))
 	uploadRequest, _ := multipartRequest(t, "pixel.png", "image/png", png)
+	uploadRequest.Host = "api-key.cc"
 	upload := httptest.NewRecorder()
 	uploadRouter(h).ServeHTTP(upload, uploadRequest)
 	require.Equal(t, http.StatusCreated, upload.Code, upload.Body.String())
@@ -89,30 +90,32 @@ func TestTemporaryAssetMinIOUploadRangeAndCleanup(t *testing.T) {
 	require.Len(t, listed.Contents, 1)
 	storageKey := aws.ToString(listed.Contents[0].Key)
 	require.True(t, strings.HasPrefix(storageKey, "yingzo-agent-assets/"))
-	token := temporaryAssetTokenFromResponse(t, upload)
+	assetID, publicURL := temporaryAssetIdentityFromResponse(t, upload)
+	require.Equal(t, "https://api-key.cc/media/"+assetID.String()+"/asset.png", publicURL)
+	require.NotContains(t, publicURL, "?")
 
 	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
-		WithArgs(hashToken(token)).
+		WithArgs(assetID).
 		WillReturnRows(sqlmock.NewRows([]string{"storage_backend", "storage_key", "original_filename", "mime_type", "size_bytes", "expires_at"}).
 			AddRow("s3", storageKey, "pixel.png", "image/png", len(png), time.Now().Add(time.Hour)))
 	mock.ExpectExec("UPDATE temporary_assets SET last_accessed_at").
-		WithArgs(hashToken(token)).
+		WithArgs(assetID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	router := gin.New()
-	router.GET("/temporary-assets/:token", h.ServeTemporaryAsset)
+	router.GET("/media/:id/:filename", h.ServeCleanTemporaryAsset)
 	rangeResponse := httptest.NewRecorder()
-	rangeRequest := httptest.NewRequest(http.MethodGet, "/temporary-assets/"+token, nil)
+	rangeRequest := httptest.NewRequest(http.MethodGet, "/media/"+assetID.String()+"/asset.png", nil)
 	rangeRequest.Header.Set("Range", "bytes=4-7")
 	router.ServeHTTP(rangeResponse, rangeRequest)
 	require.Equal(t, http.StatusPartialContent, rangeResponse.Code)
 	require.Equal(t, png[4:8], rangeResponse.Body.Bytes())
 
-	assetID := uuid.New()
+	cleanupAssetID := uuid.New()
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id,storage_backend,storage_key FROM temporary_assets").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "storage_backend", "storage_key"}).AddRow(assetID, "s3", storageKey))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "storage_backend", "storage_key"}).AddRow(cleanupAssetID, "s3", storageKey))
 	mock.ExpectExec("UPDATE temporary_assets SET deleted_at").
-		WithArgs(assetID).
+		WithArgs(cleanupAssetID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("DELETE FROM agent_generation_quotes").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -142,13 +145,13 @@ func newMinIOIntegrationClient(t *testing.T, ctx context.Context, endpoint, acce
 	})
 }
 
-func temporaryAssetTokenFromResponse(t *testing.T, response *httptest.ResponseRecorder) string {
+func temporaryAssetIdentityFromResponse(t *testing.T, response *httptest.ResponseRecorder) (uuid.UUID, string) {
 	t.Helper()
 	var body struct {
-		URL string `json:"url"`
+		ID  uuid.UUID `json:"id"`
+		URL string    `json:"url"`
 	}
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
-	index := strings.LastIndex(body.URL, "/")
-	require.GreaterOrEqual(t, index, 0)
-	return body.URL[index+1:]
+	require.NotEqual(t, uuid.Nil, body.ID)
+	return body.ID, body.URL
 }

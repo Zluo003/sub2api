@@ -17,10 +17,16 @@ func ptrString[T ~string](v T) *string {
 
 // groupRepoStubForAdmin 用于测试 AdminService 的 GroupRepository Stub
 type groupRepoStubForAdmin struct {
-	created *Group // 记录 Create 调用的参数
-	updated *Group // 记录 Update 调用的参数
-	getByID *Group // GetByID 返回值
-	getErr  error  // GetByID 返回的错误
+	created                  *Group // 记录 Create 调用的参数
+	updated                  *Group // 记录 Update 调用的参数
+	getByID                  *Group // GetByID 返回值
+	getErr                   error  // GetByID 返回的错误
+	groupsByID               map[int64]*Group
+	accountIDsBySourceGroups []int64
+	accountSourceGroupIDs    []int64
+	clearedAccountGroupID    int64
+	boundAccountGroupID      int64
+	boundAccountIDs          []int64
 
 	listWithFiltersCalls       int
 	listWithFiltersParams      pagination.PaginationParams
@@ -50,9 +56,16 @@ func (s *groupRepoStubForAdmin) GetByID(_ context.Context, _ int64) (*Group, err
 	return s.getByID, nil
 }
 
-func (s *groupRepoStubForAdmin) GetByIDLite(_ context.Context, _ int64) (*Group, error) {
+func (s *groupRepoStubForAdmin) GetByIDLite(_ context.Context, id int64) (*Group, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
+	}
+	if s.groupsByID != nil {
+		group, ok := s.groupsByID[id]
+		if !ok {
+			return nil, ErrGroupNotFound
+		}
+		return group, nil
 	}
 	return s.getByID, nil
 }
@@ -109,16 +122,29 @@ func (s *groupRepoStubForAdmin) GetAccountCount(_ context.Context, _ int64) (int
 	panic("unexpected GetAccountCount call")
 }
 
-func (s *groupRepoStubForAdmin) DeleteAccountGroupsByGroupID(_ context.Context, _ int64) (int64, error) {
-	panic("unexpected DeleteAccountGroupsByGroupID call")
+func (s *groupRepoStubForAdmin) DeleteAccountGroupsByGroupID(_ context.Context, groupID int64) (int64, error) {
+	if s.groupsByID == nil {
+		panic("unexpected DeleteAccountGroupsByGroupID call")
+	}
+	s.clearedAccountGroupID = groupID
+	return 0, nil
 }
 
-func (s *groupRepoStubForAdmin) BindAccountsToGroup(_ context.Context, _ int64, _ []int64) error {
-	panic("unexpected BindAccountsToGroup call")
+func (s *groupRepoStubForAdmin) BindAccountsToGroup(_ context.Context, groupID int64, accountIDs []int64) error {
+	if s.groupsByID == nil {
+		panic("unexpected BindAccountsToGroup call")
+	}
+	s.boundAccountGroupID = groupID
+	s.boundAccountIDs = append([]int64(nil), accountIDs...)
+	return nil
 }
 
-func (s *groupRepoStubForAdmin) GetAccountIDsByGroupIDs(_ context.Context, _ []int64) ([]int64, error) {
-	panic("unexpected GetAccountIDsByGroupIDs call")
+func (s *groupRepoStubForAdmin) GetAccountIDsByGroupIDs(_ context.Context, groupIDs []int64) ([]int64, error) {
+	if s.groupsByID == nil {
+		panic("unexpected GetAccountIDsByGroupIDs call")
+	}
+	s.accountSourceGroupIDs = append([]int64(nil), groupIDs...)
+	return append([]int64(nil), s.accountIDsBySourceGroups...), nil
 }
 
 func (s *groupRepoStubForAdmin) UpdateSortOrders(_ context.Context, _ []GroupSortOrderUpdate) error {
@@ -483,6 +509,32 @@ func TestAdminService_UpdateGroup_ClearsMessagesDispatchFieldsWhenPlatformChange
 	require.False(t, repo.updated.AllowMessagesDispatch)
 	require.Empty(t, repo.updated.DefaultMappedModel)
 	require.Equal(t, OpenAIMessagesDispatchModelConfig{}, repo.updated.MessagesDispatchModelConfig)
+}
+
+func TestAdminService_UpdateGroup_AgentCopiesAccountsAcrossPlatforms(t *testing.T) {
+	agentGroup := &Group{
+		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
+		Kind: "agent", SystemCode: "yingzo", IsExclusive: true, Status: StatusActive,
+	}
+	repo := &groupRepoStubForAdmin{
+		getByID: agentGroup,
+		groupsByID: map[int64]*Group{
+			2: {ID: 2, Name: "Seedance", Platform: PlatformSeedance, Kind: "standard"},
+			3: {ID: 3, Name: "GPT Image", Platform: PlatformOpenAI, Kind: "standard"},
+		},
+		accountIDsBySourceGroups: []int64{21, 31},
+	}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{
+		CopyAccountsFromGroupIDs: []int64{2, 3, 2},
+	})
+	require.NoError(t, err)
+	require.Same(t, agentGroup, group)
+	require.Equal(t, []int64{2, 3}, repo.accountSourceGroupIDs)
+	require.Equal(t, int64(5), repo.clearedAccountGroupID)
+	require.Equal(t, int64(5), repo.boundAccountGroupID)
+	require.Equal(t, []int64{21, 31}, repo.boundAccountIDs)
 }
 
 func TestAdminService_ListGroups_WithSearch(t *testing.T) {

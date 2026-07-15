@@ -90,14 +90,38 @@
           default-sort-order="asc"
           @sort="handleSort"
         >
-          <template #cell-name="{ value }">
-            <span class="font-medium text-gray-900 dark:text-white">{{
-              value
-            }}</span>
+          <template #cell-name="{ value, row }">
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <span class="font-medium text-gray-900 dark:text-white">{{
+                  value
+                }}</span>
+                <span
+                  v-if="row.kind === 'agent'"
+                  class="inline-flex items-center rounded bg-cyan-100 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300"
+                >
+                  {{ t("admin.groups.agent.systemBadge") }}
+                </span>
+              </div>
+              <div
+                v-if="row.kind === 'agent'"
+                class="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
+              >
+                <span>{{ t("admin.groups.agent.systemCode") }}</span>
+                <code>{{ row.system_code }}</code>
+              </div>
+            </div>
           </template>
 
-          <template #cell-platform="{ value }">
+          <template #cell-platform="{ value, row }">
             <span
+              v-if="row.kind === 'agent'"
+              class="inline-flex items-center rounded bg-gray-900 px-2.5 py-0.5 text-xs font-medium text-white dark:bg-gray-100 dark:text-gray-900"
+            >
+              {{ t("admin.groups.agent.multiPlatform") }}
+            </span>
+            <span
+              v-else
               :class="[
                 'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium',
                 value === 'anthropic'
@@ -185,8 +209,15 @@
             >
           </template>
 
-          <template #cell-is_exclusive="{ value }">
-            <span :class="['badge', value ? 'badge-primary' : 'badge-gray']">
+          <template #cell-is_exclusive="{ value, row }">
+            <span
+              v-if="row.kind === 'agent'"
+              class="inline-flex items-center gap-1 rounded bg-gray-900 px-2 py-0.5 text-xs font-medium text-white dark:bg-gray-100 dark:text-gray-900"
+            >
+              <Icon name="lock" size="xs" />
+              {{ t("admin.groups.agent.systemExclusive") }}
+            </span>
+            <span v-else :class="['badge', value ? 'badge-primary' : 'badge-gray']">
               {{
                 value ? t("admin.groups.exclusive") : t("admin.groups.public")
               }}
@@ -315,12 +346,21 @@
                 }}</span>
               </button>
               <button
+                v-if="row.kind !== 'agent'"
                 @click="handleDelete(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
               >
                 <Icon name="trash" size="sm" />
                 <span class="text-xs">{{ t("common.delete") }}</span>
               </button>
+              <span
+                v-else
+                class="flex flex-col items-center gap-0.5 p-1.5 text-gray-400 dark:text-gray-500"
+                :title="t('admin.groups.agent.protectedHint')"
+              >
+                <Icon name="lock" size="sm" />
+                <span class="text-xs">{{ t("admin.groups.agent.protected") }}</span>
+              </span>
             </div>
           </template>
 
@@ -854,7 +894,7 @@
         </div>
 
         <!-- 视频计费规则（仅 video 平台） -->
-        <div v-if="createForm.platform === 'video'" class="border-t pt-4">
+        <div v-if="createForm.platform === 'seedance'" class="border-t pt-4">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div>
               <label class="block font-medium text-gray-700 dark:text-gray-300">
@@ -1695,7 +1735,7 @@
     <BaseDialog
       :show="showEditModal"
       :title="t('admin.groups.editGroup')"
-      width="normal"
+      :width="editingGroup?.kind === 'agent' ? 'extra-wide' : 'normal'"
       @close="closeEditModal"
     >
       <form
@@ -1704,6 +1744,18 @@
         @submit.prevent="handleUpdateGroup"
         class="space-y-5"
       >
+        <div
+          v-if="editingGroup.kind === 'agent'"
+          class="flex gap-3 border-l-4 border-cyan-500 bg-cyan-50 px-4 py-3 text-cyan-950 dark:bg-cyan-950/30 dark:text-cyan-100"
+        >
+          <Icon name="shield" size="md" class="mt-0.5 flex-shrink-0" />
+          <div>
+            <p class="text-sm font-semibold">{{ t("admin.groups.agent.editTitle") }}</p>
+            <p class="mt-1 text-xs leading-5 text-cyan-800 dark:text-cyan-300">
+              {{ t("admin.groups.agent.editDescription") }}
+            </p>
+          </div>
+        </div>
         <div>
           <label class="input-label">{{ t("admin.groups.form.name") }}</label>
           <input
@@ -1900,12 +1952,19 @@
           <div class="flex items-center gap-3">
             <button
               type="button"
-              @click="editForm.is_exclusive = !editForm.is_exclusive"
+              :disabled="editingGroup.kind === 'agent'"
+              @click="
+                editingGroup.kind !== 'agent' &&
+                (editForm.is_exclusive = !editForm.is_exclusive)
+              "
               :class="[
                 'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
                 editForm.is_exclusive
                   ? 'bg-primary-500'
                   : 'bg-gray-300 dark:bg-dark-600',
+                editingGroup.kind === 'agent'
+                  ? 'cursor-not-allowed opacity-60'
+                  : '',
               ]"
             >
               <span
@@ -1923,6 +1982,12 @@
               }}
             </span>
           </div>
+          <p
+            v-if="editingGroup.kind === 'agent'"
+            class="mt-1.5 text-xs text-gray-500 dark:text-gray-400"
+          >
+            {{ t("admin.groups.agent.exclusiveLocked") }}
+          </p>
         </div>
         <div>
           <label class="input-label">{{ t("admin.groups.form.status") }}</label>
@@ -1992,7 +2057,13 @@
           </div>
         </div>
 
-        <div class="border-t pt-4">
+        <AgentModelPricingEditor
+          v-if="editingGroup.kind === 'agent'"
+          v-model="agentPricingRules"
+          :loading="agentPricingLoading"
+        />
+
+        <div v-if="editingGroup.kind !== 'agent'" class="border-t pt-4">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div>
               <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -2098,9 +2169,10 @@
         <!-- 图片生成计费配置 -->
         <div
           v-if="
-            editForm.platform === 'antigravity' ||
-            editForm.platform === 'gemini' ||
-            editForm.platform === 'openai'
+            editingGroup.kind !== 'agent' &&
+            (editForm.platform === 'antigravity' ||
+              editForm.platform === 'gemini' ||
+              editForm.platform === 'openai')
           "
           class="border-t pt-4"
         >
@@ -2200,7 +2272,7 @@
         </div>
 
         <!-- 视频计费规则（仅 video 平台） -->
-        <div v-if="editForm.platform === 'video'" class="border-t pt-4">
+        <div v-if="editForm.platform === 'seedance'" class="border-t pt-4">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div>
               <label class="block font-medium text-gray-700 dark:text-gray-300">
@@ -3070,10 +3142,23 @@
             </div>
             <div class="flex-1">
               <div class="font-medium text-gray-900 dark:text-white">
-                {{ group.name }}
+                <span>{{ group.name }}</span>
+                <span
+                  v-if="group.kind === 'agent'"
+                  class="ml-2 inline-flex rounded bg-cyan-100 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300"
+                >
+                  {{ t("admin.groups.agent.systemBadge") }}
+                </span>
               </div>
               <div class="text-xs text-gray-500 dark:text-gray-400">
                 <span
+                  v-if="group.kind === 'agent'"
+                  class="inline-flex items-center rounded bg-gray-900 px-2 py-0.5 text-xs font-medium text-white dark:bg-gray-100 dark:text-gray-900"
+                >
+                  {{ t("admin.groups.agent.multiPlatform") }}
+                </span>
+                <span
+                  v-else
                   :class="[
                     'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
                     group.platform === 'anthropic'
@@ -3179,7 +3264,9 @@ import PlatformIcon from "@/components/common/PlatformIcon.vue";
 import Icon from "@/components/icons/Icon.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
+import AgentModelPricingEditor from "@/components/admin/group/AgentModelPricingEditor.vue";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
+import type { AgentModelPricingRule } from "@/api/admin/agentPricing";
 import { VueDraggable } from "vue-draggable-plus";
 import { createStableObjectKeyResolver } from "@/utils/stableObjectKey";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
@@ -3262,7 +3349,7 @@ const platformOptions = computed(() => [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
-  { value: "video", label: "Video" },
+  { value: "seedance", label: "Seedance" },
 ]);
 
 const platformFilterOptions = computed(() => [
@@ -3272,7 +3359,7 @@ const platformFilterOptions = computed(() => [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
-  { value: "video", label: "Video" },
+  { value: "seedance", label: "Seedance" },
 ]);
 
 const editStatusOptions = computed(() => [
@@ -3373,15 +3460,17 @@ const copyAccountsGroupOptions = computed(() => {
 // 复制账号的源分组选项（编辑时）- 仅包含相同平台且有账号的分组，排除自身
 const copyAccountsGroupOptionsForEdit = computed(() => {
   const currentId = editingGroup.value?.id;
+  const editingAgentGroup = editingGroup.value?.kind === "agent";
   const eligibleGroups = groups.value.filter(
     (g) =>
-      g.platform === editForm.platform &&
+      g.kind !== "agent" &&
+      (editingAgentGroup || g.platform === editForm.platform) &&
       (g.account_count || 0) > 0 &&
       g.id !== currentId,
   );
   return eligibleGroups.map((g) => ({
     value: g.id,
-    label: `${g.name} (${g.account_count || 0} 个账号)`,
+    label: `${g.name}${editingAgentGroup ? ` · ${t("admin.groups.platforms." + g.platform)}` : ""} (${g.account_count || 0} 个账号)`,
   }));
 });
 
@@ -3430,6 +3519,8 @@ const showSortModal = ref(false);
 const submitting = ref(false);
 const sortSubmitting = ref(false);
 const editingGroup = ref<AdminGroup | null>(null);
+const agentPricingRules = ref<AgentModelPricingRule[]>([]);
+const agentPricingLoading = ref(false);
 const deletingGroup = ref<AdminGroup | null>(null);
 const showRateMultipliersModal = ref(false);
 const rateMultipliersGroup = ref<AdminGroup | null>(null);
@@ -3837,6 +3928,7 @@ const videoResolutionOptions: Array<{ value: VideoResolution; label: string }> =
   { value: "480p", label: "480p" },
   { value: "720p", label: "720p" },
   { value: "1080p", label: "1080p" },
+  { value: "4K", label: "4K" },
 ];
 
 const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
@@ -3857,6 +3949,13 @@ const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
   {
     model_code: "seedance-2.0",
     resolution: "1080p",
+    credits_per_second: 0,
+    reference_video_multiplier: 1,
+    enabled: true,
+  },
+  {
+    model_code: "seedance-2.0",
+    resolution: "4K",
     credits_per_second: 0,
     reference_video_multiplier: 1,
     enabled: true,
@@ -4110,7 +4209,7 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
 };
 
 const openCreateModal = () => {
-  if (createForm.platform === "video" && createForm.video_pricing_rules.length === 0) {
+  if (createForm.platform === "seedance" && createForm.video_pricing_rules.length === 0) {
     createForm.video_pricing_rules = defaultVideoPricingRules();
   }
   showCreateModal.value = true;
@@ -4220,7 +4319,7 @@ const handleCreateGroup = async () => {
             })
           : undefined,
       video_pricing_rules:
-        createForm.platform === "video"
+        createForm.platform === "seedance"
           ? serializeVideoPricingRules(createForm.video_pricing_rules)
           : undefined,
     };
@@ -4253,6 +4352,8 @@ const handleCreateGroup = async () => {
 
 const handleEdit = async (group: AdminGroup) => {
   editingGroup.value = group;
+  agentPricingRules.value = [];
+  agentPricingLoading.value = group.kind === "agent";
   editForm.name = group.name;
   editForm.description = group.description || "";
   editForm.platform = group.platform;
@@ -4296,7 +4397,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.copy_accounts_from_group_ids = []; // 复制账号字段每次编辑时重置为空
   editForm.rpm_limit = group.rpm_limit ?? 0;
   editForm.video_pricing_rules =
-    group.platform === "video"
+    group.platform === "seedance"
       ? ensureVideoPricingRules(group.video_pricing_rules)
       : [];
   resetModelsListState(editModelsListState, group.models_list_config);
@@ -4305,6 +4406,17 @@ const handleEdit = async (group: AdminGroup) => {
     group.model_routing,
   );
   loadModelsListCandidates("edit", group.id, group.platform);
+  if (group.kind === "agent") {
+    try {
+      const response = await adminAPI.agentPricing.list(group.id);
+      agentPricingRules.value = response.items;
+    } catch (error) {
+      appStore.showError(t("admin.groups.agentPricing.loadFailed"));
+      console.error("Error loading Agent pricing:", error);
+    } finally {
+      agentPricingLoading.value = false;
+    }
+  }
   showEditModal.value = true;
 };
 
@@ -4318,6 +4430,8 @@ const closeEditModal = () => {
   editModelRoutingRules.value = [];
   editForm.copy_accounts_from_group_ids = [];
   editForm.video_pricing_rules = [];
+  agentPricingRules.value = [];
+  agentPricingLoading.value = false;
   resetMessagesDispatchFormState(editForm);
   resetModelsListState(editModelsListState);
 };
@@ -4368,7 +4482,7 @@ const handleUpdateGroup = async () => {
             })
           : undefined,
       video_pricing_rules:
-        editForm.platform === "video"
+        editForm.platform === "seedance"
           ? serializeVideoPricingRules(editForm.video_pricing_rules)
           : undefined,
     };
@@ -4381,6 +4495,12 @@ const handleUpdateGroup = async () => {
       payload.image_rate_multiplier,
     );
     await adminAPI.groups.update(editingGroup.value.id, payload);
+    if (editingGroup.value.kind === "agent") {
+      await adminAPI.agentPricing.update(
+        editingGroup.value.id,
+        agentPricingRules.value,
+      );
+    }
     appStore.showSuccess(t("admin.groups.groupUpdated"));
     closeEditModal();
     loadGroups();
@@ -4474,9 +4594,9 @@ watch(
       createForm.require_oauth_only = false;
       createForm.require_privacy_set = false;
     }
-    if (newVal === "video" && createForm.video_pricing_rules.length === 0) {
+    if (newVal === "seedance" && createForm.video_pricing_rules.length === 0) {
       createForm.video_pricing_rules = defaultVideoPricingRules();
-    } else if (newVal !== "video") {
+    } else if (newVal !== "seedance") {
       createForm.video_pricing_rules = [];
     }
     resetModelsListState(createModelsListState);
@@ -4497,9 +4617,9 @@ watch(
       editForm.require_oauth_only = false;
       editForm.require_privacy_set = false;
     }
-    if (newVal === "video" && editForm.video_pricing_rules.length === 0) {
+    if (newVal === "seedance" && editForm.video_pricing_rules.length === 0) {
       editForm.video_pricing_rules = defaultVideoPricingRules();
-    } else if (newVal !== "video") {
+    } else if (newVal !== "seedance") {
       editForm.video_pricing_rules = [];
     }
     if (editingGroup.value) {

@@ -62,6 +62,9 @@ func RegisterAdminRoutes(
 		// 系统设置
 		registerSettingsRoutes(admin, h)
 
+		// Yingzo 私有发行
+		registerYingzoReleaseRoutes(admin, h)
+
 		// 数据管理
 		registerDataManagementRoutes(admin, h)
 
@@ -106,6 +109,21 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+	}
+}
+
+func registerYingzoReleaseRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	yingzo := admin.Group("/yingzo")
+	{
+		yingzo.GET("/releases", h.Agent.ListYingzoReleases)
+		yingzo.POST("/releases", h.Agent.UploadYingzoRelease)
+		yingzo.POST("/releases/:id/publish", h.Agent.PublishYingzoRelease)
+		yingzo.POST("/releases/:id/rollback", h.Agent.RollbackYingzoRelease)
+		yingzo.DELETE("/releases/:id", h.Agent.DisableYingzoRelease)
+		yingzo.GET("/settings", h.Agent.GetYingzoSettings)
+		yingzo.PUT("/settings", h.Agent.UpdateYingzoSettings)
+		yingzo.GET("/agent-groups/:id/pricing", h.Agent.ListAgentGroupPricing)
+		yingzo.PUT("/agent-groups/:id/pricing", h.Agent.UpdateAgentGroupPricing)
 	}
 }
 

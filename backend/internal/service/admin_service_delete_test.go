@@ -179,6 +179,8 @@ func (s *userRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*Us
 
 type groupRepoStub struct {
 	affectedUserIDs []int64
+	group           *Group
+	getErr          error
 	deleteErr       error
 	deleteCalls     []int64
 }
@@ -188,7 +190,13 @@ func (s *groupRepoStub) Create(ctx context.Context, group *Group) error {
 }
 
 func (s *groupRepoStub) GetByID(ctx context.Context, id int64) (*Group, error) {
-	panic("unexpected GetByID call")
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	if s.group != nil {
+		return s.group, nil
+	}
+	return &Group{ID: id, Kind: "standard"}, nil
 }
 
 func (s *groupRepoStub) GetByIDLite(ctx context.Context, id int64) (*Group, error) {
@@ -635,6 +643,15 @@ func TestAdminService_DeleteGroup_Error(t *testing.T) {
 
 	err := svc.DeleteGroup(context.Background(), 42)
 	require.ErrorIs(t, err, deleteErr)
+}
+
+func TestAdminService_DeleteGroup_RejectsSystemAgent(t *testing.T) {
+	repo := &groupRepoStub{group: &Group{ID: 5, Kind: "agent", SystemCode: "yingzo"}}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	err := svc.DeleteGroup(context.Background(), 5)
+	require.EqualError(t, err, "system Agent group cannot be deleted")
+	require.Empty(t, repo.deleteCalls)
 }
 
 func TestAdminService_DeleteProxy_Success(t *testing.T) {

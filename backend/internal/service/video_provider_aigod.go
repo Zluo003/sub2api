@@ -17,6 +17,9 @@ func (a aigodVideoProviderAdapter) DefaultAPIPath() string {
 }
 
 func (a aigodVideoProviderAdapter) Compatible(model, resolution string) bool {
+	if strings.TrimSpace(resolution) == VideoResolution4K {
+		return false
+	}
 	return IsSupportedVideoResolution(strings.TrimSpace(model), strings.TrimSpace(resolution))
 }
 

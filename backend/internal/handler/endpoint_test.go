@@ -85,7 +85,7 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
 		{"openai image edits", EndpointImagesEdits, "/openai/v1/images/edits", service.PlatformOpenAI, EndpointImagesEdits},
 
 		// Video.
-		{"video", EndpointVideos, "/v1/videos", service.PlatformVideo, EndpointVideos},
+		{"video", EndpointVideos, "/v1/videos", service.PlatformSeedance, EndpointVideos},
 
 		// Antigravity — uses inbound to pick Claude vs Gemini upstream.
 		{"antigravity claude", EndpointMessages, "/antigravity/v1/messages", service.PlatformAntigravity, EndpointMessages},

@@ -26,7 +26,7 @@
     <path stroke-linecap="round" stroke-linejoin="round" d="M5 6l13 13" />
   </svg>
   <!-- Video platform logo -->
-  <svg v-else-if="platform === 'video'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+  <svg v-else-if="platform === 'seedance'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h7A2.5 2.5 0 0 1 16 6.5v1.1l3.2-2.14A1.15 1.15 0 0 1 21 6.42v11.16a1.15 1.15 0 0 1-1.8.96L16 16.4v1.1a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 4 17.5v-11Zm2.5-.7a.7.7 0 0 0-.7.7v11a.7.7 0 0 0 .7.7h7a.7.7 0 0 0 .7-.7v-11a.7.7 0 0 0-.7-.7h-7Zm9.5 3.96v4.48l3.2 2.14V7.62L16 9.76Z" />
   </svg>
   <!-- Fallback: generic platform icon -->
