@@ -396,6 +396,7 @@ export default {
   nav: {
     yingzo: 'Yingzo（影作）',
     yingzoManagement: 'Yingzo 发行',
+    fileService: '文件服务',
     modelPlaza: '模型广场',
     dashboard: '仪表盘',
     announcements: '公告',

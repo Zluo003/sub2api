@@ -42,6 +42,7 @@ type AgentHandler struct {
 	db                *sql.DB
 	dataDir           string
 	objectStore       service.BackupObjectStore
+	fileStorage       *service.FileStorageService
 	billingService    *service.BillingService
 	videoService      *service.VideoService
 	channelService    *service.ChannelService
@@ -57,7 +58,7 @@ type AgentHandler struct {
 func NewAgentHandler(
 	db *sql.DB,
 	cfg *config.Config,
-	objectStoreFactory service.BackupObjectStoreFactory,
+	fileStorage *service.FileStorageService,
 	billingService *service.BillingService,
 	videoService *service.VideoService,
 	channelService *service.ChannelService,
@@ -67,6 +68,9 @@ func NewAgentHandler(
 	redisClient *redis.Client,
 ) *AgentHandler {
 	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
+	if fileStorage != nil {
+		dir = fileStorage.LocalPath()
+	}
 	_ = os.MkdirAll(dir, 0700)
 	h := &AgentHandler{
 		db:                db,
@@ -78,28 +82,7 @@ func NewAgentHandler(
 		authInvalidator:   authInvalidator,
 		settingRepo:       settingRepo,
 		redisClient:       redisClient,
-	}
-	if bucket := os.Getenv("AGENT_ASSETS_S3_BUCKET"); bucket != "" {
-		s3Config := &service.BackupS3Config{
-			Endpoint:        os.Getenv("AGENT_ASSETS_S3_ENDPOINT"),
-			Region:          os.Getenv("AGENT_ASSETS_S3_REGION"),
-			AccessKeyID:     os.Getenv("AGENT_ASSETS_S3_ACCESS_KEY_ID"),
-			SecretAccessKey: os.Getenv("AGENT_ASSETS_S3_SECRET_ACCESS_KEY"),
-			Bucket:          bucket,
-			Prefix:          "yingzo-agent-assets/",
-			ForcePathStyle:  os.Getenv("AGENT_ASSETS_S3_FORCE_PATH_STYLE") == "true",
-		}
-		if !s3Config.IsConfigured() {
-			panic("AGENT_ASSETS_S3_BUCKET requires access key ID and secret access key")
-		}
-		if objectStoreFactory == nil {
-			panic("AGENT_ASSETS_S3_BUCKET requires an object store factory")
-		}
-		store, err := objectStoreFactory(context.Background(), s3Config)
-		if err != nil {
-			panic(fmt.Sprintf("initialize Agent S3 storage: %v", err))
-		}
-		h.objectStore = store
+		fileStorage:       fileStorage,
 	}
 	h.StartCleanupWorker(time.Hour)
 	return h
@@ -792,16 +775,66 @@ func temporaryAssetQuota() (int64, int64) {
 	}
 	return maxCount, maxBytes
 }
+
+func (h *AgentHandler) temporaryAssetStorageRuntime(ctx context.Context) (*service.FileStorageRuntime, error) {
+	if h.fileStorage != nil {
+		return h.fileStorage.Runtime(ctx)
+	}
+	maxCount, maxBytes := temporaryAssetQuota()
+	backend := "local"
+	if h.objectStore != nil {
+		backend = "s3"
+	}
+	return &service.FileStorageRuntime{
+		Config: service.FileStorageConfig{
+			SchemaVersion:  1,
+			Backend:        backend,
+			RetentionHours: 24,
+			DailyMaxCount:  maxCount,
+			DailyMaxBytes:  maxBytes,
+			S3:             service.BackupS3Config{Prefix: "yingzo-agent-assets/"},
+		},
+		Store: h.objectStore,
+	}, nil
+}
+
+func (h *AgentHandler) fileStorageObjectStore(ctx context.Context) (service.BackupObjectStore, error) {
+	if h.objectStore != nil {
+		return h.objectStore, nil
+	}
+	if h.fileStorage == nil {
+		return nil, nil //nolint:nilnil // local-only deployments do not have an object store
+	}
+	runtime, err := h.fileStorage.Runtime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.Store, nil
+}
+
 func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 	key, ok := middleware.GetAPIKeyFromContext(c)
 	if !ok {
 		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
 		return
 	}
-	publicBaseURL, err := h.publicOrigin(c)
+	runtime, err := h.temporaryAssetStorageRuntime(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "file_storage_unavailable"}})
+		return
+	}
+	requestOrigin, err := requestPublicOrigin(c)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "temporary_asset_public_url_invalid"}})
 		return
+	}
+	publicBaseURL := requestOrigin
+	if h.fileStorage != nil {
+		publicBaseURL, err = h.fileStorage.EffectivePublicBaseURL(c.Request.Context(), requestOrigin)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "temporary_asset_public_url_invalid"}})
+			return
+		}
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (200<<20)+(1<<20))
 	file, header, err := c.Request.FormFile("file")
@@ -819,7 +852,7 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "media_too_large", "limit_bytes": policy.limit}})
 		return
 	}
-	maxCount, maxBytes := temporaryAssetQuota()
+	maxCount, maxBytes := runtime.Config.DailyMaxCount, runtime.Config.DailyMaxBytes
 	var currentCount, currentBytes int64
 	err = h.db.QueryRowContext(c, `SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM temporary_assets WHERE api_key_id=$1 AND user_id=$2 AND created_at>NOW()-INTERVAL '24 hours' AND deleted_at IS NULL`, key.ID, key.UserID).Scan(&currentCount, &currentBytes)
 	if err != nil {
@@ -870,17 +903,22 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "media_probe_failed", "message": "Failed to serialize trusted media metadata"}})
 		return
 	}
-	expires := time.Now().Add(24 * time.Hour)
+	expires := time.Now().Add(time.Duration(runtime.Config.RetentionHours) * time.Hour)
 	backend, storageKey := "local", target
-	if h.objectStore != nil {
+	if runtime.Config.Backend == "s3" {
+		if runtime.Store == nil {
+			_ = os.RemoveAll(dir)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "file_storage_unavailable"}})
+			return
+		}
 		f, openErr := os.Open(target)
 		if openErr != nil {
 			_ = os.RemoveAll(dir)
 			c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
 			return
 		}
-		storageKey = "yingzo-agent-assets/" + id.String()
-		_, err = h.objectStore.Upload(c, storageKey, f, contentType)
+		storageKey = runtime.Config.S3.Prefix + id.String()
+		_, err = runtime.Store.Upload(c, storageKey, f, contentType)
 		_ = f.Close()
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -893,7 +931,7 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 	_, err = h.db.ExecContext(c, `INSERT INTO temporary_assets(id,user_id,api_key_id,group_id,public_token_hash,storage_backend,storage_key,original_filename,media_type,mime_type,size_bytes,sha256,metadata,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, key.UserID, key.ID, key.GroupID, hashToken(token), backend, storageKey, filepath.Base(header.Filename), policy.kind, contentType, n, hex.EncodeToString(hash.Sum(nil)), metadataJSON, expires)
 	if err != nil {
 		if backend == "s3" {
-			_ = h.objectStore.Delete(context.Background(), storageKey)
+			_ = runtime.Store.Delete(context.Background(), storageKey)
 		} else {
 			_ = os.RemoveAll(dir)
 		}
@@ -960,32 +998,9 @@ func (h *AgentHandler) ServeTemporaryAsset(c *gin.Context) {
 		c.Status(404)
 		return
 	}
-	var f ioReadSeekCloser
-	if backend == "s3" && h.objectStore != nil {
-		var body io.ReadCloser
-		body, err = h.objectStore.Download(c, file)
-		if err == nil {
-			var data []byte
-			data, err = io.ReadAll(io.LimitReader(body, size+1))
-			_ = body.Close()
-			if err == nil && int64(len(data)) != size {
-				err = errors.New("temporary asset size mismatch")
-			}
-			if err == nil {
-				f = &memoryReadSeekCloser{Reader: bytes.NewReader(data)}
-			}
-		}
-	} else {
-		f, err = os.Open(file)
-	}
-	if err != nil {
-		c.Status(404)
+	if !h.serveTemporaryAssetContent(c, backend, file, name, ct, size) {
 		return
 	}
-	defer func() { _ = f.Close() }()
-	c.Header("Content-Type", ct)
-	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
-	http.ServeContent(c.Writer, c.Request, name, time.Time{}, f)
 	_, _ = h.db.ExecContext(context.Background(), `UPDATE temporary_assets SET last_accessed_at=NOW() WHERE public_token_hash=$1`, hashToken(c.Param("token")))
 }
 
@@ -1012,9 +1027,14 @@ func (h *AgentHandler) ServeCleanTemporaryAsset(c *gin.Context) {
 func (h *AgentHandler) serveTemporaryAssetContent(c *gin.Context, backend, file, name, contentType string, size int64) bool {
 	var f ioReadSeekCloser
 	var err error
-	if backend == "s3" && h.objectStore != nil {
+	if backend == "s3" {
+		store, storeErr := h.fileStorageObjectStore(c.Request.Context())
+		if storeErr != nil || store == nil {
+			c.Status(http.StatusNotFound)
+			return false
+		}
 		var body io.ReadCloser
-		body, err = h.objectStore.Download(c, file)
+		body, err = store.Download(c, file)
 		if err == nil {
 			var data []byte
 			data, err = io.ReadAll(io.LimitReader(body, size+1))
@@ -1107,9 +1127,13 @@ func (h *AgentHandler) CleanupExpired(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	var n int64
+	store, storeErr := h.fileStorageObjectStore(ctx)
 	for _, asset := range assets {
-		if asset.backend == "s3" && h.objectStore != nil {
-			err = h.objectStore.Delete(ctx, asset.key)
+		if asset.backend == "s3" {
+			if storeErr != nil || store == nil {
+				continue
+			}
+			err = store.Delete(ctx, asset.key)
 		} else {
 			err = os.RemoveAll(filepath.Dir(asset.key))
 		}

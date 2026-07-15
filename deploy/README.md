@@ -56,6 +56,27 @@ sub2api:dev
 
 不会从远程镜像仓库拉取应用镜像。
 
+## 公共文件服务
+
+管理后台的 `/admin/file-service` 是独立于 Yingzo 的公共模型基础设施，可供图片、视频、音频及后续模型服务共用。它负责：
+
+- 在服务器本地、S3、MinIO 或 Cloudflare R2 之间选择存储后端。
+- 配置独立公网基址、文件保留时长和 24 小时滚动上传配额。
+- 检查本地目录或对象存储连接，并显示当前有效文件和占用空间。
+- 将 Access Secret 加密保存到 PostgreSQL，保存后立即生效，无需重启服务。
+
+推荐直接在管理后台保存配置，不需要在 `.env` 中填写文件服务参数。数据库中的 `file_storage_config` 始终优先；`FILE_SERVICE_*` 仅用于无人值守部署的启动回退，旧 `AGENT_ASSETS_*` 仅作升级兼容。
+
+文件对模型公开时统一经过 sub2api 代理，不暴露对象键或 S3 预签名 URL：
+
+```text
+https://api-key.cc/media/{asset-uuid}/asset.png
+https://api-key.cc/media/{asset-uuid}/asset.mp4
+https://api-key.cc/media/{asset-uuid}/asset.mp3
+```
+
+这些 URL 没有查询参数，以真实媒体扩展名结尾，并支持 `GET`、`HEAD` 和 `Range`。对象过期后由服务端从本地或对象存储清理。
+
 ## Yingzo 私有发行
 
 sub2api 是 Yingzo（影作）的公开产品入口、授权网关和私有安装包分发端。Yingzo 源码与安装包不得提交到 sub2api 的公开 Git 仓库。
@@ -71,15 +92,7 @@ sub2api 是 Yingzo（影作）的公开产品入口、授权网关和私有安�
 
 安装包默认保存在 sub2api 的私有数据目录 `agent-assets/releases/`，不会进入 Git。公开产品页位于 `/yingzo`。登录用户选择 Codex 或 Claude Code 后，可复制包含十分钟有效一次性下载地址、版本、SHA-256 和对应宿主安装命令的提示词。安装过程必须保留 `~/.yingzo/auth.json`。
 
-临时参考素材可使用本地文件、MinIO、R2 或其他 S3 兼容对象存储作为内部后端，但绝不向模型暴露对象键或预签名 URL。模型收到的地址统一为：
-
-```text
-https://api-key.cc/media/{asset-uuid}/asset.png
-https://api-key.cc/media/{asset-uuid}/asset.mp4
-https://api-key.cc/media/{asset-uuid}/asset.mp3
-```
-
-这些 URL 没有查询参数，以真实媒体扩展名结尾。UUIDv4 提供不可猜测性，sub2api 负责代理 `GET`、`HEAD` 和 `Range` 请求；旧的 `/temporary-assets/:token` 路由仅用于向后兼容。对象在 24 小时过期后由服务端从本地或 S3 兼容存储删除。
+Yingzo 通过上述公共文件服务提交临时参考素材；其发行配置和安装包管理仍保留在 `/admin/yingzo`，不承载文件存储设置。
 
 ## 一键 Docker 准备脚本
 

@@ -65,6 +65,9 @@ func RegisterAdminRoutes(
 		// Yingzo 私有发行
 		registerYingzoReleaseRoutes(admin, h)
 
+		// 公共文件服务
+		registerFileStorageRoutes(admin, h)
+
 		// 数据管理
 		registerDataManagementRoutes(admin, h)
 
@@ -109,6 +112,15 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+	}
+}
+
+func registerFileStorageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	files := admin.Group("/file-service")
+	{
+		files.GET("/settings", h.Admin.FileStorage.GetSettings)
+		files.PUT("/settings", h.Admin.FileStorage.UpdateSettings)
+		files.POST("/test", h.Admin.FileStorage.TestSettings)
 	}
 }
 

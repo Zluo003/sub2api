@@ -38,5 +38,6 @@ describe('AppSidebar Yingzo navigation', () => {
     expect(dashboardIndex).toBeGreaterThan(-1)
     expect(yingzoIndex).toBeGreaterThan(dashboardIndex)
     expect(componentSource).toContain("{ path: '/admin/yingzo', label: t('nav.yingzoManagement')")
+    expect(componentSource).toContain("{ path: '/admin/file-service', label: t('nav.fileService')")
   })
 })

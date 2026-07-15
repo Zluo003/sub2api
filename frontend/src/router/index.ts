@@ -443,6 +443,16 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/file-service',
+    name: 'AdminFileService',
+    component: () => import('@/views/admin/FileServiceView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'File Service'
+    }
+  },
+  {
     path: '/admin/ops',
     name: 'AdminOps',
     component: () => import('@/views/admin/ops/OpsDashboard.vue'),

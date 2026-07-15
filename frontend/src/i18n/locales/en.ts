@@ -396,6 +396,7 @@ export default {
   nav: {
     yingzo: 'Yingzo',
     yingzoManagement: 'Yingzo Releases',
+    fileService: 'File Service',
     modelPlaza: 'Model Plaza',
     dashboard: 'Dashboard',
     announcements: 'Announcements',

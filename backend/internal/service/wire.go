@@ -543,6 +543,13 @@ func ProvideAPIKeyService(
 	return svc
 }
 
+// ProvideVideoAccountRepository exposes the account repository through the
+// narrower interface used by video routing. Wire does not infer interface-to-
+// interface assignability even though AccountRepository implements this subset.
+func ProvideVideoAccountRepository(repo AccountRepository) VideoAccountRepository {
+	return repo
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -564,6 +571,7 @@ var ProviderSet = wire.NewSet(
 	NewAdminService,
 	NewGatewayService,
 	NewOpenAIGatewayService,
+	ProvideVideoAccountRepository,
 	NewVideoService,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
@@ -589,6 +597,7 @@ var ProviderSet = wire.NewSet(
 	NewAccountTestService,
 	ProvideSettingService,
 	NewDataManagementService,
+	NewFileStorageService,
 	ProvideBackupService,
 	ProvideOpsSystemLogSink,
 	ProvideOpsService,

@@ -378,6 +378,10 @@ func (h *AgentHandler) publicOrigin(c *gin.Context) (string, error) {
 			return validateYingzoOrigin(configured)
 		}
 	}
+	return requestPublicOrigin(c)
+}
+
+func requestPublicOrigin(c *gin.Context) (string, error) {
 	scheme := "https"
 	if c.Request.TLS == nil {
 		scheme = "http"

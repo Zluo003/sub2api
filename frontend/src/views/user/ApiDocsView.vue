@@ -302,7 +302,7 @@ const zhContent: DocsContent = {
         },
         {
           title: '平台分组必须匹配',
-          text: 'OpenAI 接口使用 openai 分组，Claude 标准接口使用 anthropic 分组，Gemini 标准接口使用 gemini 分组，Seedance 使用 video 分组。',
+          text: 'OpenAI 接口使用 openai 分组，Claude 标准接口使用 anthropic 分组，Gemini 标准接口使用 gemini 分组，Seedance 使用 seedance 分组；Agent 聚合分组也可以按模型能力调度 Seedance。',
         },
         {
           title: '错误格式跟随接口生态',
@@ -321,7 +321,7 @@ const zhContent: DocsContent = {
           ['/v1/images/edits', 'openai', 'OpenAI 标准图片编辑接口，multipart/form-data，不包含 mask。'],
           ['/v1/messages', 'anthropic', 'Claude 标准 Messages API。'],
           ['/v1beta/models/{model}:generateContent', 'gemini', 'Gemini 标准文本、文生图、图生图接口。'],
-          ['/v1/videos', 'video', 'Seedance 2.0 异步视频任务创建与查询。'],
+          ['/v1/videos', 'seedance / agent', 'Seedance 2.0 异步视频任务创建与查询。'],
         ],
       },
       codeBlocks: [
@@ -397,6 +397,7 @@ console.log(data.output_text ?? data);`,
       bullets: [
         { title: '文生图', text: 'POST /v1/images/generations，JSON 请求体，model 使用 gpt-image-2。' },
         { title: '图生图 / 编辑', text: 'POST /v1/images/edits，multipart/form-data，至少包含 image、prompt、model。' },
+        { title: '多张图片', text: '不要传 n。需要多张候选时，为每张图片创建一个独立任务，分别记录费用、状态和结果。' },
       ],
       codeBlocks: [
         {
@@ -408,8 +409,7 @@ console.log(data.output_text ?? data);`,
   -d '{
     "model": "gpt-image-2",
     "prompt": "A clean product hero image of a transparent smart water bottle on a light gray studio background",
-    "size": "1024x1024",
-    "n": 1
+    "size": "1024x1024"
   }'`,
         },
         {
@@ -612,13 +612,18 @@ async function fileToBase64(file) {
       description:
         'Seedance 视频接口是 OpenAI 风格异步任务协议。POST 创建本地任务并返回任务 ID；GET 查询任务状态。下游只会看到本站任务 ID、状态、视频地址和本站加工后的错误。',
       notice:
-        'Seedance 参考图片和参考视频必须传 subject_type: "person"，否则无法通过真人认证。参考视频还必须提供 duration_seconds 用于本地计费。',
+        'content 数组顺序就是参考素材顺序。提示词必须按同类素材出现顺序写“图片1、图片2、视频1、视频2、音频1、音频2”，不要引用文件名。reference_video 必须提供 duration_seconds；图片和视频的 subject_type 省略时，sub2api 会自动补为 person。',
       bullets: [
+        { title: '鉴权', text: '创建和查询都使用 Authorization: Bearer <API Key>。API Key 必须绑定 seedance 分组或具备 Seedance 视频能力的 Agent 分组。' },
+        { title: '分组与任务所有权', text: '使用 seedance 分组或具备视频能力的 Agent 分组。创建和查询必须使用同一个用户、同一把 API Key；其他密钥查询同一任务 ID 会得到 404。' },
         { title: '模型', text: 'seedance-2.0 支持 480p、720p、1080p、4K；seedance-2.0-fast 仅支持 480p、720p。' },
-        { title: '生成时长', text: 'duration 必须是整数秒，Seedance 2.0 系列支持 4-15 秒；当前接口不支持 -1 智能时长。' },
-        { title: '计费秒数', text: 'billableSeconds = ceil(duration) + sum(ceil(reference video duration_seconds))。失败任务会退费。' },
-        { title: '状态', text: 'queued、processing、completed、failed、cancelled。completed 时返回 video_url。' },
+        { title: '默认值与生成时长', text: 'resolution 默认 720p，ratio 默认 16:9；duration 必须显式传 4-15 的整数秒，当前接口不支持 -1 智能时长。' },
+        { title: '能力自动推断', text: 'ability_code 可省略，服务端会根据 content 推断；生产调用建议显式传入，避免 role 写错后落入其他模式。' },
+        { title: '计费', text: '生成秒数和每个参考视频向上取整后计费。基础公式为（生成秒数 × 分辨率单价 + 参考视频秒数 × 分辨率单价 × 参考系数）× 分组倍率；普通 seedance 分组的参考系数为 1。' },
+        { title: '状态与退款', text: 'queued、processing、completed、failed、cancelled。任务创建时预扣费；失败或取消后 refund_status 会从 pending 变为 refunded，completed 时返回 video_url。' },
         { title: '参考模式限制', text: '最多 9 张参考图、3 个参考视频、3 个参考音频；参考音频不能单独构成参考，至少需要 1 个图片或视频参考。' },
+        { title: '视频编辑与延长', text: '当前统一入口使用 video_reference_to_video：把待编辑或待延长的源视频放为视频1，在 prompt 中明确“保留什么、改变什么、从哪里继续”。返回的是新视频任务，不会原地修改源文件。' },
+        { title: '轮询与重试', text: '建议每 3-5 秒查询同一个任务 ID。GET 失败可以重试；POST 创建不是幂等重试入口，网络超时时不要盲目再次提交，否则可能创建新任务并再次预扣费。' },
       ],
       table: {
         headers: ['ability_code', '输入要求', 'content role'],
@@ -630,6 +635,32 @@ async function fileToBase64(file) {
         ],
       },
       tables: [
+        {
+          title: '创建请求字段',
+          headers: ['字段', '类型与必填', '规则'],
+          rows: [
+            ['model', 'string，必填', 'seedance-2.0 或 seedance-2.0-fast。'],
+            ['prompt', 'string，条件必填', '文生视频必填；其他模式强烈建议填写。为空时会取 content 中第一个非空 text。'],
+            ['content', 'array，按能力填写', '元素顺序会原样保留到上游；文本、图片、视频、音频的字段见下一表。'],
+            ['ability_code', 'string，可选', '可显式传四种能力代码；省略时按 content 的类型和 role 自动推断。'],
+            ['ratio / aspect_ratio / aspectRatio', 'string，可选', '三个别名按此前后顺序取第一个非空值，默认 16:9。'],
+            ['duration', 'number，必填', '4-15 的整数秒，不接受小数或 -1。'],
+            ['resolution', 'string，可选', '默认 720p；可用值取决于 model。大小写敏感，4K 必须写成 4K。'],
+            ['generate_audio', 'boolean，可选', '是否请求模型生成音频；省略时由上游默认行为决定。'],
+            ['safety_identifier', 'string，可选', '建议传项目或最终用户的稳定标识，不能放密钥或其他秘密。'],
+          ],
+        },
+        {
+          title: 'content 元素、role 与素材编号',
+          headers: ['type', '载荷字段', 'role 与编号规则'],
+          rows: [
+            ['text', 'text', '作为提示词文本，不参与媒体编号。顶层 prompt 为空时取第一个非空 text。'],
+            ['image_url', 'image_url.url', 'first_frame、last_frame 或 reference_image。按图片出现顺序编号为图片1、图片2；文件名不参与语义。'],
+            ['video_url', 'video_url.url + duration_seconds', '参考模式使用 reference_video。按视频出现顺序编号为视频1、视频2；duration_seconds 必填。'],
+            ['audio_url', 'audio_url.url', '参考模式使用 reference_audio。按音频出现顺序编号为音频1、音频2；不能作为唯一参考。'],
+            ['subject_type', 'person', 'image_url 和 video_url 可显式填写；省略时 sub2api 自动补为 person。'],
+          ],
+        },
         {
           title: 'Seedance 2.0 官方素材与生成限制',
           headers: ['项目', '限制', '说明'],
@@ -645,7 +676,50 @@ async function fileToBase64(file) {
             ['参考视频尺寸', '480p / 720p / 1080p / 4k；宽高比 0.4-2.5；宽和高均为 300-6000 px', '总像素需在 409600-8295044 之间，帧率 24-60 FPS。'],
             ['参考音频数量与时长', '最多 3 段；单段 2-15 秒；所有参考音频总时长不超过 15 秒', '参考音频不能单独提交，至少还需要 1 个参考图片或参考视频。'],
             ['参考音频格式', 'wav / mp3；单文件不超过 15 MB', '支持 URL 或 data:audio/<format>;base64,<base64>；请求体总大小不超过 64 MB。'],
-            ['真人认证字段', '参考图片和参考视频必须传 subject_type: "person"', '缺少该字段时真人认证可能无法通过。'],
+            ['真人认证字段', '图片和视频按 person 处理', '可显式传 subject_type: "person"；省略时 sub2api 自动补齐。'],
+          ],
+        },
+        {
+          title: '任务状态与退款字段',
+          headers: ['status', '含义', '响应规则'],
+          rows: [
+            ['queued', '本地任务已创建，等待提交或调度', '保存 id 并开始轮询；refund_status 通常为 not-applicable。'],
+            ['processing', '上游已接受，正在生成', '继续轮询，不要重复 POST 创建同一业务任务。'],
+            ['completed', '生成成功', '返回 video_url 和 completed_at；refund_status 为 not-applicable。'],
+            ['failed', '提交、轮询或生成失败', '返回 error；已预扣费时 refund_status 为 pending 或 refunded。'],
+            ['cancelled', '上游取消任务', '当前响应不返回 error；已预扣费时退款状态同 failed。'],
+          ],
+        },
+        {
+          title: '任务响应字段',
+          headers: ['字段', '出现时机', '含义'],
+          rows: [
+            ['id', '始终返回', 'sub2api 生成的本地任务 ID；后续查询必须原样使用。'],
+            ['object', '始终返回', '固定为 video。'],
+            ['model', '始终返回', '创建时请求的下游模型名，不暴露具体上游账号或模型映射。'],
+            ['status', '始终返回', 'queued / processing / completed / failed / cancelled。'],
+            ['video_url', 'completed', '生成结果地址；其他状态不返回。客户端应及时下载并按业务需要持久化。'],
+            ['error', 'failed', '只包含对下游安全的 code 和 message，不透传上游内部响应。'],
+            ['refund_status', '始终返回', 'not-applicable / pending / refunded；失败后应等到 refunded 再决定是否创建新任务。'],
+            ['created_at / completed_at', '创建时间始终返回；完成时间仅 completed 返回', 'Unix 秒级时间戳。'],
+          ],
+        },
+        {
+          title: '常见错误码',
+          headers: ['error.code', 'HTTP', '处理方式'],
+          rows: [
+            ['invalid_video_model / invalid_video_resolution / invalid_video_duration / invalid_video_ability', '400', '修正模型、分辨率、4-15 秒整数时长或 ability_code。'],
+            ['invalid_video_prompt / invalid_video_content', '400', '检查 prompt、content 数量、类型和 role 组合。'],
+            ['reference_video_duration_required', '400', '为每个 reference_video 补充 duration_seconds。'],
+            ['invalid_reference_video_duration', '400', '单个参考视频须为 2-15 秒，向上取整后的总参考视频时长不得超过 15 秒。'],
+            ['video_pricing_rule_not_found', '400', '管理员尚未为当前分组、模型和分辨率启用单价。'],
+            ['invalid_api_key', '401', '检查 Authorization Bearer API Key 是否存在、启用且未撤销。'],
+            ['INSUFFICIENT_BALANCE / SUBSCRIPTION_NOT_FOUND', '403', '补充余额，或使用具有有效订阅的密钥。'],
+            ['video_endpoint_not_available', '404', '当前 API Key 分组不是 seedance，也不是具备视频能力的 Agent 分组。'],
+            ['VIDEO_TASK_NOT_FOUND', '404', '确认任务 ID，并使用创建任务时的同一用户和 API Key 查询。'],
+            ['API_KEY_QUOTA_EXHAUSTED / API_KEY_RATE_5H_EXCEEDED / API_KEY_RATE_1D_EXCEEDED / API_KEY_RATE_7D_EXCEEDED / USAGE_LIMIT_EXCEEDED', '429', '等待额度窗口恢复或调整密钥、订阅额度。'],
+            ['video_service_busy / video_generation_failed', '200（status=failed）', '读取任务内的 error 和 refund_status；退款完成后再按业务幂等键创建新任务。'],
+            ['video_service_unavailable', '503 或 200（status=failed）', '没有兼容账号时创建请求直接失败；异步生命周期故障则写入失败任务。指数退避，且不要因一次查询失败重复创建。'],
           ],
         },
       ],
@@ -734,11 +808,11 @@ async function fileToBase64(file) {
           language: 'json',
           code: String.raw`{
   "model": "seedance-2.0",
-  "prompt": "Keep the character identity from the references. Create a luxury perfume commercial with slow motion fabric movement.",
+  "prompt": "以图片1锁定人物身份和服装，以视频1参考运镜与动作节奏，以音频1参考音乐节拍。生成一支奢华香水广告，保留人物五官与产品几何。",
   "content": [
     {
       "type": "text",
-      "text": "Keep the character identity from the references. Create a luxury perfume commercial with slow motion fabric movement."
+      "text": "以图片1锁定人物身份和服装，以视频1参考运镜与动作节奏，以音频1参考音乐节拍。生成一支奢华香水广告，保留人物五官与产品几何。"
     },
     {
       "type": "image_url",
@@ -768,6 +842,29 @@ async function fileToBase64(file) {
 }`,
         },
         {
+          title: '视频编辑或延长：源视频作为视频1',
+          language: 'json',
+          code: String.raw`{
+  "model": "seedance-2.0",
+  "prompt": "视频1是待编辑的源视频。保留人物身份、服装、镜头方向和前6秒动作，只把背景替换成雨夜街道，并从原动作末尾自然延长4秒；不要改变人物脸部和运动轴线。",
+  "content": [
+    {
+      "type": "video_url",
+      "video_url": { "url": "https://api-key.cc/media/<asset-id>/asset.mp4" },
+      "role": "reference_video",
+      "subject_type": "person",
+      "duration_seconds": 8
+    }
+  ],
+  "ratio": "16:9",
+  "duration": 10,
+  "resolution": "720p",
+  "generate_audio": true,
+  "ability_code": "video_reference_to_video",
+  "safety_identifier": "project-or-user-id"
+}`,
+        },
+        {
           title: '查询视频任务',
           language: 'bash',
           code: String.raw`curl "$SUB2API_BASE_URL/v1/videos/video_xxx" \
@@ -781,6 +878,7 @@ async function fileToBase64(file) {
   "object": "video",
   "model": "seedance-2.0",
   "status": "queued",
+  "refund_status": "not-applicable",
   "created_at": 1782700000
 }`,
         },
@@ -793,8 +891,36 @@ async function fileToBase64(file) {
   "model": "seedance-2.0",
   "status": "completed",
   "video_url": "https://cdn.example.com/output.mp4",
+  "refund_status": "not-applicable",
   "created_at": 1782700000,
   "completed_at": 1782700030
+}`,
+        },
+        {
+          title: '失败与退款响应示例',
+          language: 'json',
+          code: String.raw`{
+  "id": "video_xxx",
+  "object": "video",
+  "model": "seedance-2.0",
+  "status": "failed",
+  "error": {
+    "code": "video_generation_failed",
+    "message": "Video generation failed. Please retry with a different prompt or input."
+  },
+  "refund_status": "refunded",
+  "created_at": 1782700000
+}`,
+        },
+        {
+          title: '同步校验失败响应示例',
+          language: 'json',
+          code: String.raw`{
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_video_duration",
+    "message": "Invalid video duration"
+  }
 }`,
         },
       ],
@@ -811,7 +937,8 @@ async function fileToBase64(file) {
         { title: 'Gemini 使用 v1beta 标准路径', text: '文本、文生图和图生图都使用 /v1beta/models/{model}:generateContent。' },
         { title: 'Seedance 是异步任务', text: '不要把 POST /v1/videos 当同步接口；必须保存返回 id，然后轮询 GET /v1/videos/{id}。' },
         { title: 'Seedance 参考视频必须带时长', text: 'reference_video 的 duration_seconds 是必填字段；缺失会 400，且不会提交任务。' },
-        { title: 'Persona 类别字段', text: 'Seedance 参考图片和参考视频传 subject_type: "person"，否则无法通过真人认证。' },
+        { title: '参考素材按类型编号', text: 'content 保持提交顺序；提示词引用图片1、视频1、音频1，不要引用文件名。图片和视频未传 subject_type 时会自动补为 person。' },
+        { title: '视频编辑仍走 Seedance', text: '编辑、替换和延长都使用 video_reference_to_video，把源视频作为视频1并写清 preserve/change 约束；它会创建新任务，不会覆盖源视频。' },
       ],
     },
   ],
@@ -848,7 +975,7 @@ const enContent: DocsContent = {
         },
         {
           title: 'Use the matching platform group',
-          text: 'OpenAI endpoints require an openai group, Claude requires anthropic, Gemini requires gemini, and Seedance requires video.',
+          text: 'OpenAI endpoints require an openai group, Claude requires anthropic, Gemini requires gemini, and Seedance requires a seedance group. Agent aggregate groups may also route Seedance by model capability.',
         },
         {
           title: 'Error format follows each ecosystem',
@@ -867,7 +994,7 @@ const enContent: DocsContent = {
           ['/v1/images/edits', 'openai', 'OpenAI-compatible image editing with multipart/form-data, without mask.'],
           ['/v1/messages', 'anthropic', 'Claude-compatible Messages API.'],
           ['/v1beta/models/{model}:generateContent', 'gemini', 'Gemini-compatible text, text-to-image, and image-to-image API.'],
-          ['/v1/videos', 'video', 'Seedance 2.0 async video create and query API.'],
+          ['/v1/videos', 'seedance / agent', 'Seedance 2.0 async video create and query API.'],
         ],
       },
       codeBlocks: [
@@ -943,6 +1070,7 @@ console.log(data.output_text ?? data);`,
       bullets: [
         { title: 'Text-to-image', text: 'POST /v1/images/generations with a JSON body and model gpt-image-2.' },
         { title: 'Image-to-image / edit', text: 'POST /v1/images/edits with multipart/form-data containing at least image, prompt, and model.' },
+        { title: 'Multiple images', text: 'Do not send n. Create one independent task per candidate image so cost, status, and result remain independently traceable.' },
       ],
       codeBlocks: [
         {
@@ -954,8 +1082,7 @@ console.log(data.output_text ?? data);`,
   -d '{
     "model": "gpt-image-2",
     "prompt": "A clean product hero image of a transparent smart water bottle on a light gray studio background",
-    "size": "1024x1024",
-    "n": 1
+    "size": "1024x1024"
   }'`,
         },
         {
@@ -1158,13 +1285,18 @@ async function fileToBase64(file) {
       description:
         'The Seedance video API is an OpenAI-style async task protocol. POST creates a local task and returns an id; GET polls the task status. Downstream clients only receive {{SITE_NAME}} task ids, status, video URLs, and normalized errors.',
       notice:
-        'Seedance reference images and reference videos must send subject_type: "person"; otherwise real-person verification cannot pass. Reference videos must also include duration_seconds for local billing.',
+        'The content array defines reference order. Prompts must refer to Image 1, Image 2, Video 1, Video 2, Audio 1, and Audio 2 by same-media appearance order, never by filename. Every reference_video requires duration_seconds. When omitted, subject_type defaults to person for images and videos.',
       bullets: [
+        { title: 'Authentication', text: 'Creation and polling use Authorization: Bearer <API Key>. The key must belong to a seedance group or a Seedance-capable Agent group.' },
+        { title: 'Group and task ownership', text: 'Use a seedance group or a video-capable Agent group. Create and query must use the same user and API key; another key receives 404 for the same task id.' },
         { title: 'Models', text: 'seedance-2.0 supports 480p, 720p, 1080p, and 4K; seedance-2.0-fast only supports 480p and 720p.' },
-        { title: 'Generated duration', text: 'duration must be an integer number of seconds. Seedance 2.0 series supports 4-15 seconds; this endpoint does not support -1 smart duration.' },
-        { title: 'Billable seconds', text: 'billableSeconds = ceil(duration) + sum(ceil(reference video duration_seconds)). Failed tasks are refunded.' },
-        { title: 'Statuses', text: 'queued, processing, completed, failed, cancelled. completed responses include video_url.' },
+        { title: 'Defaults and generated duration', text: 'resolution defaults to 720p and ratio defaults to 16:9. duration is required and must be an integer from 4 through 15; -1 smart duration is not supported.' },
+        { title: 'Ability inference', text: 'ability_code may be omitted and inferred from content. Production clients should send it explicitly so an incorrect role cannot silently select another mode.' },
+        { title: 'Billing', text: 'Generated duration and each reference video duration are rounded up. Base formula: (generated seconds x resolution price + reference seconds x resolution price x reference multiplier) x group multiplier. The reference multiplier is 1 for standard seedance groups.' },
+        { title: 'Statuses and refunds', text: 'queued, processing, completed, failed, cancelled. Creation is precharged; on failure or cancellation refund_status moves from pending to refunded. completed responses include video_url.' },
         { title: 'Reference mode limits', text: 'Up to 9 reference images, 3 reference videos, and 3 reference audio files. Reference audio cannot be used alone; at least one image or video reference is required.' },
+        { title: 'Video editing and extension', text: 'The unified route uses video_reference_to_video. Put the source to edit or extend first as Video 1, then state what to preserve, what to change, and where to continue. A new video task is created; the source is never modified in place.' },
+        { title: 'Polling and retries', text: 'Poll the same task id every 3-5 seconds. A failed GET may be retried. POST creation is not an idempotent retry endpoint; do not blindly resubmit after a network timeout because that may create and precharge another task.' },
       ],
       table: {
         headers: ['ability_code', 'Input requirement', 'content role'],
@@ -1176,6 +1308,32 @@ async function fileToBase64(file) {
         ],
       },
       tables: [
+        {
+          title: 'Create Request Fields',
+          headers: ['Field', 'Type / required', 'Rules'],
+          rows: [
+            ['model', 'string, required', 'seedance-2.0 or seedance-2.0-fast.'],
+            ['prompt', 'string, conditionally required', 'Required for text-to-video and strongly recommended for other modes. If empty, the first non-empty content text is used.'],
+            ['content', 'array, ability-dependent', 'Element order is preserved to the provider. See the next table for text, image, video, and audio shapes.'],
+            ['ability_code', 'string, optional', 'Send one of the four ability codes, or omit it to infer the mode from content types and roles.'],
+            ['ratio / aspect_ratio / aspectRatio', 'string, optional', 'The first non-empty alias in this order wins. Default: 16:9.'],
+            ['duration', 'number, required', 'Integer seconds from 4 through 15. Fractions and -1 are rejected.'],
+            ['resolution', 'string, optional', 'Default: 720p. Values depend on model and are case-sensitive; 4K must use that exact casing.'],
+            ['generate_audio', 'boolean, optional', 'Requests model-generated audio. If omitted, provider defaults apply.'],
+            ['safety_identifier', 'string, optional', 'Use a stable project or end-user identifier. Never put API keys or other secrets here.'],
+          ],
+        },
+        {
+          title: 'content Items, Roles, And Reference Numbering',
+          headers: ['type', 'Payload field', 'Role and numbering'],
+          rows: [
+            ['text', 'text', 'Prompt text; excluded from media numbering. The first non-empty text is used when top-level prompt is empty.'],
+            ['image_url', 'image_url.url', 'first_frame, last_frame, or reference_image. Number as Image 1, Image 2 by image appearance order; filenames have no semantic role.'],
+            ['video_url', 'video_url.url + duration_seconds', 'Use reference_video in reference mode. Number as Video 1, Video 2 by video appearance order. duration_seconds is required.'],
+            ['audio_url', 'audio_url.url', 'Use reference_audio in reference mode. Number as Audio 1, Audio 2 by audio appearance order. Audio cannot be the only reference.'],
+            ['subject_type', 'person', 'May be explicit on image_url and video_url. {{SITE_NAME}} defaults it to person when omitted.'],
+          ],
+        },
         {
           title: 'Official Seedance 2.0 Asset And Generation Limits',
           headers: ['Item', 'Limit', 'Notes'],
@@ -1191,7 +1349,50 @@ async function fileToBase64(file) {
             ['Reference video dimensions', '480p / 720p / 1080p / 4k; aspect ratio 0.4-2.5; width and height each 300-6000 px', 'Total pixels must be 409600-8295044. Frame rate must be 24-60 FPS.'],
             ['Reference audio count and duration', 'Up to 3 audio files; each file 2-15 seconds; total reference audio duration up to 15 seconds', 'Reference audio cannot be submitted alone; at least one reference image or video is required.'],
             ['Reference audio formats', 'wav / mp3; each file under 15 MB', 'Use a URL or data:audio/<format>;base64,<base64>. Total request body size must not exceed 64 MB.'],
-            ['Real-person verification field', 'Reference images and reference videos must send subject_type: "person"', 'Missing this field may prevent real-person verification from passing.'],
+            ['Real-person verification field', 'Images and videos are treated as person', 'You may send subject_type: "person" explicitly; {{SITE_NAME}} fills it when omitted.'],
+          ],
+        },
+        {
+          title: 'Task Status And Refund Fields',
+          headers: ['status', 'Meaning', 'Response rule'],
+          rows: [
+            ['queued', 'Local task created and waiting for submission or scheduling', 'Store id and start polling. refund_status is normally not-applicable.'],
+            ['processing', 'Provider accepted the task and generation is in progress', 'Keep polling; do not repeat POST for the same business task.'],
+            ['completed', 'Generation succeeded', 'Returns video_url and completed_at. refund_status is not-applicable.'],
+            ['failed', 'Submission, polling, or generation failed', 'Returns error. If precharged, refund_status is pending or refunded.'],
+            ['cancelled', 'Provider cancelled the task', 'The current response has no error object. Refund state follows the failed rule when precharged.'],
+          ],
+        },
+        {
+          title: 'Task Response Fields',
+          headers: ['Field', 'When present', 'Meaning'],
+          rows: [
+            ['id', 'Always', 'Local task id generated by {{SITE_NAME}}. Use it unchanged for every poll.'],
+            ['object', 'Always', 'Always video.'],
+            ['model', 'Always', 'The requested downstream model. Provider account and upstream model mapping are not exposed.'],
+            ['status', 'Always', 'queued / processing / completed / failed / cancelled.'],
+            ['video_url', 'completed', 'Generated result URL. Download promptly and persist it according to your application requirements.'],
+            ['error', 'failed', 'A downstream-safe code and message. Raw provider responses are never exposed.'],
+            ['refund_status', 'Always', 'not-applicable / pending / refunded. After failure, wait for refunded before deciding whether to create another task.'],
+            ['created_at / completed_at', 'Creation time is always present; completion time only on completed', 'Unix timestamps in seconds.'],
+          ],
+        },
+        {
+          title: 'Common Error Codes',
+          headers: ['error.code', 'HTTP', 'Action'],
+          rows: [
+            ['invalid_video_model / invalid_video_resolution / invalid_video_duration / invalid_video_ability', '400', 'Fix model, resolution, integer duration from 4 through 15, or ability_code.'],
+            ['invalid_video_prompt / invalid_video_content', '400', 'Check prompt, content counts, types, and role combination.'],
+            ['reference_video_duration_required', '400', 'Add duration_seconds to every reference_video.'],
+            ['invalid_reference_video_duration', '400', 'Each reference video must be 2-15 seconds and rounded total reference duration must not exceed 15 seconds.'],
+            ['video_pricing_rule_not_found', '400', 'The administrator has not enabled pricing for this group, model, and resolution.'],
+            ['invalid_api_key', '401', 'Check that the Authorization Bearer API key exists, is enabled, and has not been revoked.'],
+            ['INSUFFICIENT_BALANCE / SUBSCRIPTION_NOT_FOUND', '403', 'Add balance or use a key with an active subscription.'],
+            ['video_endpoint_not_available', '404', 'The API key group is neither seedance nor a video-capable Agent group.'],
+            ['VIDEO_TASK_NOT_FOUND', '404', 'Check the id and query with the same user and API key that created the task.'],
+            ['API_KEY_QUOTA_EXHAUSTED / API_KEY_RATE_5H_EXCEEDED / API_KEY_RATE_1D_EXCEEDED / API_KEY_RATE_7D_EXCEEDED / USAGE_LIMIT_EXCEEDED', '429', 'Wait for the quota window or adjust key or subscription limits.'],
+            ['video_service_busy / video_generation_failed', '200 (status=failed)', 'Read error and refund_status from the task. Create a new task only after refund completion and under your business idempotency rule.'],
+            ['video_service_unavailable', '503 or 200 (status=failed)', 'Create fails directly when no compatible account exists; async lifecycle failures are stored on the task. Back off and never duplicate a task because one query failed.'],
           ],
         },
       ],
@@ -1280,11 +1481,11 @@ async function fileToBase64(file) {
           language: 'json',
           code: String.raw`{
   "model": "seedance-2.0",
-  "prompt": "Keep the character identity from the references. Create a luxury perfume commercial with slow motion fabric movement.",
+  "prompt": "Use Image 1 for identity and wardrobe, Video 1 for camera movement and action rhythm, and Audio 1 for musical beats. Create a luxury perfume commercial while preserving facial identity and product geometry.",
   "content": [
     {
       "type": "text",
-      "text": "Keep the character identity from the references. Create a luxury perfume commercial with slow motion fabric movement."
+      "text": "Use Image 1 for identity and wardrobe, Video 1 for camera movement and action rhythm, and Audio 1 for musical beats. Create a luxury perfume commercial while preserving facial identity and product geometry."
     },
     {
       "type": "image_url",
@@ -1314,6 +1515,29 @@ async function fileToBase64(file) {
 }`,
         },
         {
+          title: 'Video edit or extension: source is Video 1',
+          language: 'json',
+          code: String.raw`{
+  "model": "seedance-2.0",
+  "prompt": "Video 1 is the source to edit. Preserve identity, wardrobe, camera direction, and the first six seconds of motion. Replace only the background with a rainy night street, then continue naturally for four seconds from the final action. Do not change the face or motion axis.",
+  "content": [
+    {
+      "type": "video_url",
+      "video_url": { "url": "https://api-key.cc/media/<asset-id>/asset.mp4" },
+      "role": "reference_video",
+      "subject_type": "person",
+      "duration_seconds": 8
+    }
+  ],
+  "ratio": "16:9",
+  "duration": 10,
+  "resolution": "720p",
+  "generate_audio": true,
+  "ability_code": "video_reference_to_video",
+  "safety_identifier": "project-or-user-id"
+}`,
+        },
+        {
           title: 'Query video task',
           language: 'bash',
           code: String.raw`curl "$SUB2API_BASE_URL/v1/videos/video_xxx" \
@@ -1327,6 +1551,7 @@ async function fileToBase64(file) {
   "object": "video",
   "model": "seedance-2.0",
   "status": "queued",
+  "refund_status": "not-applicable",
   "created_at": 1782700000
 }`,
         },
@@ -1339,8 +1564,36 @@ async function fileToBase64(file) {
   "model": "seedance-2.0",
   "status": "completed",
   "video_url": "https://cdn.example.com/output.mp4",
+  "refund_status": "not-applicable",
   "created_at": 1782700000,
   "completed_at": 1782700030
+}`,
+        },
+        {
+          title: 'Failed and refunded response',
+          language: 'json',
+          code: String.raw`{
+  "id": "video_xxx",
+  "object": "video",
+  "model": "seedance-2.0",
+  "status": "failed",
+  "error": {
+    "code": "video_generation_failed",
+    "message": "Video generation failed. Please retry with a different prompt or input."
+  },
+  "refund_status": "refunded",
+  "created_at": 1782700000
+}`,
+        },
+        {
+          title: 'Synchronous validation error',
+          language: 'json',
+          code: String.raw`{
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_video_duration",
+    "message": "Invalid video duration"
+  }
 }`,
         },
       ],
@@ -1357,7 +1610,8 @@ async function fileToBase64(file) {
         { title: 'Gemini uses v1beta standard paths', text: 'Text, text-to-image, and image-to-image all use /v1beta/models/{model}:generateContent.' },
         { title: 'Seedance is async', text: 'Do not treat POST /v1/videos as synchronous. Store the returned id and poll GET /v1/videos/{id}.' },
         { title: 'Seedance reference videos require duration', text: 'duration_seconds is required on reference_video items. Missing duration returns 400 and no task is submitted.' },
-        { title: 'Persona category field', text: 'Seedance reference images and reference videos must send subject_type: "person"; otherwise real-person verification cannot pass.' },
+        { title: 'Number references by media type', text: 'content order is preserved. Prompts refer to Image 1, Video 1, and Audio 1, never filenames. subject_type defaults to person for images and videos.' },
+        { title: 'Video editing still uses Seedance', text: 'Editing, replacement, and extension use video_reference_to_video. Put the source at Video 1 and state preserve/change constraints. A new task is created and the source is never overwritten.' },
       ],
     },
   ],
