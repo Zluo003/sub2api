@@ -127,36 +127,24 @@
           <div class="yingzo-release-meta" v-if="release">
             <span>当前版本 {{ release.version }}</span>
             <span>{{ compatibilityText }}</span>
-            <span>SHA-256 已校验</span>
           </div>
           <div class="yingzo-release-meta" v-else>
             <span>{{ releaseLoading ? '正在读取发行信息' : '管理员尚未发布安装包' }}</span>
           </div>
 
-          <div class="yingzo-host-switch" role="tablist" aria-label="选择安装宿主">
+          <div v-if="authStore.isAuthenticated" class="yingzo-host-actions" aria-label="复制安装提示词">
             <button
               v-for="host in hosts"
               :key="host.id"
               type="button"
-              role="tab"
-              :aria-selected="activeHost === host.id"
-              :class="{ active: activeHost === host.id }"
-              @click="activeHost = host.id"
+              class="yingzo-copy-button"
+              :disabled="copyingHost !== null || !release"
+              @click="copyInstallPrompt(host.id)"
             >
-              {{ host.label }}
+              <Icon :name="copiedHost === host.id ? 'check' : 'copy'" size="sm" />
+              {{ copiedHost === host.id ? '已复制，10 分钟内粘贴使用' : `复制给 ${host.label}` }}
             </button>
           </div>
-
-          <button
-            v-if="authStore.isAuthenticated"
-            type="button"
-            class="yingzo-copy-button"
-            :disabled="copying || !release"
-            @click="copyInstallPrompt"
-          >
-            <Icon :name="copied ? 'check' : 'copy'" size="sm" />
-            {{ copied ? '已复制，10 分钟内粘贴使用' : `复制给 ${activeHost === 'codex' ? 'Codex' : 'Claude Code'}` }}
-          </button>
           <router-link v-else to="/login?redirect=/yingzo" class="yingzo-copy-button">
             登录后生成安装提示词
           </router-link>
@@ -187,9 +175,8 @@ import { useAuthStore } from '@/stores/auth'
 import { createYingzoInstallInstructions, getLatestYingzoRelease, type YingzoHost, type YingzoReleaseSummary } from '@/api/yingzo'
 
 const authStore = useAuthStore()
-const activeHost = ref<YingzoHost>('codex')
-const copied = ref(false)
-const copying = ref(false)
+const copiedHost = ref<YingzoHost | null>(null)
+const copyingHost = ref<YingzoHost | null>(null)
 const installError = ref('')
 const release = ref<YingzoReleaseSummary | null>(null)
 const releaseLoading = ref(true)
@@ -232,20 +219,23 @@ function scrollToSection(id: string) {
   window.history.replaceState(null, '', `#${id}`)
 }
 
-async function copyInstallPrompt() {
-  copying.value = true
+async function copyInstallPrompt(host: YingzoHost) {
+  copyingHost.value = host
   installError.value = ''
-  copied.value = false
+  copiedHost.value = null
   try {
-    const instructions = await createYingzoInstallInstructions(activeHost.value)
+    const instructions = await createYingzoInstallInstructions(host)
+    if (instructions.host !== host) throw new Error(`Install host mismatch: expected ${host}, received ${instructions.host}`)
     await navigator.clipboard.writeText(instructions.prompt)
-    copied.value = true
-    window.setTimeout(() => { copied.value = false }, 5000)
+    copiedHost.value = host
+    window.setTimeout(() => {
+      if (copiedHost.value === host) copiedHost.value = null
+    }, 5000)
   } catch (error) {
     installError.value = '生成安装提示词失败。请确认当前版本已发布，并重新登录后再试。'
     console.error(error)
   } finally {
-    copying.value = false
+    copyingHost.value = null
   }
 }
 
@@ -747,35 +737,12 @@ onMounted(async () => {
   font-size: 12px;
 }
 
-.yingzo-host-switch {
+.yingzo-host-actions {
   width: 100%;
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: 12px;
   margin-top: 28px;
-  border: 1px solid #555555;
-  border-radius: 4px;
-}
-
-.yingzo-host-switch button {
-  min-width: 0;
-  height: 44px;
-  border: 0;
-  border-right: 1px solid #555555;
-  background: transparent;
-  color: #c7c7c7;
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 680;
-  cursor: pointer;
-}
-
-.yingzo-host-switch button:last-child {
-  border-right: 0;
-}
-
-.yingzo-host-switch button.active {
-  background: #ffffff;
-  color: var(--yz-ink);
 }
 
 .yingzo-copy-button {
@@ -785,7 +752,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 28px;
   padding: 0 18px;
   border: 0;
   border-radius: 4px;
@@ -796,6 +763,11 @@ onMounted(async () => {
   font-weight: 740;
   text-decoration: none;
   cursor: pointer;
+}
+
+.yingzo-host-actions .yingzo-copy-button {
+  min-width: 0;
+  margin-top: 0;
 }
 
 .yingzo-copy-button:hover {

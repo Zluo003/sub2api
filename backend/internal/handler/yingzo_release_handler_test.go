@@ -36,13 +36,21 @@ func TestYingzoInstallPromptUsesVerifiedHostCommands(t *testing.T) {
 	require.Contains(t, codex, "codex plugin marketplace add")
 	require.Contains(t, codex, "codex plugin add yingzo@yingzo-private --json")
 	require.Contains(t, codex, "保留现有 ~/.yingzo/auth.json")
-	require.Contains(t, codex, "yingzo-private-0.1.3/marketplace")
+	require.Contains(t, codex, "~/.yingzo/releases/codex/0.1.3/yingzo-private-0.1.3/marketplace")
+	require.Contains(t, codex, "~/.codex/plugins")
+	require.Contains(t, codex, "不要修改 ~/.claude/plugins")
 	require.NotContains(t, codex, "private-beta")
+	require.NotContains(t, codex, "SHA-256")
+	require.NotContains(t, codex, "claude plugin")
 	claude := yingzoInstallPrompt("claude-code", release, "https://api-key.cc/download/package.tar.gz")
 	require.Contains(t, claude, "claude plugin marketplace add")
 	require.Contains(t, claude, "claude plugin install yingzo@yingzo-private --scope user")
-	require.Contains(t, claude, "yingzo-private-0.1.3/marketplace")
+	require.Contains(t, claude, "~/.yingzo/releases/claude-code/0.1.3/yingzo-private-0.1.3/marketplace")
+	require.Contains(t, claude, "~/.claude/plugins")
+	require.Contains(t, claude, "不要修改 ~/.codex/plugins")
 	require.NotContains(t, claude, "private-beta")
+	require.NotContains(t, claude, "SHA-256")
+	require.NotContains(t, claude, "codex plugin")
 }
 
 func TestValidateYingzoArchiveRequiresBothMarketplacesAndDistribution(t *testing.T) {

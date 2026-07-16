@@ -146,7 +146,6 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"host":         input.Host,
 		"version":      release.Version,
-		"sha256":       release.SHA256,
 		"signature":    release.Signature,
 		"download_url": downloadURL,
 		"expires_at":   expiresAt,
@@ -445,18 +444,18 @@ func publicYingzoRelease(release *yingzoRelease) gin.H {
 
 func yingzoInstallPrompt(host string, release *yingzoRelease, downloadURL string) string {
 	archiveRoot := strings.TrimSuffix(release.PackageFilename, ".tar.gz")
+	hostReleaseRoot := fmt.Sprintf("~/.yingzo/releases/%s/%s", host, release.Version)
 	common := fmt.Sprintf(`请安装或升级 Yingzo（影作）私有插件到版本 %s。下载地址：%s
-预期 SHA-256：%s
-请先下载到临时文件并校验 SHA-256；不一致立即停止。把包解压到 ~/.yingzo/releases/%s，保留现有 ~/.yingzo/auth.json，禁止把凭证写入项目、日志或安装目录。安装完成后验证插件和 MCP 工具，并告诉我结果。`, release.Version, downloadURL, release.SHA256, release.Version)
+请把安装包下载到临时文件，解压到 %s，保留现有 ~/.yingzo/auth.json，禁止把凭证写入项目、日志或安装目录。安装完成后验证插件和 MCP 工具，并告诉我结果。`, release.Version, downloadURL, hostReleaseRoot)
 	if release.Signature != "" {
 		common += "\n发行签名：" + release.Signature + "。同时校验签名；失败立即停止。"
 	}
 	if host == "codex" {
 		return common + fmt.Sprintf(`
-你正在 Codex 中执行此任务。解压后的 marketplace 目录是 ~/.yingzo/releases/%s/%s/marketplace。若旧版本存在，先运行 codex plugin remove yingzo@yingzo-private --json，再运行 codex plugin marketplace remove yingzo-private --json。然后运行 codex plugin marketplace add <上述 marketplace 绝对路径> --json，最后运行 codex plugin add yingzo@yingzo-private --json。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Codex 任务以加载新工具。`, release.Version, archiveRoot)
+这是 Codex 专用安装指令，只执行本段列出的 Codex 命令，也不要修改 ~/.claude/plugins。Codex 会把插件安装到自己的 ~/.codex/plugins 缓存。解压后的 marketplace 目录是 %s/%s/marketplace。若旧版本存在，先运行 codex plugin remove yingzo@yingzo-private --json，再运行 codex plugin marketplace remove yingzo-private --json。然后运行 codex plugin marketplace add <上述 marketplace 绝对路径> --json，最后运行 codex plugin add yingzo@yingzo-private --json。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Codex 任务以加载新工具。`, hostReleaseRoot, archiveRoot)
 	}
 	return common + fmt.Sprintf(`
-你正在 Claude Code 中执行此任务。解压后的 marketplace 目录是 ~/.yingzo/releases/%s/%s/marketplace。若旧版本存在，先运行 claude plugin uninstall yingzo@yingzo-private --scope user --keep-data，再运行 claude plugin marketplace remove yingzo-private --scope user。然后运行 claude plugin marketplace add <上述 marketplace 绝对路径> --scope user，最后运行 claude plugin install yingzo@yingzo-private --scope user。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Claude Code 会话以加载新工具。`, release.Version, archiveRoot)
+这是 Claude Code 专用安装指令，只执行本段列出的 Claude Code 命令，也不要修改 ~/.codex/plugins。Claude Code 会把插件安装到自己的 ~/.claude/plugins 缓存。解压后的 marketplace 目录是 %s/%s/marketplace。若旧版本存在，先运行 claude plugin uninstall yingzo@yingzo-private --scope user --keep-data，再运行 claude plugin marketplace remove yingzo-private --scope user。然后运行 claude plugin marketplace add <上述 marketplace 绝对路径> --scope user，最后运行 claude plugin install yingzo@yingzo-private --scope user。不要要求用户手动打开终端。安装后验证插件清单，并提示用户新建 Claude Code 会话以加载新工具。`, hostReleaseRoot, archiveRoot)
 }
 
 func validateYingzoPackageFilename(filename, version string) (string, error) {

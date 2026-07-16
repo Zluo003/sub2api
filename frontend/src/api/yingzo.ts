@@ -23,7 +23,6 @@ export interface YingzoReleaseSummary {
 export interface YingzoInstallInstructions {
   host: YingzoHost
   version: string
-  sha256: string
   signature?: string
   download_url: string
   expires_at: string
