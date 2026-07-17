@@ -194,11 +194,14 @@ func TestPublicYingzoReleaseExposesBothHostArtifactsWithoutChecksums(t *testing.
 	}
 	public := publicYingzoRelease(release)
 	require.Equal(t, int64(30), public["size_bytes"])
-	artifacts := public["artifacts"].(gin.H)
+	artifacts, ok := public["artifacts"].(gin.H)
+	require.True(t, ok)
 	require.Contains(t, artifacts, "openai")
 	require.Contains(t, artifacts, "claude")
 	require.NotContains(t, public, "sha256")
-	require.NotContains(t, artifacts["openai"].(gin.H), "sha256")
+	openAIArtifact, ok := artifacts["openai"].(gin.H)
+	require.True(t, ok)
+	require.NotContains(t, openAIArtifact, "sha256")
 }
 
 func TestCreateYingzoInstallInstructionsMapsFourHostsToTwoArtifacts(t *testing.T) {
