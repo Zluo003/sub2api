@@ -128,11 +128,6 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 	}
 
 	publicID := generateVideoPublicID()
-	requestJSON := map[string]any{
-		"request":      normalized.RawForStorage(),
-		"ability_code": normalized.AbilityCode,
-		"submit_json":  upstreamBody,
-	}
 	task, err := s.taskRepo.Create(ctx, &VideoTaskCreateInput{
 		PublicID:                 publicID,
 		RequestID:                optionalTrimmedPtr(input.RequestID),
@@ -150,7 +145,6 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		TotalCost:                totalCost,
 		ActualCost:               actualCost,
 		Status:                   VideoTaskStatusQueued,
-		RequestJSON:              requestJSON,
 	})
 	if err != nil {
 		return nil, err
@@ -365,7 +359,7 @@ func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account,
 	if id == "" {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing upstream task id")}
 	}
-	return &videoUpstreamCreateResult{ID: id, Raw: payload}, nil
+	return &videoUpstreamCreateResult{ID: id}, nil
 }
 
 func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, upstreamTaskID string) (*videoPollResult, error) {
@@ -395,7 +389,7 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: err}
 	}
 	status := normalizeVideoUpstreamStatus(stringFromMap(payload, "status"))
-	result := &videoPollResult{Status: status, Raw: payload}
+	result := &videoPollResult{Status: status}
 	if status == VideoTaskStatusCompleted {
 		result.VideoURL = videoResultURLFromPayload(payload)
 		if result.VideoURL == "" {
@@ -436,9 +430,8 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 			clientErr := mapVideoUpstreamError(err, false)
 			s.recordVideoAccountFailure(context.Background(), input.Account, clientErr, err)
 			task, _ := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-				Status:               stringPtr(VideoTaskStatusFailed),
-				UpstreamResponseJSON: videoUpstreamErrorJSON(err),
-				ErrorJSON:            videoErrorJSON(clientErr.VideoClientError),
+				Status:    stringPtr(VideoTaskStatusFailed),
+				ErrorJSON: videoErrorJSON(clientErr.VideoClientError),
 			})
 			_ = s.refundFailedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
 			return
@@ -446,9 +439,8 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 
 		processingStatus := VideoTaskStatusProcessing
 		if _, err := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-			Status:               &processingStatus,
-			UpstreamTaskID:       &created.ID,
-			UpstreamResponseJSON: created.Raw,
+			Status:         &processingStatus,
+			UpstreamTaskID: &created.ID,
 		}); err != nil {
 			slog.Warn("video task submit state update failed", "task_id", input.PublicID, "error", err)
 			return
@@ -500,16 +492,14 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 			switch result.Status {
 			case VideoTaskStatusQueued, VideoTaskStatusProcessing:
 				_, _ = s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-					Status:               &result.Status,
-					UpstreamResponseJSON: result.Raw,
+					Status: &result.Status,
 				})
 			case VideoTaskStatusCompleted:
 				now := time.Now().UTC()
 				task, updateErr := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-					Status:               &result.Status,
-					UpstreamResponseJSON: result.Raw,
-					ResultVideoURL:       &result.VideoURL,
-					CompletedAt:          &now,
+					Status:         &result.Status,
+					ResultVideoURL: &result.VideoURL,
+					CompletedAt:    &now,
 				})
 				if updateErr == nil {
 					_ = s.recordCompletedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
@@ -518,16 +508,14 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 			case VideoTaskStatusFailed, VideoTaskStatusCancelled:
 				clientErr := videoClientError("video_generation_failed", "Video generation failed. Please retry with a different prompt or input.")
 				task, _ := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-					Status:               &result.Status,
-					UpstreamResponseJSON: result.Raw,
-					ErrorJSON:            videoErrorJSON(clientErr),
+					Status:    &result.Status,
+					ErrorJSON: videoErrorJSON(clientErr),
 				})
 				_ = s.refundFailedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
 				return
 			default:
 				_, _ = s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
-					Status:               stringPtr(VideoTaskStatusProcessing),
-					UpstreamResponseJSON: result.Raw,
+					Status: stringPtr(VideoTaskStatusProcessing),
 				})
 			}
 		}
@@ -942,23 +930,6 @@ func (r *normalizedVideoRequest) JingyuUpstreamBody(upstreamModel string) map[st
 	return body
 }
 
-func (r *normalizedVideoRequest) RawForStorage() map[string]any {
-	if r.Raw != nil {
-		return r.Raw
-	}
-	return map[string]any{
-		"model":             r.Model,
-		"prompt":            r.Prompt,
-		"content":           r.Content,
-		"ratio":             r.Ratio,
-		"duration":          r.Duration,
-		"resolution":        r.Resolution,
-		"generate_audio":    r.GenerateAudio,
-		"safety_identifier": r.SafetyIdentifier,
-		"ability_code":      r.AbilityCode,
-	}
-}
-
 func normalizeVideoContent(content []VideoContent) []VideoContent {
 	out := make([]VideoContent, 0, len(content))
 	for _, item := range content {
@@ -1231,38 +1202,18 @@ func isVideoAccountCompatible(account *Account, model string, resolution string)
 }
 
 type videoUpstreamCreateResult struct {
-	ID  string
-	Raw map[string]any
+	ID string
 }
 
 type videoPollResult struct {
 	Status   string
 	VideoURL string
-	Raw      map[string]any
 }
 
 type videoUpstreamError struct {
 	StatusCode int
 	Body       []byte
 	Err        error
-}
-
-func videoUpstreamErrorJSON(err error) map[string]any {
-	var upstreamErr *videoUpstreamError
-	if !errors.As(err, &upstreamErr) || upstreamErr == nil {
-		if err == nil {
-			return nil
-		}
-		return map[string]any{"error": err.Error()}
-	}
-	out := map[string]any{"status_code": upstreamErr.StatusCode}
-	if len(upstreamErr.Body) > 0 {
-		out["body"] = truncateString(string(upstreamErr.Body), 4096)
-	}
-	if upstreamErr.Err != nil {
-		out["error"] = upstreamErr.Err.Error()
-	}
-	return out
 }
 
 func (e *videoUpstreamError) Error() string {
