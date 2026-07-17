@@ -874,13 +874,12 @@ jwt:
 # TOTP 双因素认证配置
 # =============================================================================
 totp:
-  # IMPORTANT: Set a fixed encryption key for TOTP secrets.
-  # 重要：设置固定的 TOTP 加密密钥。
-  # If left empty, a random key will be generated on each startup, causing all
-  # existing TOTP configurations to become invalid (users won't be able to
-  # login with 2FA).
-  # 如果留空，每次启动将生成随机密钥，导致现有的 TOTP 配置失效（用户无法使用
-  # 双因素认证登录）。
+  # IMPORTANT: Set a managed encryption key before enabling TOTP.
+  # 重要：启用 TOTP 前请配置托管的固定加密密钥。
+  # If left empty, an application encryption key is generated and persisted in
+  # the database, but TOTP remains unavailable until this value is configured.
+  # 如果留空，应用会生成加密密钥并持久化到数据库；但在显式配置此项前，TOTP
+  # 仍不可启用。
   # Generate with / 生成命令: openssl rand -hex 32
   encryption_key: ""
 

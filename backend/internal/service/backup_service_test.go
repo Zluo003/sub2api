@@ -286,6 +286,12 @@ func TestBackupService_S3ConfigKeepExistingSecret(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "original-secret", internal.SecretAccessKey)
 	require.Equal(t, "AKID-NEW", internal.AccessKeyID)
+
+	raw, err := repo.GetValue(context.Background(), settingKeyBackupS3Config)
+	require.NoError(t, err)
+	var stored BackupS3Config
+	require.NoError(t, json.Unmarshal([]byte(raw), &stored))
+	require.Equal(t, "ENC:original-secret", stored.SecretAccessKey)
 }
 
 func TestBackupService_SaveRecordConcurrency(t *testing.T) {

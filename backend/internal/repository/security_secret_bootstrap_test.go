@@ -64,6 +64,67 @@ func TestEnsureBootstrapSecretsGenerateAndPersistJWTSecret(t *testing.T) {
 	require.Equal(t, cfg.JWT.Secret, stored.Value)
 }
 
+func TestEnsureBootstrapSecretsPersistsGeneratedTOTPKeyAcrossRestarts(t *testing.T) {
+	client := newSecuritySecretTestClient(t)
+	first := &config.Config{
+		Totp: config.TotpConfig{EncryptionKey: strings.Repeat("a", 64)},
+	}
+
+	require.NoError(t, ensureBootstrapSecrets(context.Background(), client, first))
+	require.Len(t, first.Totp.EncryptionKey, 64)
+	require.False(t, first.Totp.EncryptionKeyConfigured)
+	firstEncryptor, err := NewAESEncryptor(first)
+	require.NoError(t, err)
+	ciphertext, err := firstEncryptor.Encrypt("r2-secret-access-key")
+	require.NoError(t, err)
+
+	stored, err := client.SecuritySecret.Query().Where(securitysecret.KeyEQ(securitySecretKeyTOTP)).Only(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, first.Totp.EncryptionKey, stored.Value)
+
+	second := &config.Config{
+		Totp: config.TotpConfig{EncryptionKey: strings.Repeat("b", 64)},
+	}
+	require.NoError(t, ensureBootstrapSecrets(context.Background(), client, second))
+	require.Equal(t, first.Totp.EncryptionKey, second.Totp.EncryptionKey)
+	require.False(t, second.Totp.EncryptionKeyConfigured)
+	secondEncryptor, err := NewAESEncryptor(second)
+	require.NoError(t, err)
+	plaintext, err := secondEncryptor.Decrypt(ciphertext)
+	require.NoError(t, err)
+	require.Equal(t, "r2-secret-access-key", plaintext)
+}
+
+func TestEnsureBootstrapSecretsPersistsConfiguredTOTPKey(t *testing.T) {
+	client := newSecuritySecretTestClient(t)
+	cfg := &config.Config{
+		Totp: config.TotpConfig{
+			EncryptionKey:           strings.Repeat("c", 64),
+			EncryptionKeyConfigured: true,
+		},
+	}
+
+	require.NoError(t, ensureBootstrapSecrets(context.Background(), client, cfg))
+
+	stored, err := client.SecuritySecret.Query().Where(securitysecret.KeyEQ(securitySecretKeyTOTP)).Only(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, strings.Repeat("c", 64), stored.Value)
+}
+
+func TestEnsureBootstrapSecretsRejectsInvalidStoredTOTPKey(t *testing.T) {
+	client := newSecuritySecretTestClient(t)
+	_, err := client.SecuritySecret.Create().
+		SetKey(securitySecretKeyTOTP).
+		SetValue(strings.Repeat("z", 64)).
+		Save(context.Background())
+	require.NoError(t, err)
+
+	cfg := &config.Config{Totp: config.TotpConfig{EncryptionKey: strings.Repeat("a", 64)}}
+	err = ensureBootstrapSecrets(context.Background(), client, cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "32-byte hex value")
+}
+
 func TestEnsureBootstrapSecretsLoadExistingJWTSecret(t *testing.T) {
 	client := newSecuritySecretTestClient(t)
 	_, err := client.SecuritySecret.Create().SetKey(securitySecretKeyJWT).SetValue("existing-jwt-secret-32bytes-long!!!!").Save(context.Background())

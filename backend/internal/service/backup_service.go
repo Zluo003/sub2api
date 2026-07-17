@@ -252,12 +252,16 @@ func (s *BackupService) GetS3Config(ctx context.Context) (*BackupS3Config, error
 func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) (*BackupS3Config, error) {
 	// 如果没提供 secret，保留原有值
 	if cfg.SecretAccessKey == "" {
-		old, _ := s.loadS3Config(ctx)
+		old, err := s.loadS3Config(ctx)
+		if err != nil {
+			return nil, err
+		}
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
-	} else {
-		// 加密 SecretAccessKey
+	}
+	if cfg.SecretAccessKey != "" {
+		// 无论是新值还是保留的旧值，数据库中始终只写入密文。
 		encrypted, err := s.encryptor.Encrypt(cfg.SecretAccessKey)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt secret: %w", err)
