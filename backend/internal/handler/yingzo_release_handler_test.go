@@ -2,15 +2,46 @@ package handler
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"context"
+	"encoding/json"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+type memoryYingzoTicketStore struct {
+	payloads map[string][]byte
+}
+
+func newMemoryYingzoTicketStore() *memoryYingzoTicketStore {
+	return &memoryYingzoTicketStore{payloads: map[string][]byte{}}
+}
+
+func (s *memoryYingzoTicketStore) Store(_ context.Context, ticket string, payload []byte, _ time.Duration) error {
+	s.payloads[ticket] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (s *memoryYingzoTicketStore) Consume(_ context.Context, ticket string) ([]byte, error) {
+	payload, ok := s.payloads[ticket]
+	if !ok {
+		return nil, context.Canceled
+	}
+	return append([]byte(nil), payload...), nil
+}
 
 func TestValidateYingzoOrigin(t *testing.T) {
 	require.Equal(t, "https://api-key.cc", mustYingzoOrigin(t, "https://api-key.cc/"))
@@ -31,44 +62,63 @@ func TestTemporaryAssetPublicURLUsesCleanExtensionPath(t *testing.T) {
 }
 
 func TestYingzoInstallPromptUsesVerifiedHostCommands(t *testing.T) {
-	release := &yingzoRelease{Version: "0.1.3", PackageFilename: "yingzo-private-0.1.3.tar.gz", SHA256: strings.Repeat("a", 64)}
-	codex := yingzoInstallPrompt("codex", release, "https://api-key.cc/download/package.tar.gz")
+	release := &yingzoRelease{Version: "0.2.0"}
+	openAI := &yingzoReleaseArtifact{HostFamily: "openai", PackageFilename: "yingzo-openai-0.2.0.tar.gz", SHA256: strings.Repeat("a", 64)}
+	claudeArtifact := &yingzoReleaseArtifact{HostFamily: "claude", PackageFilename: "yingzo-claude-0.2.0.tar.gz", SHA256: strings.Repeat("b", 64)}
+	codex := yingzoInstallPrompt("codex", release, openAI, "https://api-key.cc/download/package.tar.gz")
 	require.Contains(t, codex, "codex plugin marketplace add")
 	require.Contains(t, codex, "codex plugin add yingzo@yingzo-private --json")
 	require.Contains(t, codex, "保留现有 ~/.yingzo/auth.json")
-	require.Contains(t, codex, "~/.yingzo/releases/codex/0.1.3/yingzo-private-0.1.3/marketplace")
+	require.Contains(t, codex, "~/.yingzo/releases/openai/0.2.0/yingzo-openai-0.2.0/marketplace")
 	require.Contains(t, codex, "~/.codex/plugins")
 	require.Contains(t, codex, "不要修改 ~/.claude/plugins")
 	require.NotContains(t, codex, "private-beta")
 	require.NotContains(t, codex, "SHA-256")
 	require.NotContains(t, codex, "claude plugin")
-	claude := yingzoInstallPrompt("claude-code", release, "https://api-key.cc/download/package.tar.gz")
+	chatGPT := yingzoInstallPrompt("chatgpt-work", release, openAI, "https://api-key.cc/download/package.tar.gz")
+	require.Contains(t, chatGPT, "ChatGPT Work")
+	require.Contains(t, chatGPT, "codex plugin")
+	claude := yingzoInstallPrompt("claude-code", release, claudeArtifact, "https://api-key.cc/download/package.tar.gz")
 	require.Contains(t, claude, "claude plugin marketplace add")
 	require.Contains(t, claude, "claude plugin install yingzo@yingzo-private --scope user")
-	require.Contains(t, claude, "~/.yingzo/releases/claude-code/0.1.3/yingzo-private-0.1.3/marketplace")
+	require.Contains(t, claude, "~/.yingzo/releases/claude/0.2.0/yingzo-claude-0.2.0/marketplace")
 	require.Contains(t, claude, "~/.claude/plugins")
 	require.Contains(t, claude, "不要修改 ~/.codex/plugins")
 	require.NotContains(t, claude, "private-beta")
 	require.NotContains(t, claude, "SHA-256")
 	require.NotContains(t, claude, "codex plugin")
+	cowork := yingzoInstallPrompt("claude-cowork", release, claudeArtifact, "https://api-key.cc/download/package.tar.gz")
+	require.Contains(t, cowork, "Claude Cowork")
 }
 
-func TestValidateYingzoArchiveRequiresBothMarketplacesAndDistribution(t *testing.T) {
-	version := "0.1.3"
-	packageFilename := "yingzo-private-" + version + ".tar.gz"
+func TestValidateYingzoArchiveRequiresHostSpecificAppAndDistribution(t *testing.T) {
+	version := "0.2.0"
+	packageFilename := "yingzo-openai-" + version + ".tar.gz"
 	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
 	archive := filepath.Join(t.TempDir(), "yingzo.tar.gz")
 	writeYingzoTestArchive(t, archive, map[string]string{
-		root + ".agents/plugins/marketplace.json":         "{}",
-		root + ".claude-plugin/marketplace.json":          "{}",
-		root + "plugins/yingzo/.codex-plugin/plugin.json": "{}",
-		root + "plugins/yingzo/distribution.json":         "{}",
+		root + ".agents/plugins/marketplace.json":           "{}",
+		root + "plugins/yingzo/.codex-plugin/plugin.json":   "{}",
+		root + "plugins/yingzo/.app.json":                   "{}",
+		root + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
+		root + "plugins/yingzo/distribution.json":           "{}",
 	})
-	require.NoError(t, validateYingzoArchive(archive, packageFilename))
+	require.NoError(t, validateYingzoArchive(archive, packageFilename, "openai"))
 
 	unsafe := filepath.Join(t.TempDir(), "unsafe.tar.gz")
 	writeYingzoTestArchive(t, unsafe, map[string]string{"../escape": "bad"})
-	require.ErrorContains(t, validateYingzoArchive(unsafe, packageFilename), "unsafe path")
+	require.ErrorContains(t, validateYingzoArchive(unsafe, packageFilename, "openai"), "unsafe path")
+
+	claudeFilename := "yingzo-claude-" + version + ".tar.gz"
+	claudeRoot := strings.TrimSuffix(claudeFilename, ".tar.gz") + "/marketplace/"
+	claudeArchive := filepath.Join(t.TempDir(), claudeFilename)
+	writeYingzoTestArchive(t, claudeArchive, map[string]string{
+		claudeRoot + ".claude-plugin/marketplace.json":            "{}",
+		claudeRoot + "plugins/yingzo/.claude-plugin/plugin.json":  "{}",
+		claudeRoot + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
+		claudeRoot + "plugins/yingzo/distribution.json":           "{}",
+	})
+	require.NoError(t, validateYingzoArchive(claudeArchive, claudeFilename, "claude"))
 }
 
 func TestYingzoLegacyBetaArchiveRemainsCompatible(t *testing.T) {
@@ -82,23 +132,273 @@ func TestYingzoLegacyBetaArchiveRemainsCompatible(t *testing.T) {
 		root + "plugins/yingzo/.codex-plugin/plugin.json": "{}",
 		root + "plugins/yingzo/distribution.json":         "{}",
 	})
-	require.NoError(t, validateYingzoArchive(archive, packageFilename))
-	require.Contains(t, yingzoInstallPrompt("codex", &yingzoRelease{
-		Version: version, PackageFilename: packageFilename, SHA256: strings.Repeat("b", 64),
+	require.NoError(t, validateYingzoArchive(archive, packageFilename, "combined"))
+	require.Contains(t, yingzoInstallPrompt("codex", &yingzoRelease{Version: version}, &yingzoReleaseArtifact{
+		HostFamily: "combined", PackageFilename: packageFilename, SHA256: strings.Repeat("b", 64),
 	}, "https://api-key.cc/download/legacy.tar.gz"), "yingzo-private-beta-0.1.2/marketplace")
 }
 
 func TestValidateYingzoPackageFilename(t *testing.T) {
-	stable, err := validateYingzoPackageFilename("yingzo-private-0.1.3.tar.gz", "0.1.3")
+	stable, err := validateYingzoPackageFilename("yingzo-openai-0.2.0.tar.gz", "0.2.0", "openai")
 	require.NoError(t, err)
-	require.Equal(t, "yingzo-private-0.1.3.tar.gz", stable)
+	require.Equal(t, "yingzo-openai-0.2.0.tar.gz", stable)
+	claude, err := validateYingzoPackageFilename("yingzo-claude-0.2.0.tar.gz", "0.2.0", "claude")
+	require.NoError(t, err)
+	require.Equal(t, "yingzo-claude-0.2.0.tar.gz", claude)
 
-	legacy, err := validateYingzoPackageFilename("yingzo-private-beta-0.1.2.tar.gz", "0.1.2")
+	legacy, err := validateYingzoPackageFilename("yingzo-private-beta-0.1.2.tar.gz", "0.1.2", "combined")
 	require.NoError(t, err)
 	require.Equal(t, "yingzo-private-beta-0.1.2.tar.gz", legacy)
 
-	_, err = validateYingzoPackageFilename("sub2api-linux-amd64.tar.gz", "0.1.3")
+	_, err = validateYingzoPackageFilename("sub2api-linux-amd64.tar.gz", "0.2.0", "openai")
 	require.Error(t, err)
+}
+
+func TestYingzoReleaseArchivesFromEnvironment(t *testing.T) {
+	archives := map[string]string{
+		"openai": os.Getenv("YINGZO_TEST_OPENAI_ARCHIVE"),
+		"claude": os.Getenv("YINGZO_TEST_CLAUDE_ARCHIVE"),
+	}
+	if archives["openai"] == "" && archives["claude"] == "" {
+		t.Skip("set YINGZO_TEST_OPENAI_ARCHIVE and YINGZO_TEST_CLAUDE_ARCHIVE for cross-repository package validation")
+	}
+	for family, archive := range archives {
+		require.NotEmpty(t, archive, "both host archives must be supplied")
+		require.NoError(t, validateYingzoArchive(archive, filepath.Base(archive), family))
+	}
+}
+
+func TestYingzoHostFamiliesAndLegacyArtifactFallback(t *testing.T) {
+	for host, expected := range map[string]string{
+		"chatgpt-work": "openai", "codex": "openai", "claude-cowork": "claude", "claude-code": "claude",
+	} {
+		family, err := yingzoHostFamily(host)
+		require.NoError(t, err)
+		require.Equal(t, expected, family)
+	}
+	_, err := yingzoHostFamily("mobile")
+	require.Error(t, err)
+	combined := &yingzoReleaseArtifact{ID: uuid.New(), HostFamily: "combined"}
+	release := &yingzoRelease{Artifacts: map[string]*yingzoReleaseArtifact{"combined": combined}}
+	require.Same(t, combined, yingzoArtifactForFamily(release, "openai"))
+	require.Same(t, combined, yingzoArtifactForFamily(release, "claude"))
+}
+
+func TestPublicYingzoReleaseExposesBothHostArtifactsWithoutChecksums(t *testing.T) {
+	release := &yingzoRelease{
+		Version: "0.2.0",
+		Artifacts: map[string]*yingzoReleaseArtifact{
+			"openai": {HostFamily: "openai", PackageFilename: "yingzo-openai-0.2.0.tar.gz", SizeBytes: 10, SHA256: strings.Repeat("a", 64)},
+			"claude": {HostFamily: "claude", PackageFilename: "yingzo-claude-0.2.0.tar.gz", SizeBytes: 20, SHA256: strings.Repeat("b", 64)},
+		},
+	}
+	public := publicYingzoRelease(release)
+	require.Equal(t, int64(30), public["size_bytes"])
+	artifacts := public["artifacts"].(gin.H)
+	require.Contains(t, artifacts, "openai")
+	require.Contains(t, artifacts, "claude")
+	require.NotContains(t, public, "sha256")
+	require.NotContains(t, artifacts["openai"].(gin.H), "sha256")
+}
+
+func TestCreateYingzoInstallInstructionsMapsFourHostsToTwoArtifacts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		host           string
+		expectedFamily string
+		expectedFile   string
+	}{
+		{host: "chatgpt-work", expectedFamily: "openai", expectedFile: "yingzo-openai-0.2.0.tar.gz"},
+		{host: "codex", expectedFamily: "openai", expectedFile: "yingzo-openai-0.2.0.tar.gz"},
+		{host: "claude-cowork", expectedFamily: "claude", expectedFile: "yingzo-claude-0.2.0.tar.gz"},
+		{host: "claude-code", expectedFamily: "claude", expectedFile: "yingzo-claude-0.2.0.tar.gz"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			h, mock := newAgentHandlerMock(t)
+			tickets := newMemoryYingzoTicketStore()
+			h.yingzoTicketStore = tickets
+			releaseID := uuid.New()
+			openAIID := uuid.New()
+			claudeID := uuid.New()
+			now := time.Now().UTC()
+			mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases WHERE status='published'").
+				WillReturnRows(sqlmock.NewRows([]string{"id", "version", "status", "signature", "min_codex_version", "min_claude_version", "release_notes", "created_at", "published_at", "updated_at"}).
+					AddRow(releaseID, "0.2.0", "published", nil, nil, nil, nil, now, now, now))
+			mock.ExpectQuery("SELECT id,release_id,host_family,package_filename,storage_backend,storage_key,size_bytes,sha256,created_at,updated_at FROM yingzo_release_artifacts WHERE release_id=\\$1").
+				WithArgs(releaseID).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "host_family", "package_filename", "storage_backend", "storage_key", "size_bytes", "sha256", "created_at", "updated_at"}).
+					AddRow(openAIID, releaseID, "openai", "yingzo-openai-0.2.0.tar.gz", "local", "/tmp/openai.tar.gz", 100, strings.Repeat("a", 64), now, now).
+					AddRow(claudeID, releaseID, "claude", "yingzo-claude-0.2.0.tar.gz", "local", "/tmp/claude.tar.gz", 110, strings.Repeat("b", 64), now, now))
+
+			router := gin.New()
+			router.POST("/install", func(c *gin.Context) {
+				c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
+				h.CreateYingzoInstallInstructions(c)
+			})
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "https://api-key.cc/install", strings.NewReader(`{"host":"`+tc.host+`"}`))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var body struct {
+				Host        string `json:"host"`
+				HostFamily  string `json:"host_family"`
+				DownloadURL string `json:"download_url"`
+				Prompt      string `json:"prompt"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			require.Equal(t, tc.host, body.Host)
+			require.Equal(t, tc.expectedFamily, body.HostFamily)
+			require.Contains(t, body.DownloadURL, "/"+tc.expectedFile)
+			require.NotContains(t, body.Prompt, "SHA-256")
+			require.Len(t, tickets.payloads, 1)
+			for _, payload := range tickets.payloads {
+				var ticket yingzoInstallTicket
+				require.NoError(t, json.Unmarshal(payload, &ticket))
+				require.Equal(t, tc.expectedFamily, ticket.HostFamily)
+				require.Equal(t, map[string]uuid.UUID{"openai": openAIID, "claude": claudeID}[tc.expectedFamily], ticket.ArtifactID)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestDownloadYingzoReleaseTicketIsBoundToArtifactAndHostFamily(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	tickets := newMemoryYingzoTicketStore()
+	h.yingzoTicketStore = tickets
+	releaseID := uuid.New()
+	openAIID := uuid.New()
+	claudeID := uuid.New()
+	now := time.Now().UTC()
+	openAIFile := filepath.Join(t.TempDir(), "openai.tar.gz")
+	require.NoError(t, os.WriteFile(openAIFile, []byte("openai-package"), 0600))
+	payload, err := json.Marshal(yingzoInstallTicket{ReleaseID: releaseID, ArtifactID: openAIID, UserID: 42, Host: "codex", HostFamily: "openai"})
+	require.NoError(t, err)
+	tickets.payloads["ticket"] = payload
+	mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases WHERE id=\\$1").
+		WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "version", "status", "signature", "min_codex_version", "min_claude_version", "release_notes", "created_at", "published_at", "updated_at"}).
+			AddRow(releaseID, "0.2.0", "published", nil, nil, nil, nil, now, now, now))
+	mock.ExpectQuery("SELECT id,release_id,host_family,package_filename,storage_backend,storage_key,size_bytes,sha256,created_at,updated_at FROM yingzo_release_artifacts WHERE release_id=\\$1").
+		WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "host_family", "package_filename", "storage_backend", "storage_key", "size_bytes", "sha256", "created_at", "updated_at"}).
+			AddRow(openAIID, releaseID, "openai", "yingzo-openai-0.2.0.tar.gz", "local", openAIFile, 14, strings.Repeat("a", 64), now, now).
+			AddRow(claudeID, releaseID, "claude", "yingzo-claude-0.2.0.tar.gz", "local", "/tmp/claude.tar.gz", 15, strings.Repeat("b", 64), now, now))
+
+	router := gin.New()
+	router.GET("/download/:ticket/:filename", h.DownloadYingzoRelease)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/download/ticket/yingzo-openai-0.2.0.tar.gz", nil))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, "openai-package", response.Body.String())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDownloadYingzoReleaseReturnsNotFoundWhenReleaseLookupFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	tickets := newMemoryYingzoTicketStore()
+	h.yingzoTicketStore = tickets
+	releaseID := uuid.New()
+	payload, err := json.Marshal(yingzoInstallTicket{
+		ReleaseID: releaseID, ArtifactID: uuid.New(), UserID: 42, Host: "codex", HostFamily: "openai",
+	})
+	require.NoError(t, err)
+	tickets.payloads["ticket"] = payload
+	mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases WHERE id=\\$1").
+		WithArgs(releaseID).
+		WillReturnError(context.Canceled)
+
+	router := gin.New()
+	router.GET("/download/:ticket/:filename", h.DownloadYingzoRelease)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/download/ticket/yingzo-openai-0.2.0.tar.gz", nil))
+
+	require.Equal(t, http.StatusNotFound, response.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListYingzoReleasesReturnsDatabaseErrorAfterIterationFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	rows := sqlmock.NewRows([]string{"id", "version", "status", "signature", "min_codex_version", "min_claude_version", "release_notes", "created_at", "published_at", "updated_at"}).
+		AddRow(uuid.New(), "0.2.0", "draft", nil, nil, nil, nil, time.Now(), nil, time.Now()).
+		RowError(0, context.Canceled)
+	mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases ORDER BY created_at DESC").
+		WillReturnRows(rows)
+
+	router := gin.New()
+	router.GET("/releases", h.ListYingzoReleases)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/releases", nil))
+
+	require.Equal(t, http.StatusInternalServerError, response.Code)
+	require.Equal(t, "database_error", responseCode(response))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoReleaseCleansArtifactsWhenTransactionCannotStart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	openAIArchive := filepath.Join(t.TempDir(), "yingzo-openai-0.2.0.tar.gz")
+	claudeArchive := filepath.Join(t.TempDir(), "yingzo-claude-0.2.0.tar.gz")
+	writeYingzoHostArchive(t, openAIArchive, "openai")
+	writeYingzoHostArchive(t, claudeArchive, "claude")
+	mock.ExpectBegin().WillReturnError(context.Canceled)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	require.NoError(t, writer.WriteField("version", "0.2.0"))
+	writeYingzoMultipartFile(t, writer, "openai_package", openAIArchive)
+	writeYingzoMultipartFile(t, writer, "claude_package", claudeArchive)
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.UploadYingzoRelease(c)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/releases", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusInternalServerError, response.Code, response.Body.String())
+	require.Equal(t, "database_error", responseCode(response))
+	entries, err := os.ReadDir(filepath.Join(h.dataDir, "releases"))
+	if !os.IsNotExist(err) {
+		require.NoError(t, err)
+		require.Empty(t, entries)
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPublishYingzoReleaseRejectsIncompleteDualArtifacts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
+		WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("draft"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FILTER").
+		WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"combined", "openai", "claude"}).AddRow(0, 1, 0))
+	mock.ExpectRollback()
+
+	router := gin.New()
+	router.POST("/releases/:id/publish", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.PublishYingzoRelease(c)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/publish", bytes.NewReader(nil)))
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, "release_artifacts_incomplete", responseCode(response))
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func mustYingzoOrigin(t *testing.T, raw string) string {
@@ -122,4 +422,33 @@ func writeYingzoTestArchive(t *testing.T, target string, entries map[string]stri
 	require.NoError(t, tarWriter.Close())
 	require.NoError(t, gzipWriter.Close())
 	require.NoError(t, file.Close())
+}
+
+func writeYingzoHostArchive(t *testing.T, target, hostFamily string) {
+	t.Helper()
+	packageFilename := filepath.Base(target)
+	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
+	entries := map[string]string{
+		root + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
+		root + "plugins/yingzo/distribution.json":           "{}",
+	}
+	if hostFamily == "openai" {
+		entries[root+".agents/plugins/marketplace.json"] = "{}"
+		entries[root+"plugins/yingzo/.codex-plugin/plugin.json"] = "{}"
+		entries[root+"plugins/yingzo/.app.json"] = "{}"
+	} else {
+		entries[root+".claude-plugin/marketplace.json"] = "{}"
+		entries[root+"plugins/yingzo/.claude-plugin/plugin.json"] = "{}"
+	}
+	writeYingzoTestArchive(t, target, entries)
+}
+
+func writeYingzoMultipartFile(t *testing.T, writer *multipart.Writer, field, filename string) {
+	t.Helper()
+	part, err := writer.CreateFormFile(field, filepath.Base(filename))
+	require.NoError(t, err)
+	contents, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	_, err = part.Write(contents)
+	require.NoError(t, err)
 }

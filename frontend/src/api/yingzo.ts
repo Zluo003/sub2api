@@ -1,16 +1,27 @@
 import { apiClient } from './client'
 
-export type YingzoHost = 'codex' | 'claude-code'
+export type YingzoHost = 'chatgpt-work' | 'codex' | 'claude-cowork' | 'claude-code'
+export type YingzoHostFamily = 'openai' | 'claude' | 'combined'
+
+export interface YingzoReleaseArtifact {
+  id?: string
+  release_id?: string
+  host_family: YingzoHostFamily
+  package_filename: string
+  storage_backend?: 'local' | 's3'
+  size_bytes: number
+  sha256?: string
+  created_at?: string
+  updated_at?: string
+}
 
 export interface YingzoReleaseSummary {
   id?: string
   version: string
   status?: 'draft' | 'published' | 'superseded' | 'disabled'
-  package_filename?: string
   size_bytes: number
-  sha256: string
+  artifacts: Partial<Record<'openai' | 'claude' | 'combined', YingzoReleaseArtifact>>
   signature?: string
-  checksum_status?: 'verified'
   signature_status?: 'signed' | 'unsigned'
   min_codex_version: string
   min_claude_version: string
@@ -22,6 +33,7 @@ export interface YingzoReleaseSummary {
 
 export interface YingzoInstallInstructions {
   host: YingzoHost
+  host_family: 'openai' | 'claude'
   version: string
   signature?: string
   download_url: string

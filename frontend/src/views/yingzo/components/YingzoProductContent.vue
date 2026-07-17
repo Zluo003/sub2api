@@ -21,7 +21,7 @@
 
       <div class="yingzo-hero-copy">
         <h1>Yingzo（影作）</h1>
-        <p class="yingzo-hero-claim">让 Codex 和 Claude Code<br />成为你的 AI 影视制作团队</p>
+        <p class="yingzo-hero-claim">让 ChatGPT Work 与 Claude Cowork<br />成为你的 AI 影视制作团队</p>
         <p class="yingzo-hero-summary">
           从故事、剧本、导演、分镜，到图片与视频生成。<br />同一个项目，同一套资产，同一条生产链。
         </p>
@@ -35,7 +35,7 @@
         <span>完整生产链</span>
         <span>稳定资产引用</span>
         <span>多 Agent 协作</span>
-        <span>费用先确认</span>
+        <span>创作审阅 App</span>
         <span>结果永久落地</span>
       </div>
     </section>
@@ -68,7 +68,7 @@
             Yingzo 先理解创作目标，再把任务拆给故事、剧本、导演、分镜、视觉、图片、视频与审查 Agent。每个 Agent 只负责自己擅长的部分，正式状态由主 Agent 统一合并。
           </p>
           <dl>
-            <div><dt>同一项目</dt><dd>Codex 与 Claude Code 可接手同一个本地项目</dd></div>
+            <div><dt>同一项目</dt><dd>ChatGPT Work、Codex 与 Claude Cowork/Code 可接手同一个本地项目</dd></div>
             <div><dt>同一资产</dt><dd>参考素材按稳定 ID 与版本解析，不靠文件名猜测</dd></div>
             <div><dt>同一规则</dt><dd>依赖图、单写者与提案合并，避免互相覆盖</dd></div>
           </dl>
@@ -107,20 +107,20 @@
 
       <section class="yingzo-section yingzo-assurance-section">
         <div class="yingzo-assurance-statement">
-          <h2>生成之前，<br />你知道花多少钱。</h2>
-          <p>生成之后，结果下载、校验并登记为本地草稿。远程地址过期，也不会带走你的作品。</p>
+          <h2>该自动时自动，<br />该决定时由你决定。</h2>
+          <p>文本和图片生成遵循宿主权限直接执行；视频可按任务类型记住审批。结果始终下载并登记为本地草稿。</p>
         </div>
         <div class="yingzo-assurance-lines">
-          <div><strong>费用确认</strong><span>模型、数量、规格和参考版本变化后必须重新确认</span></div>
+          <div><strong>宿主权限</strong><span>完全访问自动执行，请求批准时才打断用户</span></div>
           <div><strong>本地草稿</strong><span>图片与视频都先下载到项目，再进入候选、迭代和提升</span></div>
-          <div><strong>版本可追溯</strong><span>历史记录保存实际模型、能力版本与参考资产版本</span></div>
+          <div><strong>边创作边学习</strong><span>审阅结果时可查看实际提交提示词与有序参考素材</span></div>
         </div>
       </section>
 
       <section id="install" class="yingzo-install-section">
         <div class="yingzo-install-copy">
           <h2>把安装交给 Agent。</h2>
-          <p>选择宿主，复制一次性安装提示词，再粘贴给 Codex 或 Claude Code。无需用户操作 CLI。</p>
+          <p>选择实际使用的工作模式，复制一次性安装提示词，再粘贴给对应 Agent。无需用户操作 CLI。</p>
         </div>
 
         <div class="yingzo-install-controls">
@@ -182,7 +182,9 @@ const release = ref<YingzoReleaseSummary | null>(null)
 const releaseLoading = ref(true)
 
 const hosts: Array<{ id: YingzoHost; label: string }> = [
+  { id: 'chatgpt-work', label: 'ChatGPT Work' },
   { id: 'codex', label: 'Codex' },
+  { id: 'claude-cowork', label: 'Claude Cowork' },
   { id: 'claude-code', label: 'Claude Code' },
 ]
 
@@ -190,7 +192,7 @@ const advantages = [
   { title: '完整创作链，而不是单点工具', description: '故事、剧本、导演、分镜、图片、视频与审查共享同一份项目状态。' },
   { title: '角色与场景不会每次重新开始', description: '资产使用稳定 ID、版本和生效范围，路径变化也不会破坏引用。' },
   { title: '多 Agent 协作，但不会互相覆盖', description: '依赖图决定执行顺序，子 Agent 只提交提案，主 Agent 负责正式合并。' },
-  { title: '费用可控，结果真正属于项目', description: '图片与视频生成前确认费用，远程结果永久下载为本地草稿。' },
+  { title: '生成高效，决定仍由创作者掌握', description: '宿主权限控制自动执行边界，候选、返修与提升集中在审阅 App 完成。' },
 ]
 
 const workflow = [
