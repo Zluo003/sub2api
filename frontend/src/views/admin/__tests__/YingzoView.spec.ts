@@ -61,4 +61,35 @@ describe('Yingzo release administration', () => {
     expect((form.get('claude_package') as File).name).toBe('yingzo-claude-0.2.0.tar.gz')
     expect(form.get('version')).toBe('0.2.0')
   })
+
+  it('shows the backend archive validation error after the API interceptor normalizes it', async () => {
+    mocks.upload.mockRejectedValue({
+      status: 422,
+      error: { code: 'invalid_release_archive', message: 'package is missing apps/review/dist/index.html' },
+      message: 'Request failed with status code 422',
+    })
+    const wrapper = mount(YingzoView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<main><slot /></main>' },
+          RouterLink: { template: '<a><slot /></a>' },
+          Icon: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    const files = wrapper.findAll('input[type="file"]')
+    const openAI = new File(['openai'], 'yingzo-openai-0.2.1.tar.gz', { type: 'application/gzip' })
+    const claude = new File(['claude'], 'yingzo-claude-0.2.1.tar.gz', { type: 'application/gzip' })
+    Object.defineProperty(files[0].element, 'files', { configurable: true, value: [openAI] })
+    Object.defineProperty(files[1].element, 'files', { configurable: true, value: [claude] })
+    await files[0].trigger('change')
+    await files[1].trigger('change')
+    await wrapper.find('input[placeholder="0.1.3"]').setValue('0.2.1')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('上传失败：package is missing apps/review/dist/index.html')
+  })
 })

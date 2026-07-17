@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,7 +92,7 @@ func TestYingzoInstallPromptUsesVerifiedHostCommands(t *testing.T) {
 	require.Contains(t, cowork, "Claude Cowork")
 }
 
-func TestValidateYingzoArchiveRequiresHostSpecificAppAndDistribution(t *testing.T) {
+func TestValidateYingzoArchiveRequiresHostSpecificReviewAppAndDistribution(t *testing.T) {
 	version := "0.2.0"
 	packageFilename := "yingzo-openai-" + version + ".tar.gz"
 	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
@@ -99,11 +100,18 @@ func TestValidateYingzoArchiveRequiresHostSpecificAppAndDistribution(t *testing.
 	writeYingzoTestArchive(t, archive, map[string]string{
 		root + ".agents/plugins/marketplace.json":           "{}",
 		root + "plugins/yingzo/.codex-plugin/plugin.json":   "{}",
-		root + "plugins/yingzo/.app.json":                   "{}",
 		root + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
 		root + "plugins/yingzo/distribution.json":           "{}",
 	})
 	require.NoError(t, validateYingzoArchive(archive, packageFilename, "openai"))
+
+	missingReviewApp := filepath.Join(t.TempDir(), "missing-review-app.tar.gz")
+	writeYingzoTestArchive(t, missingReviewApp, map[string]string{
+		root + ".agents/plugins/marketplace.json":         "{}",
+		root + "plugins/yingzo/.codex-plugin/plugin.json": "{}",
+		root + "plugins/yingzo/distribution.json":         "{}",
+	})
+	require.ErrorContains(t, validateYingzoArchive(missingReviewApp, packageFilename, "openai"), "apps/review/dist/index.html")
 
 	unsafe := filepath.Join(t.TempDir(), "unsafe.tar.gz")
 	writeYingzoTestArchive(t, unsafe, map[string]string{"../escape": "bad"})
@@ -376,6 +384,40 @@ func TestUploadYingzoReleaseCleansArtifactsWhenTransactionCannotStart(t *testing
 		require.NoError(t, err)
 		require.Empty(t, entries)
 	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoReleaseReportsDuplicateVersion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	openAIArchive := filepath.Join(t.TempDir(), "yingzo-openai-0.2.1.tar.gz")
+	claudeArchive := filepath.Join(t.TempDir(), "yingzo-claude-0.2.1.tar.gz")
+	writeYingzoHostArchive(t, openAIArchive, "openai")
+	writeYingzoHostArchive(t, claudeArchive, "claude")
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO yingzo_releases").WillReturnError(&pq.Error{Code: "23505"})
+	mock.ExpectRollback()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	require.NoError(t, writer.WriteField("version", "0.2.1"))
+	writeYingzoMultipartFile(t, writer, "openai_package", openAIArchive)
+	writeYingzoMultipartFile(t, writer, "claude_package", claudeArchive)
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.UploadYingzoRelease(c)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/releases", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, "yingzo_release_version_exists", responseCode(response))
+	require.Contains(t, response.Body.String(), "0.2.1")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

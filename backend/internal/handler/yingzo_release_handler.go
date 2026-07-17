@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const (
@@ -305,7 +306,15 @@ func (h *AgentHandler) UploadYingzoRelease(c *gin.Context) {
 	}
 	if err != nil {
 		cleanup()
-		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_create_failed"}})
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			c.JSON(http.StatusConflict, gin.H{"error": gin.H{
+				"code":    "yingzo_release_version_exists",
+				"message": fmt.Sprintf("Yingzo version %s already exists", version),
+			}})
+			return
+		}
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_create_failed", "message": "failed to create Yingzo release"}})
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -703,7 +712,6 @@ func validateYingzoArchive(filename, packageFilename, hostFamily string) error {
 	case "openai":
 		required[root+".agents/plugins/marketplace.json"] = false
 		required[root+"plugins/yingzo/.codex-plugin/plugin.json"] = false
-		required[root+"plugins/yingzo/.app.json"] = false
 		required[root+"plugins/yingzo/apps/review/dist/index.html"] = false
 	case "claude":
 		required[root+".claude-plugin/marketplace.json"] = false

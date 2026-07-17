@@ -106,6 +106,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { Icon } from '@/components/icons'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import {
   disableYingzoRelease, getYingzoAdminSettings, listYingzoReleases, publishYingzoRelease,
   rollbackYingzoRelease, updateYingzoAdminSettings, uploadYingzoRelease,
@@ -180,9 +181,9 @@ async function uploadRelease() {
     if (claudeFileInput.value) claudeFileInput.value.value = ''
     await loadAll()
   } catch (error) {
-    const response = (error as { response?: { data?: { error?: { message?: string; code?: string } } } }).response
-    const detail = response?.data?.error?.message || response?.data?.error?.code
-    showMessage(detail ? `上传失败：${detail}` : '上传失败。请检查版本是否重复以及安装包文件名和内容。', 'error')
+    const nested = (error as { error?: { message?: string; code?: string } })?.error
+    const detail = nested?.message || nested?.code || extractApiErrorMessage(error, '请检查网络连接和服务器上传限制')
+    showMessage(`上传失败：${detail}`, 'error')
     console.error(error)
   }
   finally { uploading.value = false }
