@@ -187,3 +187,59 @@ tar czf sub2api-deploy.tar.gz .env data postgres_data redis_data docker-compose.
 ```bash
 docker compose -f docker-compose.local.yml up -d
 ```
+
+## 数据库空间诊断与安全清理
+
+`tools/cleanup_nonessential_database.sh` 用于检查并清理可重建的数据库数据。它默认只报告，不修改数据库：
+
+```bash
+./tools/cleanup_nonessential_database.sh
+```
+
+默认连接 `sub2api-postgres` 容器中的 `sub2api` 数据库。其他容器可显式指定：
+
+```bash
+./tools/cleanup_nonessential_database.sh \
+  --container sub2api-postgres-dev \
+  --database sub2api
+```
+
+也可以使用本机 `psql` 直连 PostgreSQL；认证沿用 `.pgpass` 或 `psql` 密码提示，不在命令行传密码：
+
+```bash
+./tools/cleanup_nonessential_database.sh \
+  --host 127.0.0.1 \
+  --port 5432 \
+  --user sub2api \
+  --database sub2api
+```
+
+先审阅报告并完成数据库备份，再执行清理。脚本会要求输入数据库名确认：
+
+```bash
+./tools/cleanup_nonessential_database.sh --apply
+```
+
+默认清理内容只有：
+
+- 将历史 `video_tasks.request_json` 和 `upstream_response_json` 重置为空对象，不删除视频任务、状态、结果地址、扣费或退款记录。
+- 删除已过期的生成报价和幂等记录。
+- 删除过期超过 7 天的设备授权记录。
+- 只删除 `deleted_at` 已存在且超过 7 天的临时资产元数据，不删除仍有效的文件记录。
+
+运维日志默认不删除。需要时必须显式指定保留天数：
+
+```bash
+./tools/cleanup_nonessential_database.sh \
+  --apply \
+  --purge-ops-logs \
+  --log-retention-days 30
+```
+
+普通清理后的 `VACUUM (ANALYZE)` 会让 PostgreSQL 复用空间，但不会立即缩小宿主机上的数据文件。确认业务低峰、磁盘有足够临时空间，并允许短时独占锁后，才执行：
+
+```bash
+./tools/cleanup_nonessential_database.sh --apply --vacuum-full
+```
+
+`VACUUM FULL` 只压缩 `video_tasks`，不会扩大到消费记录或其他核心业务表。脚本不会删除 `usage_logs`、用户、API Key、分组、账号、模型定价、视频任务行或 Yingzo 发行记录。

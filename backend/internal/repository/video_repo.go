@@ -22,6 +22,8 @@ func (r *videoTaskRepository) Create(ctx context.Context, input *service.VideoTa
 	if input == nil {
 		return nil, service.ErrVideoInvalidRequest
 	}
+	// Reference media can be multi-megabyte data URLs. Keep task history focused on
+	// lifecycle and billing fields; request/provider payloads are never persisted.
 	builder := r.client.VideoTask.Create().
 		SetPublicID(input.PublicID).
 		SetNillableRequestID(input.RequestID).
@@ -38,9 +40,7 @@ func (r *videoTaskRepository) Create(ctx context.Context, input *service.VideoTa
 		SetCostPerSecond(input.CostPerSecond).
 		SetTotalCost(input.TotalCost).
 		SetActualCost(input.ActualCost).
-		SetStatus(input.Status).
-		SetRequestJSON(normalizeJSONMap(input.RequestJSON)).
-		SetUpstreamResponseJSON(normalizeJSONMap(input.UpstreamResponseJSON))
+		SetStatus(input.Status)
 	if input.UpstreamTaskID != nil {
 		builder.SetUpstreamTaskID(*input.UpstreamTaskID)
 	}
@@ -72,9 +72,6 @@ func (r *videoTaskRepository) UpdateByPublicID(ctx context.Context, publicID str
 	}
 	if update.UpstreamTaskID != nil {
 		builder.SetUpstreamTaskID(*update.UpstreamTaskID)
-	}
-	if update.UpstreamResponseJSON != nil {
-		builder.SetUpstreamResponseJSON(normalizeJSONMap(update.UpstreamResponseJSON))
 	}
 	if update.ErrorJSON != nil {
 		builder.SetErrorJSON(normalizeJSONMap(update.ErrorJSON))

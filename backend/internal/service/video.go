@@ -209,19 +209,16 @@ type VideoTaskCreateInput struct {
 	ActualCost               float64
 	Status                   string
 	UpstreamTaskID           *string
-	RequestJSON              map[string]any
-	UpstreamResponseJSON     map[string]any
 }
 
 type VideoTaskUpdate struct {
-	Status               *string
-	UpstreamTaskID       *string
-	UpstreamResponseJSON map[string]any
-	ErrorJSON            map[string]any
-	ResultVideoURL       *string
-	CompletedAt          *time.Time
-	BilledAt             *time.Time
-	RefundedAt           *time.Time
+	Status         *string
+	UpstreamTaskID *string
+	ErrorJSON      map[string]any
+	ResultVideoURL *string
+	CompletedAt    *time.Time
+	BilledAt       *time.Time
+	RefundedAt     *time.Time
 }
 
 type VideoTaskRepository interface {

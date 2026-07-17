@@ -399,30 +399,6 @@ func TestSanitizeVideoClientErrorHidesJingyuProvider(t *testing.T) {
 	require.NotContains(t, strings.ToLower(message), "upstream")
 }
 
-func TestVideoUpstreamErrorJSONStoresInternalBody(t *testing.T) {
-	err := &videoUpstreamError{
-		StatusCode: http.StatusServiceUnavailable,
-		Body:       []byte(`{"error":{"code":"model_not_found","message":"provider internal message"}}`),
-	}
-
-	body := videoUpstreamErrorJSON(err)
-	require.Equal(t, http.StatusServiceUnavailable, body["status_code"])
-	require.Contains(t, body["body"], "model_not_found")
-
-	clientErr := mapVideoUpstreamError(err, false)
-	resp := videoResponseFromTask(&VideoTask{
-		PublicID:             "video_local_failed",
-		Model:                VideoModelSeedance20,
-		Status:               VideoTaskStatusFailed,
-		ErrorJSON:            videoErrorJSON(clientErr.VideoClientError),
-		UpstreamResponseJSON: body,
-		CreatedAt:            time.Unix(1782700000, 0),
-	})
-	rendered := mustJSONForVideoTest(t, resp)
-	require.NotContains(t, rendered, "model_not_found")
-	require.NotContains(t, rendered, "provider internal message")
-}
-
 func TestMapVideoUpstreamErrorStatusCodes(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -521,8 +497,86 @@ func TestVideoServiceCreateTaskReturnsQueuedLocalTaskAndStartsLifecycle(t *testi
 	require.Nil(t, task.RefundedAt)
 	require.Equal(t, 8, task.BillableSeconds)
 	require.InDelta(t, 1.6, task.TotalCost, 0.0001)
-	require.NotContains(t, task.RequestJSON, "upstream_payload")
-	require.Contains(t, task.RequestJSON, "submit_json")
+	require.Empty(t, task.RequestJSON)
+	require.Empty(t, task.UpstreamResponseJSON)
+}
+
+func TestVideoServiceForwardsLargeDataURLWithoutPersistingIt(t *testing.T) {
+	groupID := int64(20)
+	apiKey := &APIKey{
+		ID:      10,
+		UserID:  100,
+		GroupID: &groupID,
+		User:    &User{ID: 100, Balance: 100},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+	}
+	account := Account{
+		ID:          30,
+		Platform:    PlatformSeedance,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":       "sk-test",
+			"model_mapping": map[string]any{VideoModelSeedance20: VideoModelSeedance20},
+		},
+	}
+	taskRepo := newVideoTaskMemoryRepo()
+	pricingRepo := &videoPricingMemoryRepo{rule: &VideoGroupPricingRule{
+		GroupID:          groupID,
+		ModelCode:        VideoModelSeedance20,
+		Resolution:       VideoResolution720P,
+		CreditsPerSecond: 0.2,
+		Enabled:          true,
+	}}
+	var lifecycle VideoTaskLifecycleInput
+	service := NewVideoService(
+		&videoAccountRepoStub{accounts: []Account{account}},
+		taskRepo,
+		pricingRepo,
+		&videoUsageLogRepoStub{},
+		&videoUsageBillingRepoStub{},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	service.startLifecycleFunc = func(input VideoTaskLifecycleInput) {
+		lifecycle = input
+	}
+
+	dataURL := "data:image/png;base64," + strings.Repeat("A", 2*1024*1024)
+	resp, err := service.CreateTask(context.Background(), &VideoCreateInput{
+		APIKey: apiKey,
+		Request: &VideoCreateRequest{
+			Model:      VideoModelSeedance20,
+			Prompt:     "animate the reference",
+			Duration:   8,
+			Resolution: VideoResolution720P,
+			Content: []VideoContent{{
+				Type:     "image_url",
+				Role:     "reference_image",
+				ImageURL: &VideoContentURL{URL: dataURL},
+			}},
+		},
+		RequestPayloadHash: "large-reference-hash",
+	})
+
+	require.NoError(t, err)
+	content, ok := lifecycle.UpstreamBody["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 2)
+	require.Equal(t, map[string]any{"url": dataURL}, content[1]["image_url"])
+
+	task, err := taskRepo.GetByPublicID(context.Background(), resp.ID)
+	require.NoError(t, err)
+	require.Empty(t, task.RequestJSON)
+	require.Empty(t, task.UpstreamResponseJSON)
 }
 
 func TestVideoServiceCreateTaskUsesJingyuProviderPayload(t *testing.T) {
@@ -610,9 +664,8 @@ func TestVideoServiceCreateTaskUsesJingyuProviderPayload(t *testing.T) {
 	task, err := taskRepo.GetByPublicID(context.Background(), resp.ID)
 	require.NoError(t, err)
 	require.Equal(t, videoJingyuSeedanceModel, task.UpstreamModel)
-	submitJSON, ok := task.RequestJSON["submit_json"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, videoJingyuSeedanceModel, submitJSON["model"])
+	require.Empty(t, task.RequestJSON)
+	require.Empty(t, task.UpstreamResponseJSON)
 }
 
 func TestVideoServiceCreateTaskUsesManualVideoModelMapping(t *testing.T) {
@@ -1098,8 +1151,8 @@ func (r *videoTaskMemoryRepo) Create(ctx context.Context, input *VideoTaskCreate
 		ActualCost:               input.ActualCost,
 		Status:                   input.Status,
 		UpstreamTaskID:           input.UpstreamTaskID,
-		RequestJSON:              cloneMap(input.RequestJSON),
-		UpstreamResponseJSON:     cloneMap(input.UpstreamResponseJSON),
+		RequestJSON:              map[string]any{},
+		UpstreamResponseJSON:     map[string]any{},
 		CreatedAt:                now,
 		UpdatedAt:                now,
 	}
@@ -1129,9 +1182,6 @@ func (r *videoTaskMemoryRepo) UpdateByPublicID(ctx context.Context, publicID str
 	}
 	if update.UpstreamTaskID != nil {
 		task.UpstreamTaskID = update.UpstreamTaskID
-	}
-	if update.UpstreamResponseJSON != nil {
-		task.UpstreamResponseJSON = cloneMap(update.UpstreamResponseJSON)
 	}
 	if update.ErrorJSON != nil {
 		task.ErrorJSON = cloneMap(update.ErrorJSON)
