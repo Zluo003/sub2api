@@ -85,12 +85,12 @@ sub2api 是 Yingzo（影作）的公开产品入口、授权网关和私有安�
 
 1. 打开 `/admin/yingzo`。
 2. 将通信域名保存为 `https://api-key.cc`。该值保存在数据库设置中，不使用 `.env`。
-3. 先创建 `schema 3` 草稿，再在管理页一次选择整个版本文件夹批量上传。macOS 和 Windows 各有 4 个安装入口（OpenAI、Claude Code、Claude Desktop、Runtime）；Claude Desktop 使用同一个通用 MCPB，因此实际矩阵是 `4 + 4 - 1 = 7` 个唯一文件。页面会自动按文件名识别、去重并忽略 `SHA256SUMS`、manifest、SBOM 等辅助文件。旧 `schema 2` 八项记录只保留历史读取与回滚。
+3. 先创建 `schema 3` 草稿，再在管理页一次选择整个版本文件夹批量上传。macOS 和 Windows 各有 4 个安装入口（OpenAI、Claude Code、Claude Desktop、Runtime）；Claude Desktop 使用同一个通用 MCPB，因此实际矩阵是 `4 + 4 - 1 = 7` 个唯一文件。页面会自动按文件名识别、去重并忽略 `SHA256SUMS`、manifest、SBOM 等辅助文件。每个安装包会自动分块传输，安装包总大小不受反向代理的单请求 body 上限影响；网络中断或响应丢失时从服务端已确认的偏移继续，已完成的安装包不会回滚。旧 `schema 2` 八项记录只保留历史读取与回滚。
 4. 不需要为本地测试准备签名证明或管理员 API Key。服务器仍会校验文件名、大小、SHA-256 和完整矩阵；签名证明只作为有需要时的附加证据。
 5. 默认发布到 `stable`，可直接测试；需要隔离测试时再选择 `prerelease`。系统保证每个通道最多一个当前发布版本。
 6. 出现问题时可按通道回滚或停用。未发布的草稿和空白停用记录可永久删除并释放版本号，曾发布的记录只能停用，不能覆盖或永久删除。
 
-安装包默认保存在持久化目录 `/app/data/releases/`（可用 `YINGZO_RELEASE_STORAGE_DIR` 改为其他绝对路径），PostgreSQL 只保存路径、大小、哈希和发行元数据，不保存二进制内容。公开产品页位于 `/yingzo`。登录用户选择 ChatGPT Work、Codex、Claude Cowork、Claude Desktop 或 Claude Code 后，可复制包含短期 bearer 下载地址、Runtime 检测深链和对应宿主官方安装命令的提示词；下载票据支持 `HEAD`、`Range` 和短期内重试。安装过程必须保留 `~/.yingzo/auth.json`。
+安装包默认保存在持久化目录 `/app/data/releases/`（可用 `YINGZO_RELEASE_STORAGE_DIR` 改为其他绝对路径），PostgreSQL 只保存路径、大小、哈希、上传偏移和发行元数据，不保存二进制内容。未完成上传和完成确认会话在 24 小时后自动清理。公开产品页位于 `/yingzo`。登录用户选择 ChatGPT Work、Codex、Claude Cowork、Claude Desktop 或 Claude Code 后，可复制包含短期 bearer 下载地址、Runtime 检测深链和对应宿主官方安装命令的提示词；下载票据支持 `HEAD`、`Range` 和短期内重试。安装过程必须保留 `~/.yingzo/auth.json`。
 
 发行证明的私钥只存在于受保护的 Yingzo release workflow；sub2api 只配置 base64 原始 32 字节公钥。密钥轮换前，旧公钥必须继续留在 `YINGZO_RELEASE_PUBLIC_KEYS`，直到所有使用它签名的发布版本不再发布或可回滚。
 

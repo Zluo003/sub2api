@@ -2358,6 +2358,13 @@ func (h *AgentHandler) CleanupYingzoReleaseTemporaryFiles(olderThan time.Time) (
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
+				if entry.Name() == ".uploads" && h.db != nil {
+					count, cleanupErr := h.cleanupOrphanYingzoUploadParts(context.Background(), releaseID, filepath.Join(releaseDir, entry.Name()), olderThan)
+					if cleanupErr != nil {
+						return removed, cleanupErr
+					}
+					removed += count
+				}
 				continue
 			}
 			info, infoErr := entry.Info()

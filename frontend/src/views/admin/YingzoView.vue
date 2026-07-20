@@ -73,7 +73,7 @@
               <section v-if="release.status === 'draft' && release.id" class="batch-upload-panel">
                 <div>
                   <strong class="text-sm text-gray-800 dark:text-gray-100">批量上传安装包</strong>
-                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">一次选择整个 {{ release.version }} 文件夹即可。macOS 和 Windows 各有 4 个入口（OpenAI、Claude Code、Claude Desktop、Runtime），Claude Desktop 是同一个通用包，所以实际只需上传 7 个唯一文件（4 + 4 - 1）；重复包和 SHA256/manifest/SBOM 会自动处理。</p>
+                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">一次选择整个 {{ release.version }} 文件夹即可。系统按发行矩阵逐项传输，已成功项立即保留；Claude Desktop 重复包和 SHA256/manifest/SBOM 会自动处理。</p>
                 </div>
                 <input
                   type="file"
@@ -87,9 +87,11 @@
                 />
                 <div class="mt-2 flex flex-wrap items-center gap-2">
                   <span v-if="batchFilesFor(release.id).length" class="text-xs text-gray-500">已选择 {{ batchFilesFor(release.id).length }} 个文件</span>
-                  <button type="button" class="btn btn-primary btn-xs" :disabled="releaseBusy(release) || !batchFilesFor(release.id).length" @click="uploadBatch(release)">{{ batchUploadingReleaseId === release.id ? '上传中' : '自动识别并上传' }}</button>
+                  <button type="button" class="btn btn-primary btn-xs" :disabled="releaseBusy(release) || !batchFilesFor(release.id).length" @click="uploadBatch(release)">{{ batchActionLabel(release.id) }}</button>
                 </div>
-                <p v-if="batchResultFor(release.id)" class="mt-2 text-xs leading-5 text-gray-600 dark:text-gray-300">已接收 {{ batchResultFor(release.id)?.uploaded.length || 0 }} 个<span v-if="batchResultFor(release.id)?.skipped_duplicates.length">，跳过重复 {{ batchResultFor(release.id)?.skipped_duplicates.length }} 个</span><span v-if="batchResultFor(release.id)?.ignored_files.length">，忽略辅助文件 {{ batchResultFor(release.id)?.ignored_files.length }} 个</span><span v-if="batchResultFor(release.id)?.missing_artifacts.length">，仍缺少 {{ batchResultFor(release.id)?.missing_artifacts.length }} 个</span><span v-else>，发行矩阵已完整</span>。</p>
+                <p v-if="batchProgressFor(release.id)" class="mt-2 text-xs leading-5 text-gray-600 dark:text-gray-300">正在传输 {{ batchProgressFor(release.id)?.current }}/{{ batchProgressFor(release.id)?.total }}：{{ batchProgressFor(release.id)?.filename }}<span v-if="batchProgressPercent(release.id) !== undefined"> · {{ batchProgressPercent(release.id) }}%</span></p>
+                <p v-if="batchResultFor(release.id)" class="mt-2 text-xs leading-5 text-gray-600 dark:text-gray-300">本次成功 {{ batchResultFor(release.id)?.uploaded.length || 0 }} 个<span v-if="batchResultFor(release.id)?.skipped_duplicates.length">，跳过重复 {{ batchResultFor(release.id)?.skipped_duplicates.length }} 个</span><span v-if="batchResultFor(release.id)?.ignored_files.length">，忽略辅助文件 {{ batchResultFor(release.id)?.ignored_files.length }} 个</span><span v-if="batchResultFor(release.id)?.errors?.length">，失败 {{ batchResultFor(release.id)?.errors?.length }} 个</span><span v-if="batchResultFor(release.id)?.missing_artifacts.length">，仍缺少 {{ batchResultFor(release.id)?.missing_artifacts.length }} 个</span><span v-else>，发行矩阵已完整</span>。</p>
+                <p v-if="batchResultFor(release.id)?.errors?.length" class="mt-1 text-xs leading-5 text-red-600 dark:text-red-300">{{ batchErrorSummary(release.id) }}</p>
               </section>
               <section v-for="slot in artifactSlotsFor(release)" :key="slot.key" class="artifact-slot">
                 <div class="min-w-0">
@@ -141,13 +143,21 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import {
   createYingzoReleaseDraft, deleteYingzoReleaseArtifact, disableYingzoRelease,
   getYingzoAdminSettings, listYingzoReleases, publishYingzoRelease,
-  promoteYingzoRelease, purgeYingzoRelease, replaceYingzoReleaseArtifact, rollbackYingzoRelease, updateYingzoAdminSettings,
-  uploadYingzoReleaseArtifact, uploadYingzoReleaseArtifactsBatch, type YingzoAdminSettings, type YingzoArtifactUploadInput,
+  promoteYingzoRelease, purgeYingzoRelease, rollbackYingzoRelease, updateYingzoAdminSettings,
+  uploadYingzoReleaseArtifactTransport, type YingzoAdminSettings, type YingzoArtifactTransferInput, type YingzoArtifactUploadInput,
   type YingzoBatchUploadResult,
   type YingzoArtifactRequirement, type YingzoReleaseArtifact, type YingzoReleaseSummary,
 } from '@/api/yingzo'
 
 type ArtifactSlot = Omit<YingzoArtifactUploadInput, 'file' | 'runtime_protocol'> & { key: string; label: string; filename: (version: string) => string; accept: string }
+type BatchTransferTask = { slot: ArtifactSlot; file: File; filename: string }
+type BatchUploadProgress = { current: number; total: number; filename: string; uploadedBytes: number; totalBytes: number }
+type PreparedBatch = {
+  tasks: BatchTransferTask[]
+  skipped: YingzoBatchUploadResult['skipped_duplicates']
+  ignored: string[]
+  errors: YingzoBatchUploadResult['errors']
+}
 
 // Schema 2 is read-only compatibility for already published v0.2.x releases.
 // Keep its eight slots intact so historical release records remain legible.
@@ -186,6 +196,7 @@ const purgingReleaseId = ref<string | null>(null)
 const selectedFiles = reactive<Record<string, File | undefined>>({})
 const batchFiles = reactive<Record<string, File[]>>({})
 const batchResults = reactive<Record<string, YingzoBatchUploadResult | undefined>>({})
+const batchProgress = reactive<Record<string, BatchUploadProgress | undefined>>({})
 const message = ref('')
 const messageKind = ref<'success' | 'error'>('success')
 const draftForm = reactive({ version: '0.3.0', channel: 'stable' as 'prerelease' | 'stable', runtimeProtocol: 1, minCodex: '0.143.0', minClaude: '2.1.201', notes: '' })
@@ -210,9 +221,25 @@ function selectedArtifactFile(releaseID: string, slotKey: string) { return selec
 function selectArtifactFile(releaseID: string, slotKey: string, event: Event) { selectedFiles[selectionKey(releaseID, slotKey)] = (event.target as HTMLInputElement).files?.[0] }
 function batchFilesFor(releaseID: string) { return batchFiles[releaseID] || [] }
 function batchResultFor(releaseID?: string) { return releaseID ? batchResults[releaseID] : undefined }
+function batchProgressFor(releaseID?: string) { return releaseID ? batchProgress[releaseID] : undefined }
+function batchProgressPercent(releaseID?: string) {
+  const progress = batchProgressFor(releaseID)
+  if (!progress?.totalBytes) return undefined
+  return Math.min(100, Math.round((progress.uploadedBytes / progress.totalBytes) * 100))
+}
+function batchActionLabel(releaseID: string) {
+  const progress = batchProgressFor(releaseID)
+  if (progress) return `上传中 ${progress.current}/${progress.total}`
+  const failed = batchResultFor(releaseID)?.errors?.length || 0
+  return failed && batchFilesFor(releaseID).length ? `重试失败项（${failed}）` : '自动识别并上传'
+}
+function batchErrorSummary(releaseID?: string) {
+  return batchResultFor(releaseID)?.errors?.map((item) => `${item.filename}：${item.message}`).join('；') || ''
+}
 function selectBatchFiles(releaseID: string, event: Event) {
   batchFiles[releaseID] = Array.from((event.target as HTMLInputElement).files || [])
   delete batchResults[releaseID]
+  delete batchProgress[releaseID]
 }
 
 function artifactRows(release: YingzoReleaseSummary): YingzoReleaseArtifact[] {
@@ -323,6 +350,49 @@ function artifactForSlot(release: YingzoReleaseSummary, slot: ArtifactSlot): Yin
   return artifactRows(release).find((artifact) => artifact.target === slot.target && artifact.os === slot.os && artifact.arch === slot.arch)
 }
 
+function prepareBatchUpload(release: YingzoReleaseSummary, files: File[]): PreparedBatch {
+  const slots = artifactSlotsFor(release)
+  const slotsByFilename = new Map(slots.map((slot) => [expectedFilename(slot, release.version), slot]))
+  const selected = new Map<string, File>()
+  const skipped: PreparedBatch['skipped'] = []
+  const ignored: string[] = []
+  const errors: PreparedBatch['errors'] = []
+
+  for (const file of files) {
+    const filename = selectedFileName(file)
+    const slot = slotsByFilename.get(filename)
+    if (!slot) {
+      if (looksLikeInstallablePackage(filename)) errors.push({ filename, message: '文件名不属于当前发行矩阵' })
+      else ignored.push(filename)
+      continue
+    }
+    if (selected.has(filename)) {
+      skipped.push({ filename, reason: 'duplicate_filename' })
+      continue
+    }
+    selected.set(filename, file)
+  }
+
+  return {
+    tasks: slots.flatMap((slot) => {
+      const filename = expectedFilename(slot, release.version)
+      const file = selected.get(filename)
+      return file ? [{ slot, file, filename }] : []
+    }),
+    skipped,
+    ignored,
+    errors,
+  }
+}
+
+function selectedFileName(file: File) {
+  return file.name.split(/[\\/]/).pop() || file.name
+}
+
+function looksLikeInstallablePackage(filename: string) {
+  return /\.(?:zip|mcpb|dmg|exe|pkg|msi|tar|tgz|gz|7z)$/i.test(filename)
+}
+
 function canPublish(release: YingzoReleaseSummary) {
   if ((release.distribution_schema_version || 1) < 2) return artifactRows(release).length >= 1
   const slots = artifactSlotsFor(release)
@@ -355,7 +425,7 @@ async function createDraft() {
       channel: draftForm.channel,
       distribution_schema_version: 3,
       runtime_protocol: draftForm.runtimeProtocol,
-      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7, upload_mode: 'directory-batch' },
+      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7, upload_mode: 'directory-chunked' },
       min_codex_version: draftForm.minCodex,
       min_claude_version: draftForm.minClaude,
       release_notes: draftForm.notes,
@@ -378,18 +448,71 @@ async function uploadBatch(release: YingzoReleaseSummary) {
   if (!release.id || releaseBusy(release)) return
   const files = batchFilesFor(release.id)
   if (!files.length) return
+
+  const slots = artifactSlotsFor(release)
+  const prepared = prepareBatchUpload(release, files)
+  const availableSlots = new Set(slots.filter((slot) => Boolean(artifactForSlot(release, slot))).map((slot) => slot.key))
+  const uploaded: YingzoReleaseArtifact[] = []
+  const errors = [...prepared.errors]
+  const failedFiles: File[] = []
   batchUploadingReleaseId.value = release.id
   try {
-    const result = await uploadYingzoReleaseArtifactsBatch(release.id, files)
+    for (const [index, task] of prepared.tasks.entries()) {
+      batchProgress[release.id] = {
+        current: index + 1,
+        total: prepared.tasks.length,
+        filename: task.filename,
+        uploadedBytes: 0,
+        totalBytes: task.file.size,
+      }
+      const existing = artifactForSlot(release, task.slot)
+      const input: YingzoArtifactTransferInput = {
+        ...task.slot,
+        file: task.file,
+        runtime_protocol: release.runtime_protocol || 1,
+        existing_artifact_id: existing?.id,
+      }
+      try {
+        const artifact = await uploadYingzoReleaseArtifactTransport(release.id, input, {
+          onProgress: (progress) => {
+            const current = batchProgress[release.id!]
+            if (!current || current.filename !== task.filename) return
+            current.uploadedBytes = progress.uploaded_bytes
+            current.totalBytes = progress.total_bytes
+          },
+        })
+        uploaded.push(artifact)
+        availableSlots.add(task.slot.key)
+      } catch (error) {
+        failedFiles.push(task.file)
+        errors.push({ filename: task.filename, message: apiErrorDetail(error, '传输失败') })
+        console.error(error)
+      }
+    }
+
+    const missingArtifacts = slots
+      .filter((slot) => !availableSlots.has(slot.key))
+      .map((slot) => expectedFilename(slot, release.version))
+    const result: YingzoBatchUploadResult = {
+      uploaded,
+      skipped_duplicates: prepared.skipped,
+      ignored_files: prepared.ignored,
+      missing_artifacts: missingArtifacts,
+      complete: missingArtifacts.length === 0,
+      expected_count: slots.length,
+      received_count: availableSlots.size,
+      errors,
+    }
     batchResults[release.id] = result
-    batchFiles[release.id] = []
+    batchFiles[release.id] = failedFiles
     const missing = result.missing_artifacts.length ? `，还缺少 ${result.missing_artifacts.length} 个` : '，发行矩阵已完整'
-    showMessage(`批量上传完成：已接收 ${result.uploaded.length} 个${result.skipped_duplicates.length ? `，跳过重复 ${result.skipped_duplicates.length} 个` : ''}${missing}。`)
+    const retry = errors.length ? `，失败 ${errors.length} 个；成功项已保留，可直接重试失败项` : ''
+    showMessage(`批量上传完成：本次成功 ${result.uploaded.length} 个${result.skipped_duplicates.length ? `，跳过重复 ${result.skipped_duplicates.length} 个` : ''}${retry}${missing}。`, errors.length ? 'error' : 'success')
     await loadAll()
-  } catch (error) {
-    showMessage(`批量上传失败：${apiErrorDetail(error, '请确认选择的是本版本文件夹')}`, 'error')
-    console.error(error)
-  } finally { if (batchUploadingReleaseId.value === release.id) batchUploadingReleaseId.value = null }
+  } finally {
+    delete batchProgress[release.id]
+    if (batchUploadingReleaseId.value === release.id) batchUploadingReleaseId.value = null
+  }
 }
 
 async function uploadArtifact(release: YingzoReleaseSummary, slot: ArtifactSlot) {
@@ -398,15 +521,15 @@ async function uploadArtifact(release: YingzoReleaseSummary, slot: ArtifactSlot)
   if (!file) return
   const key = selectionKey(release.id, slot.key)
   uploadingSlot.value = key
-  const input: YingzoArtifactUploadInput = {
+  const existing = artifactForSlot(release, slot)
+  const input: YingzoArtifactTransferInput = {
     ...slot,
     file,
     runtime_protocol: release.runtime_protocol || 1,
+    existing_artifact_id: existing?.id,
   }
   try {
-    const existing = artifactForSlot(release, slot)
-    if (existing?.id) await replaceYingzoReleaseArtifact(release.id, existing.id, input)
-    else await uploadYingzoReleaseArtifact(release.id, input)
+    await uploadYingzoReleaseArtifactTransport(release.id, input)
     delete selectedFiles[key]
     showMessage(`${slot.label} 已上传。`)
     await loadAll()

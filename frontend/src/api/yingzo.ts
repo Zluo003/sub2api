@@ -145,6 +145,34 @@ export interface YingzoArtifactUploadInput {
   runtime_protocol: number
 }
 
+export interface YingzoArtifactTransferInput extends YingzoArtifactUploadInput {
+  existing_artifact_id?: string
+}
+
+export interface YingzoArtifactTransferProgress {
+  uploaded_bytes: number
+  total_bytes: number
+}
+
+export interface YingzoArtifactTransferOptions {
+  onProgress?: (progress: YingzoArtifactTransferProgress) => void
+}
+
+interface YingzoArtifactUploadSession {
+  upload_id: string
+  offset: number
+  chunk_size: number
+  total_bytes?: number
+  artifact?: YingzoReleaseArtifact
+}
+
+interface YingzoArtifactChunkReceipt {
+  upload_id: string
+  offset: number
+  accepted_bytes?: number
+  replayed?: boolean
+}
+
 export interface YingzoBatchUploadDuplicate {
   filename: string
   reason: string
@@ -158,6 +186,7 @@ export interface YingzoBatchUploadResult {
   complete: boolean
   expected_count: number
   received_count: number
+  errors: Array<{ filename: string; message: string }>
 }
 
 export interface YingzoReleaseProofInput {
@@ -197,29 +226,62 @@ export async function createYingzoReleaseDraft(input: YingzoReleaseDraftInput): 
 }
 
 export async function uploadYingzoReleaseArtifact(releaseID: string, input: YingzoArtifactUploadInput): Promise<YingzoReleaseArtifact> {
-  const form = artifactForm(input)
-  const { data } = await apiClient.post<YingzoReleaseArtifact>(`/admin/yingzo/releases/${encodeURIComponent(releaseID)}/artifacts`, form, uploadConfig)
-  return data
-}
-
-/** Upload a complete release directory in one request. The server identifies
- * packages from their canonical filenames and safely ignores checksums and
- * other release metadata files. */
-export async function uploadYingzoReleaseArtifactsBatch(releaseID: string, files: File[]): Promise<YingzoBatchUploadResult> {
-  const form = new FormData()
-  for (const file of files) form.append('files', file, file.name)
-  const { data } = await apiClient.post<YingzoBatchUploadResult>(
-    `/admin/yingzo/releases/${encodeURIComponent(releaseID)}/artifacts/batch`,
-    form,
-    uploadConfig,
-  )
-  return data
+  return uploadYingzoReleaseArtifactTransport(releaseID, input)
 }
 
 export async function replaceYingzoReleaseArtifact(releaseID: string, artifactID: string, input: YingzoArtifactUploadInput): Promise<YingzoReleaseArtifact> {
-  const form = artifactForm(input)
-  const { data } = await apiClient.put<YingzoReleaseArtifact>(`/admin/yingzo/releases/${encodeURIComponent(releaseID)}/artifacts/${encodeURIComponent(artifactID)}`, form, uploadConfig)
-  return data
+  return uploadYingzoReleaseArtifactTransport(releaseID, { ...input, existing_artifact_id: artifactID })
+}
+
+/**
+ * The UI has exactly one artifact-transfer boundary. Directory uploads call
+ * this helper once per server-declared slot; the transport implementation can
+ * move from whole-file multipart to resumable chunks without changing the UI
+ * orchestration or retry state.
+ */
+export async function uploadYingzoReleaseArtifactTransport(
+  releaseID: string,
+  input: YingzoArtifactTransferInput,
+  options: YingzoArtifactTransferOptions = {},
+): Promise<YingzoReleaseArtifact> {
+  const baseURL = `/admin/yingzo/releases/${encodeURIComponent(releaseID)}/artifact-uploads`
+  const { data: session } = await retryTransientRequest(() => apiClient.post<YingzoArtifactUploadSession>(baseURL, {
+    artifact_kind: input.artifact_kind,
+    target: input.target,
+    os: input.os,
+    arch: input.arch,
+    runtime_protocol: input.runtime_protocol,
+    package_filename: input.file.name,
+    size_bytes: input.file.size,
+    client_upload_id: clientUploadID(
+      input.file,
+      `${releaseID}:${input.target}:${input.os}:${input.arch}`,
+    ),
+  }))
+  assertUploadSession(session, input.file.size)
+
+  const uploadURL = `${baseURL}/${encodeURIComponent(session.upload_id)}`
+  const chunkSize = Math.min(session.chunk_size, yingzoClientChunkMaxBytes)
+  let offset = session.offset
+  options.onProgress?.({ uploaded_bytes: offset, total_bytes: input.file.size })
+  while (offset < input.file.size) {
+    offset = await uploadArtifactChunkWithRecovery(uploadURL, input.file, offset, chunkSize, options)
+    options.onProgress?.({ uploaded_bytes: offset, total_bytes: input.file.size })
+  }
+
+  try {
+    const { data: artifact } = await retryTransientRequest(
+      () => apiClient.post<YingzoReleaseArtifact>(`${uploadURL}/complete`, {}),
+      yingzoTransferRetryCount,
+    )
+    return artifact
+  } catch (error) {
+    // A complete response can be lost after the artifact transaction commits.
+    // The status endpoint may return that artifact, avoiding a false failure.
+    const recovered = await readArtifactUploadStatus(uploadURL)
+    if (recovered?.artifact) return recovered.artifact
+    throw error
+  }
 }
 
 export async function deleteYingzoReleaseArtifact(releaseID: string, artifactID: string): Promise<void> {
@@ -276,13 +338,127 @@ const uploadConfig = {
   timeout: 10 * 60 * 1000,
 }
 
-function artifactForm(input: YingzoArtifactUploadInput): FormData {
-  const form = new FormData()
-  form.set('file', input.file)
-  form.set('artifact_kind', input.artifact_kind)
-  form.set('target', input.target)
-  form.set('os', input.os)
-  form.set('arch', input.arch)
-  form.set('runtime_protocol', String(input.runtime_protocol))
-  return form
+const yingzoClientChunkMaxBytes = 8 * 1024 * 1024
+const yingzoTransferRetryCount = 3
+const yingzoTransferRetryBaseDelayMS = 150
+const yingzoClientUploadIDs = new WeakMap<File, Map<string, string>>()
+
+function clientUploadID(file: File, scope: string) {
+  let scopedIDs = yingzoClientUploadIDs.get(file)
+  const existing = scopedIDs?.get(scope)
+  if (existing) return existing
+  const generated = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  if (!scopedIDs) {
+    scopedIDs = new Map<string, string>()
+    yingzoClientUploadIDs.set(file, scopedIDs)
+  }
+  scopedIDs.set(scope, generated)
+  return generated
+}
+
+function assertUploadSession(session: YingzoArtifactUploadSession, fileSize: number) {
+  if (!session?.upload_id
+    || !Number.isSafeInteger(session.offset)
+    || session.offset < 0
+    || session.offset > fileSize
+    || !Number.isSafeInteger(session.chunk_size)
+    || session.chunk_size <= 0) {
+    throw new Error('Yingzo upload returned an invalid session')
+  }
+}
+
+async function uploadArtifactChunkWithRecovery(
+  uploadURL: string,
+  file: File,
+  initialOffset: number,
+  chunkSize: number,
+  options: YingzoArtifactTransferOptions,
+) {
+  const offset = initialOffset
+  let retry = 0
+  while (true) {
+    const end = Math.min(offset + chunkSize, file.size)
+    const chunk = file.slice(offset, end)
+    try {
+      const { data: receipt } = await apiClient.put<YingzoArtifactChunkReceipt>(uploadURL, chunk, {
+        headers: { 'Content-Type': 'application/octet-stream', 'Upload-Offset': String(offset) },
+        timeout: 10 * 60 * 1000,
+        onUploadProgress: (event: { loaded: number }) => options.onProgress?.({
+          uploaded_bytes: Math.min(offset + event.loaded, file.size),
+          total_bytes: file.size,
+        }),
+      })
+      if (!Number.isSafeInteger(receipt.offset) || receipt.offset <= offset || receipt.offset > file.size) {
+        throw new Error('Yingzo upload returned an invalid chunk offset')
+      }
+      return receipt.offset
+    } catch (error) {
+      // Always ask for authoritative state. This handles a lost success
+      // response and 409 offset conflicts without re-sending accepted bytes.
+      const recovered = await recoverArtifactUploadOffset(uploadURL, file.size)
+      if (recovered !== undefined && recovered !== offset) return recovered
+      if (!isRetryableTransferError(error, true) || retry >= yingzoTransferRetryCount) throw error
+      await transferRetryDelay(retry)
+      retry += 1
+    }
+  }
+}
+
+async function recoverArtifactUploadOffset(uploadURL: string, fileSize: number) {
+  const status = await readArtifactUploadStatus(uploadURL)
+  if (status && Number.isSafeInteger(status.offset) && status.offset >= 0 && status.offset <= fileSize) return status.offset
+  return undefined
+}
+
+async function readArtifactUploadStatus(uploadURL: string) {
+  try {
+    const { data } = await retryTransientRequest(
+      () => apiClient.get<YingzoArtifactUploadSession>(uploadURL),
+      1,
+    )
+    return data
+  } catch {
+    return undefined
+  }
+}
+
+async function retryTransientRequest<T>(operation: () => Promise<T>, maxRetries = yingzoTransferRetryCount): Promise<T> {
+  let retry = 0
+  while (true) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!isRetryableTransferError(error) || retry >= maxRetries) throw error
+      await transferRetryDelay(retry)
+      retry += 1
+    }
+  }
+}
+
+function isRetryableTransferError(error: unknown, allowOffsetConflict = false) {
+  const structured = error as {
+    status?: unknown
+    code?: unknown
+    error?: { code?: unknown }
+    isAxiosError?: boolean
+    request?: unknown
+    response?: unknown
+  }
+  const status = Number(structured?.status)
+  const code = String(structured?.error?.code || structured?.code || '')
+  const networkCodes = new Set(['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ENETUNREACH', 'EAI_AGAIN'])
+  const noResponse = structured?.response === undefined && (structured?.isAxiosError === true || structured?.request !== undefined)
+  return status === 0
+    || status >= 500
+    || networkCodes.has(code)
+    || noResponse
+    || (allowOffsetConflict && status === 409 && code === 'upload_offset_conflict')
+}
+
+function transferRetryDelay(retry: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, yingzoTransferRetryBaseDelayMS * (2 ** retry))
+  })
 }

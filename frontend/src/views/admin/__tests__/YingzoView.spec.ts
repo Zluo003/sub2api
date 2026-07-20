@@ -4,9 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import YingzoView from '../YingzoView.vue'
 
 const mocks = vi.hoisted(() => ({
-  list: vi.fn(), settings: vi.fn(), createDraft: vi.fn(), uploadArtifact: vi.fn(),
-  uploadBatch: vi.fn(),
-  replaceArtifact: vi.fn(), deleteArtifact: vi.fn(), updateSettings: vi.fn(),
+  list: vi.fn(), settings: vi.fn(), createDraft: vi.fn(), transferArtifact: vi.fn(),
+  deleteArtifact: vi.fn(), updateSettings: vi.fn(),
   publish: vi.fn(), promote: vi.fn(), rollback: vi.fn(), disable: vi.fn(), purge: vi.fn(),
 }))
 
@@ -14,9 +13,7 @@ vi.mock('@/api/yingzo', () => ({
   listYingzoReleases: mocks.list,
   getYingzoAdminSettings: mocks.settings,
   createYingzoReleaseDraft: mocks.createDraft,
-  uploadYingzoReleaseArtifact: mocks.uploadArtifact,
-  uploadYingzoReleaseArtifactsBatch: mocks.uploadBatch,
-  replaceYingzoReleaseArtifact: mocks.replaceArtifact,
+  uploadYingzoReleaseArtifactTransport: mocks.transferArtifact,
   deleteYingzoReleaseArtifact: mocks.deleteArtifact,
   updateYingzoAdminSettings: mocks.updateSettings,
   publishYingzoRelease: mocks.publish,
@@ -73,7 +70,7 @@ describe('Yingzo release administration', () => {
     mocks.list.mockResolvedValue([])
     mocks.settings.mockResolvedValue({ public_origin: 'https://api-key.cc', effective_origin: 'https://api-key.cc', release_storage: '/data/releases' })
     mocks.createDraft.mockResolvedValue(schema2Draft())
-    mocks.uploadArtifact.mockResolvedValue({ id: 'artifact-1' })
+    mocks.transferArtifact.mockResolvedValue({ id: 'artifact-1', package_filename: 'uploaded', size_bytes: 1 })
   })
 
   it('creates a schema 3 prerelease draft with the current seven-artifact contract', async () => {
@@ -87,7 +84,7 @@ describe('Yingzo release administration', () => {
     expect(mocks.createDraft).toHaveBeenCalledWith(expect.objectContaining({
       version: '0.3.1', channel: 'stable', distribution_schema_version: 3,
       runtime_protocol: 1,
-      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7, upload_mode: 'directory-batch' },
+      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7, upload_mode: 'directory-chunked' },
     }))
   })
 
@@ -113,24 +110,18 @@ describe('Yingzo release administration', () => {
     expect(wrapper.text()).not.toContain('Runtime · macOS Intel')
   })
 
-  it('uploads a selected release directory once and reports deduplication', async () => {
+  it('orchestrates a selected release directory one slot at a time and reports deduplication', async () => {
     mocks.list.mockResolvedValue([schema3Draft()])
-    mocks.uploadBatch.mockResolvedValue({
-      uploaded: [{ id: 'artifact-1', package_filename: 'yingzo-openai-macos-0.3.0.tar.gz', size_bytes: 1024 }],
-      skipped_duplicates: [{ filename: 'yingzo-claude-desktop-0.3.0.mcpb', reason: 'duplicate_content' }],
-      ignored_files: ['SHA256SUMS.txt'],
-      missing_artifacts: ['yingzo-runtime-windows-x64-0.3.0-setup.exe'],
-      complete: false,
-      expected_count: 7,
-      received_count: 6,
-    })
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
     const directoryInput = wrapper.find('input[data-batch-upload="true"]')
+    const desktopA = new File(['claude'], 'yingzo-claude-desktop-0.3.0.mcpb')
+    const desktopB = new File(['claude'], 'yingzo-claude-desktop-0.3.0.mcpb')
     const files = [
       new File(['openai'], 'yingzo-openai-macos-0.3.0.tar.gz'),
-      new File(['claude'], 'yingzo-claude-desktop-0.3.0.mcpb'),
+      desktopA,
+      desktopB,
       new File(['sum'], 'SHA256SUMS.txt'),
     ]
     Object.defineProperty(directoryInput.element, 'files', { configurable: true, value: files })
@@ -138,9 +129,101 @@ describe('Yingzo release administration', () => {
     await wrapper.findAll('button').find((button) => button.text() === '自动识别并上传')!.trigger('click')
     await flushPromises()
 
-    expect(mocks.uploadBatch).toHaveBeenCalledWith('release-3', files)
+    expect(mocks.transferArtifact).toHaveBeenCalledTimes(2)
+    expect(mocks.transferArtifact.mock.calls.map((call) => call[1].file.name)).toEqual([
+      'yingzo-openai-macos-0.3.0.tar.gz',
+      'yingzo-claude-desktop-0.3.0.mcpb',
+    ])
     expect(wrapper.text()).toContain('跳过重复 1 个')
-    expect(wrapper.text()).toContain('仍缺少 1 个')
+    expect(wrapper.text()).toContain('忽略辅助文件 1 个')
+    expect(wrapper.text()).toContain('仍缺少 5 个')
+  })
+
+  it('waits for each slot before starting the next transfer', async () => {
+    let resolveFirst!: (artifact: unknown) => void
+    mocks.list.mockResolvedValue([schema3Draft()])
+    mocks.transferArtifact
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ id: 'artifact-2', package_filename: 'yingzo-openai-windows-x64-0.3.0.zip', size_bytes: 1 })
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const files = [
+      new File(['mac'], 'yingzo-openai-macos-0.3.0.tar.gz'),
+      new File(['win'], 'yingzo-openai-windows-x64-0.3.0.zip'),
+    ]
+    const directoryInput = wrapper.find('input[data-batch-upload="true"]')
+    Object.defineProperty(directoryInput.element, 'files', { configurable: true, value: files })
+    await directoryInput.trigger('change')
+    await wrapper.findAll('button').find((button) => button.text() === '自动识别并上传')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.transferArtifact).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('上传中 1/2')
+    resolveFirst({ id: 'artifact-1', package_filename: files[0].name, size_bytes: 1 })
+    await flushPromises()
+    expect(mocks.transferArtifact).toHaveBeenCalledTimes(2)
+  })
+
+  it('marks an occupied server slot for replacement through the shared transport', async () => {
+    const existing = {
+      id: 'artifact-existing', artifact_kind: 'host_package', target: 'openai', os: 'macos', arch: 'any',
+      package_filename: 'yingzo-openai-macos-0.3.0.tar.gz', size_bytes: 3,
+    }
+    mocks.list.mockResolvedValue([{ ...schema3Draft(), artifact_matrix: [existing] }])
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const file = new File(['new'], existing.package_filename)
+    const directoryInput = wrapper.find('input[data-batch-upload="true"]')
+    Object.defineProperty(directoryInput.element, 'files', { configurable: true, value: [file] })
+    await directoryInput.trigger('change')
+    await wrapper.findAll('button').find((button) => button.text() === '自动识别并上传')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.transferArtifact).toHaveBeenCalledWith('release-3', expect.objectContaining({
+      file,
+      existing_artifact_id: 'artifact-existing',
+    }), expect.any(Object))
+  })
+
+  it('keeps only failed files for retry while preserving successful slots', async () => {
+    const persisted = {
+      id: 'artifact-mac', artifact_kind: 'host_package', target: 'openai', os: 'macos', arch: 'any',
+      package_filename: 'yingzo-openai-macos-0.3.0.tar.gz', size_bytes: 3,
+    }
+    mocks.list
+      .mockResolvedValueOnce([schema3Draft()])
+      .mockResolvedValue([{ ...schema3Draft(), artifact_matrix: [persisted] }])
+    mocks.transferArtifact
+      .mockResolvedValueOnce(persisted)
+      .mockRejectedValueOnce({ error: { message: '网络中断' } })
+      .mockResolvedValueOnce({
+        id: 'artifact-win', artifact_kind: 'host_package', target: 'openai', os: 'windows', arch: 'x64',
+        package_filename: 'yingzo-openai-windows-x64-0.3.0.zip', size_bytes: 3,
+      })
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const files = [
+      new File(['mac'], 'yingzo-openai-macos-0.3.0.tar.gz'),
+      new File(['win'], 'yingzo-openai-windows-x64-0.3.0.zip'),
+    ]
+    const directoryInput = wrapper.find('input[data-batch-upload="true"]')
+    Object.defineProperty(directoryInput.element, 'files', { configurable: true, value: files })
+    await directoryInput.trigger('change')
+    await wrapper.findAll('button').find((button) => button.text() === '自动识别并上传')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.transferArtifact).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('成功项已保留')
+    const retry = wrapper.findAll('button').find((button) => button.text().includes('重试失败项'))
+    expect(retry).toBeDefined()
+    await retry!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.transferArtifact).toHaveBeenCalledTimes(3)
+    expect(mocks.transferArtifact.mock.calls[2][1].file).toBe(files[1])
   })
 
   it('prefers server-declared schema 3 requirements over the default matrix', async () => {
@@ -178,7 +261,7 @@ describe('Yingzo release administration', () => {
     await upload!.trigger('click')
     await flushPromises()
 
-    expect(mocks.uploadArtifact).toHaveBeenCalledWith('release-1', expect.objectContaining({
+    expect(mocks.transferArtifact).toHaveBeenCalledWith('release-1', expect.objectContaining({
       file: archive, artifact_kind: 'host_package', target: 'openai', os: 'macos', arch: 'any', runtime_protocol: 1,
     }))
   })
@@ -203,7 +286,7 @@ describe('Yingzo release administration', () => {
 
   it('shows the server filename or slot error when an upload is rejected', async () => {
     mocks.list.mockResolvedValue([schema2Draft()])
-    mocks.uploadArtifact.mockRejectedValue({ error: { code: 'invalid_package_filename', message: 'package filename must be yingzo-openai-macos-0.3.0.tar.gz' } })
+    mocks.transferArtifact.mockRejectedValue({ error: { code: 'invalid_package_filename', message: 'package filename must be yingzo-openai-macos-0.3.0.tar.gz' } })
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
