@@ -3,16 +3,16 @@ exceptions:
   - package: xlsx
     advisory: "GHSA-4r6h-8v6p-xvw6"
     severity: high
-    reason: "Admin export only; switched to dynamic import to reduce exposure (CVE-2023-30533)"
-    mitigation: "Load only on export; restrict export permissions and data scope"
-    expires_on: "2026-07-06"
+    reason: "No patched SheetJS CE xlsx release is available from npm; the npm package is unmaintained. Current use is a lazy-loaded admin-only export path and never parses workbook input (CVE-2023-30533)."
+    mitigation: "Only create sheets from authenticated usage-report rows and write a browser download; do not call XLSX.read/readFile or accept untrusted workbooks. Evaluate the non-npm SheetJS build or an export-library replacement before expiry."
+    expires_on: "2026-08-20"
     owner: "security@your-domain"
   - package: xlsx
     advisory: "GHSA-5pgg-2g8v-p4x9"
     severity: high
-    reason: "Admin export only; switched to dynamic import to reduce exposure (CVE-2024-22363)"
-    mitigation: "Load only on export; restrict export permissions and data scope"
-    expires_on: "2026-07-06"
+    reason: "No patched SheetJS CE xlsx release is available from npm; the npm package is unmaintained. Current use is a lazy-loaded admin-only export path and never parses workbook input (CVE-2024-22363)."
+    mitigation: "Only create sheets from authenticated usage-report rows and write a browser download; do not call XLSX.read/readFile or accept untrusted workbooks. Evaluate the non-npm SheetJS build or an export-library replacement before expiry."
+    expires_on: "2026-08-20"
     owner: "security@your-domain"
   - package: lodash
     advisory: "GHSA-r5fr-rjxr-66jc"

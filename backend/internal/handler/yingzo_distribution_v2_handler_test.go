@@ -326,7 +326,9 @@ func TestYingzoV2InstallWarnsForUnsignedWindowsPrerelease(t *testing.T) {
 	require.Equal(t, false, body["stable_eligible"])
 	require.Contains(t, body["warning"], "SmartScreen")
 	require.Contains(t, body["prompt"], "未签名 Windows")
-	require.Equal(t, "unverified", body["host_package"].(map[string]any)["signature_status"])
+	hostPackage, ok := body["host_package"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "unverified", hostPackage["signature_status"])
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -904,7 +906,8 @@ func TestUnsignedPrereleasePublicResponseWarnsAboutSmartScreen(t *testing.T) {
 	response := publicYingzoRelease(release)
 	require.Equal(t, false, response["stable_eligible"])
 	require.Contains(t, response["warning"], "SmartScreen")
-	nativeSigning := response["native_signing"].(yingzoNativeSigning)
+	nativeSigning, ok := response["native_signing"].(yingzoNativeSigning)
+	require.True(t, ok)
 	require.Equal(t, "unsigned", nativeSigning.Windows.Status)
 	require.Contains(t, yingzoV2InstallPrompt("codex", release, "https://example.test/host.zip", nil, "compatible"), "SmartScreen")
 }
@@ -1167,11 +1170,6 @@ func writeTarGzipEntries(t *testing.T, target string, entries map[string]string)
 	require.NoError(t, tarWriter.Close())
 	require.NoError(t, gzipWriter.Close())
 	require.NoError(t, file.Close())
-}
-
-func writeSimpleZip(t *testing.T, target string) {
-	t.Helper()
-	writeZipEntries(t, target, map[string]string{"yingzo/plugin.json": "payload"})
 }
 
 func writeZipEntries(t *testing.T, target string, entries map[string]string) {

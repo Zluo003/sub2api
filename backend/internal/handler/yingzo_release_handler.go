@@ -318,7 +318,11 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "download_ticket_unavailable"}})
 			return
 		}
-		downloadURL := descriptor["download_url"].(string)
+		downloadURL, ok := descriptor["download_url"].(string)
+		if !ok || downloadURL == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "download_ticket_unavailable"}})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"host": input.Host, "host_family": hostFamily, "channel": channel,
 			"version": release.Version, "signature": release.Signature, "stable_eligible": release.StableEligible,
@@ -367,7 +371,11 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 			return
 		}
 	}
-	hostURL := hostDescriptor["download_url"].(string)
+	hostURL, ok := hostDescriptor["download_url"].(string)
+	if !ok || hostURL == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "download_ticket_unavailable"}})
+		return
+	}
 	runtimeHelperURI := ""
 	if runtimeDescriptor != nil && runtimeResolution == "probe" {
 		installerURL, _ := runtimeDescriptor["download_url"].(string)
@@ -1878,7 +1886,7 @@ func validateYingzoV2Artifact(filename string, spec yingzoArtifactSpec) error {
 	case "exe":
 		file, err := pe.Open(filename)
 		if err != nil {
-			return errors.New("Windows installer is not a valid PE executable")
+			return errors.New("windows installer is not a valid PE executable")
 		}
 		defer func() { _ = file.Close() }()
 		return validateAMD64PEFile(file)
@@ -1915,7 +1923,7 @@ func inspectYingzoV2Artifact(filename string, spec yingzoArtifactSpec) (bool, er
 	if spec.Format == "exe" {
 		file, err := pe.Open(filename)
 		if err != nil {
-			return false, errors.New("Windows installer is not a valid PE executable")
+			return false, errors.New("windows installer is not a valid PE executable")
 		}
 		defer func() { _ = file.Close() }()
 		return inspectAMD64PEFile(file)
@@ -1942,11 +1950,6 @@ func inspectYingzoV2Artifact(filename string, spec yingzoArtifactSpec) (bool, er
 
 func yingzoWindowsBearingSpec(spec yingzoArtifactSpec) bool {
 	return spec.OS == "windows" || spec.Target == "claude-desktop"
-}
-
-func validateYingzoV2HostLayout(entries []string, spec yingzoArtifactSpec) error {
-	_, err := findYingzoV2HostRoot(entries, spec)
-	return err
 }
 
 func findYingzoV2HostRoot(entries []string, spec yingzoArtifactSpec) (string, error) {
@@ -2081,7 +2084,7 @@ func validateYingzoV2HostContents(filename, archiveFormat, root string, spec yin
 		}
 		if spec.OS == "windows" {
 			if err := validateAMD64PE(launcher.Data); err != nil {
-				return fmt.Errorf("Windows host launcher: %w", err)
+				return fmt.Errorf("windows host launcher: %w", err)
 			}
 		} else if launcher.Mode&0111 == 0 || !bytes.HasPrefix(launcher.Data, []byte("#!")) {
 			return errors.New("macOS host launcher must be an executable script")
@@ -2217,7 +2220,7 @@ func inspectAMD64PE(data []byte) (bool, error) {
 }
 
 func inspectAMD64PEFile(file *pe.File) (bool, error) {
-	if file == nil || file.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
+	if file == nil || file.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
 		return false, errors.New("binary must be a valid AMD64 PE executable")
 	}
 	optional, ok := file.OptionalHeader.(*pe.OptionalHeader64)
@@ -2295,8 +2298,12 @@ func validateTarArchiveSafety(filename string) error {
 		if err := validateArchiveEntry(header.Name, header.Size); err != nil {
 			return err
 		}
-		switch header.Typeflag {
-		case tar.TypeReg, tar.TypeRegA, tar.TypeDir, tar.TypeXHeader, tar.TypeXGlobalHeader:
+		typeflag := header.Typeflag
+		if typeflag == 0 {
+			typeflag = tar.TypeReg
+		}
+		switch typeflag {
+		case tar.TypeReg, tar.TypeDir, tar.TypeXHeader, tar.TypeXGlobalHeader:
 		default:
 			return errors.New("package special files and links are not allowed")
 		}
