@@ -131,6 +131,7 @@
           <div class="yingzo-release-meta" v-else>
             <span>{{ releaseLoading ? '正在读取发行信息' : '管理员尚未发布安装包' }}</span>
           </div>
+          <p v-if="release?.warning" class="yingzo-release-warning" role="alert">{{ release.warning }}</p>
 
           <div class="yingzo-platform-controls" aria-label="安装平台">
             <label>系统
@@ -802,6 +803,15 @@ onMounted(async () => { await detectPlatform(); await loadRelease() })
   gap: 8px 18px;
   color: #bdbdbd;
   font-size: 12px;
+}
+
+.yingzo-release-warning {
+  margin: 12px 0 0;
+  border-left: 3px solid #f0b75b;
+  padding: 8px 10px;
+  color: #ffd997;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .yingzo-platform-controls {

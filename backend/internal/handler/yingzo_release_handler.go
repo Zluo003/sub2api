@@ -45,7 +45,7 @@ const (
 	yingzoDistributionSchema2  = 2
 )
 
-const yingzoReleaseColumns = `id,version,status,distribution_schema_version,channel,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at`
+const yingzoReleaseColumns = `id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at`
 const yingzoArtifactColumns = `id,release_id,host_family,artifact_kind,target,os,arch,format,content_type,runtime_protocol,validation_status,signature_status,validated_at,package_filename,storage_backend,storage_key,size_bytes,sha256,created_at,updated_at`
 
 var yingzoVersionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$`)
@@ -56,6 +56,7 @@ type yingzoRelease struct {
 	Status                    string                            `json:"status"`
 	DistributionSchemaVersion int                               `json:"distribution_schema_version"`
 	Channel                   string                            `json:"channel"`
+	StableEligible            bool                              `json:"stable_eligible"`
 	RuntimeProtocol           int                               `json:"runtime_protocol"`
 	Compatibility             json.RawMessage                   `json:"compatibility"`
 	Signature                 string                            `json:"signature,omitempty"`
@@ -140,7 +141,18 @@ type yingzoSignedReleaseManifest struct {
 	RuntimeProtocol        int                            `json:"runtime_protocol"`
 	CompleteArtifactMatrix bool                           `json:"complete_artifact_matrix"`
 	PublicSigningRequired  bool                           `json:"public_signing_required"`
+	StableEligible         bool                           `json:"stable_eligible"`
+	NativeSigning          yingzoNativeSigning            `json:"native_signing"`
 	Artifacts              []yingzoSignedManifestArtifact `json:"artifacts"`
+}
+
+type yingzoNativeSigning struct {
+	MacOS   yingzoNativeSigningPlatform `json:"macos"`
+	Windows yingzoNativeSigningPlatform `json:"windows"`
+}
+
+type yingzoNativeSigningPlatform struct {
+	Status string `json:"status"`
 }
 
 type yingzoSignedManifestArtifact struct {
@@ -309,7 +321,7 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 		downloadURL := descriptor["download_url"].(string)
 		c.JSON(http.StatusOK, gin.H{
 			"host": input.Host, "host_family": hostFamily, "channel": channel,
-			"version": release.Version, "signature": release.Signature,
+			"version": release.Version, "signature": release.Signature, "stable_eligible": release.StableEligible,
 			"download_url": downloadURL, "expires_at": descriptor["expires_at"],
 			"host_package": descriptor, "runtime_installer": nil, "runtime_installer_required": false,
 			"runtime_protocol": 0, "prompt": yingzoInstallPrompt(input.Host, release, hostArtifact, downloadURL),
@@ -364,6 +376,7 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"host": input.Host, "host_family": hostFamily, "channel": channel,
 		"os": targetOS, "arch": arch, "version": release.Version, "signature": release.Signature,
+		"stable_eligible": release.StableEligible, "native_signing": yingzoNativeSigningSummary(release), "warning": yingzoReleaseWarning(release),
 		"runtime_protocol": release.RuntimeProtocol, "download_url": hostURL,
 		"expires_at": hostDescriptor["expires_at"], "host_package": hostDescriptor,
 		"runtime_installer": runtimeDescriptor, "runtime_installer_required": runtimeRequired,
@@ -394,7 +407,7 @@ func (h *AgentHandler) createYingzoDownloadDescriptor(c *gin.Context, origin str
 		"artifact_id": artifact.ID, "artifact_kind": artifact.ArtifactKind, "target": artifact.Target,
 		"os": artifact.OS, "arch": artifact.Arch, "filename": artifact.PackageFilename,
 		"requested_os": requestedOS, "requested_arch": requestedArch,
-		"content_type": artifact.ContentType, "size_bytes": artifact.SizeBytes,
+		"content_type": artifact.ContentType, "size_bytes": artifact.SizeBytes, "signature_status": artifact.SignatureStatus,
 		"download_url": downloadURL, "expires_at": expiresAt, "authorization_model": "short_ttl_bearer_url",
 	}, nil
 }
@@ -549,7 +562,7 @@ func (h *AgentHandler) createYingzoReleaseDraft(c *gin.Context) {
 		return
 	}
 	releaseID := uuid.New()
-	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',2,$3,$4,$5::jsonb,NULL,$6,$7,$8,$9)`,
+	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',2,$3,FALSE,$4,$5::jsonb,NULL,$6,$7,$8,$9)`,
 		releaseID, strings.TrimSpace(input.Version), channel, input.RuntimeProtocol, string(compatibilityJSON), strings.TrimSpace(input.MinCodexVersion), strings.TrimSpace(input.MinClaudeVersion), strings.TrimSpace(input.ReleaseNotes), subject.UserID)
 	if err != nil {
 		var pqErr *pq.Error
@@ -683,7 +696,7 @@ func (h *AgentHandler) VerifyYingzoReleaseProof(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
-	envelope, verifyErr := verifyYingzoReleaseProof(release, input)
+	envelope, manifest, verifyErr := verifyYingzoReleaseProof(release, input)
 	if verifyErr != nil {
 		var uploadErr *yingzoUploadError
 		if errors.As(verifyErr, &uploadErr) {
@@ -694,8 +707,10 @@ func (h *AgentHandler) VerifyYingzoReleaseProof(c *gin.Context) {
 		return
 	}
 	envelopeJSON, _ := json.Marshal(envelope)
-	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=$2,updated_at=NOW() WHERE id=$1 AND status='draft'`, releaseID, string(envelopeJSON)); err == nil {
-		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='verified',validated_at=NOW(),updated_at=NOW() WHERE release_id=$1`, releaseID)
+	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=$2,stable_eligible=$3,updated_at=NOW() WHERE id=$1 AND status='draft'`, releaseID, string(envelopeJSON), manifest.StableEligible); err == nil {
+		// The signed manifest attests the macOS release pipeline. Windows-bearing
+		// artifacts retain the Authenticode status detected from their PE payloads.
+		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='verified',validated_at=NOW(),updated_at=NOW() WHERE release_id=$1 AND NOT (os='windows' OR target='claude-desktop')`, releaseID)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
@@ -705,7 +720,7 @@ func (h *AgentHandler) VerifyYingzoReleaseProof(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"verified": true, "key_id": envelope.KeyID, "verified_at": envelope.VerifiedAt})
+	c.JSON(http.StatusOK, gin.H{"verified": true, "key_id": envelope.KeyID, "verified_at": envelope.VerifiedAt, "stable_eligible": manifest.StableEligible, "native_signing": manifest.NativeSigning})
 }
 
 func (h *AgentHandler) saveYingzoReleaseArtifact(c *gin.Context, replace bool) {
@@ -724,8 +739,6 @@ func (h *AgentHandler) saveYingzoReleaseArtifact(c *gin.Context, replace bool) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "runtime_protocol_mismatch"}})
 		return
 	}
-	// Artifact signatures are established only by a server-verified release proof.
-	signatureStatus := "unverified"
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "artifact_file_required"}})
@@ -786,13 +799,15 @@ func (h *AgentHandler) saveYingzoReleaseArtifact(c *gin.Context, replace bool) {
 		return
 	}
 
-	artifact, err := h.storeYingzoV2Artifact(file, header.Filename, release, spec, signatureStatus)
+	artifact, err := h.storeYingzoV2Artifact(file, header.Filename, release, spec)
 	if err != nil {
 		writeYingzoUploadError(c, err)
 		return
 	}
-	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,updated_at=NOW() WHERE id=$1`, release.ID); err == nil {
-		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1`, release.ID)
+	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,stable_eligible=FALSE,updated_at=NOW() WHERE id=$1`, release.ID); err == nil {
+		// Invalidating the proof removes its macOS attestation. PE inspection is
+		// independent, so preserve the status of Windows-bearing artifacts.
+		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1 AND NOT (os='windows' OR target='claude-desktop')`, release.ID)
 	}
 	if err == nil && replace {
 		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET package_filename=$2,storage_backend=$3,storage_key=$4,size_bytes=$5,sha256=$6,content_type=$7,format=$8,runtime_protocol=$9,validation_status='validated',signature_status=$10,validated_at=NOW(),updated_at=NOW() WHERE id=$1 AND release_id=$11`, existing.ID, artifact.PackageFilename, artifact.StorageBackend, artifact.StorageKey, artifact.SizeBytes, artifact.SHA256, artifact.ContentType, artifact.Format, artifact.RuntimeProtocol, artifact.SignatureStatus, release.ID)
@@ -861,10 +876,10 @@ func (h *AgentHandler) DeleteYingzoReleaseArtifact(c *gin.Context) {
 	}
 	result, err := tx.ExecContext(c, `DELETE FROM yingzo_release_artifacts WHERE id=$1 AND release_id=$2`, artifactID, releaseID)
 	if err == nil {
-		_, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,updated_at=NOW() WHERE id=$1`, releaseID)
+		_, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,stable_eligible=FALSE,updated_at=NOW() WHERE id=$1`, releaseID)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1`, releaseID)
+		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1 AND NOT (os='windows' OR target='claude-desktop')`, releaseID)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
@@ -916,18 +931,26 @@ func (h *AgentHandler) storeLegacyYingzoArtifact(reader io.Reader, originalFilen
 	return artifact, nil
 }
 
-func (h *AgentHandler) storeYingzoV2Artifact(reader io.Reader, originalFilename string, release *yingzoRelease, spec yingzoArtifactSpec, signatureStatus string) (*yingzoReleaseArtifact, error) {
+func (h *AgentHandler) storeYingzoV2Artifact(reader io.Reader, originalFilename string, release *yingzoRelease, spec yingzoArtifactSpec) (*yingzoReleaseArtifact, error) {
 	packageFilename := filepath.Base(strings.TrimSpace(originalFilename))
 	if packageFilename != spec.Filename {
 		return nil, &yingzoUploadError{status: http.StatusBadRequest, code: "invalid_package_filename", message: "package filename must be " + spec.Filename}
 	}
-	artifact := &yingzoReleaseArtifact{ID: uuid.New(), ReleaseID: release.ID, ArtifactKind: spec.ArtifactKind, Target: spec.Target, OS: spec.OS, Arch: spec.Arch, Format: spec.Format, ContentType: spec.ContentType, RuntimeProtocol: release.RuntimeProtocol, ValidationStatus: "validated", SignatureStatus: signatureStatus, PackageFilename: packageFilename, StorageBackend: "local"}
+	artifact := &yingzoReleaseArtifact{ID: uuid.New(), ReleaseID: release.ID, ArtifactKind: spec.ArtifactKind, Target: spec.Target, OS: spec.OS, Arch: spec.Arch, Format: spec.Format, ContentType: spec.ContentType, RuntimeProtocol: release.RuntimeProtocol, ValidationStatus: "validated", SignatureStatus: "unverified", PackageFilename: packageFilename, StorageBackend: "local"}
 	if err := h.writeYingzoArtifact(reader, artifact); err != nil {
 		return nil, err
 	}
-	if err := validateYingzoV2Artifact(artifact.StorageKey, spec); err != nil {
+	windowsSigned, err := inspectYingzoV2Artifact(artifact.StorageKey, spec)
+	if err != nil {
 		h.removeYingzoStorageFile(release.ID, artifact.StorageKey)
 		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "invalid_release_artifact", message: err.Error()}
+	}
+	if yingzoWindowsBearingSpec(spec) && windowsSigned {
+		artifact.SignatureStatus = "verified"
+	}
+	if release.Channel == "stable" && yingzoWindowsBearingSpec(spec) && !windowsSigned {
+		h.removeYingzoStorageFile(release.ID, artifact.StorageKey)
+		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "unsigned_windows_artifact", message: "stable releases require Authenticode-signed Windows artifacts"}
 	}
 	now := time.Now().UTC()
 	artifact.ValidatedAt = &now
@@ -972,42 +995,42 @@ func (h *AgentHandler) writeYingzoArtifact(reader io.Reader, artifact *yingzoRel
 func (h *AgentHandler) PublishYingzoRelease(c *gin.Context)  { h.setPublishedYingzoRelease(c, false) }
 func (h *AgentHandler) RollbackYingzoRelease(c *gin.Context) { h.setPublishedYingzoRelease(c, true) }
 
-func verifyYingzoReleaseProof(release *yingzoRelease, input yingzoReleaseProofInput) (*yingzoReleaseProofEnvelope, error) {
+func verifyYingzoReleaseProof(release *yingzoRelease, input yingzoReleaseProofInput) (*yingzoReleaseProofEnvelope, *yingzoSignedReleaseManifest, error) {
 	if strings.TrimSpace(input.Algorithm) != "Ed25519" {
-		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_proof_invalid", message: "release proof algorithm must be Ed25519"}
+		return nil, nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_proof_invalid", message: "release proof algorithm must be Ed25519"}
 	}
 	keys, err := loadYingzoReleasePublicKeys()
 	if err != nil {
-		return nil, &yingzoUploadError{status: http.StatusServiceUnavailable, code: "release_proof_key_unavailable", message: err.Error()}
+		return nil, nil, &yingzoUploadError{status: http.StatusServiceUnavailable, code: "release_proof_key_unavailable", message: err.Error()}
 	}
 	keyID := strings.TrimSpace(input.KeyID)
 	publicKey, ok := keys[keyID]
 	if !ok {
-		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_proof_key_unknown", message: "release proof key_id is not configured"}
+		return nil, nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_proof_key_unknown", message: "release proof key_id is not configured"}
 	}
 	manifestBytes, err := decodeYingzoBase64(input.ManifestBase64)
 	if err != nil || len(manifestBytes) == 0 || int64(len(manifestBytes)) > yingzoReleaseManifestMax {
-		return nil, &yingzoUploadError{status: http.StatusBadRequest, code: "invalid_release_manifest", message: "release manifest must be valid base64 and no larger than 2 MB"}
+		return nil, nil, &yingzoUploadError{status: http.StatusBadRequest, code: "invalid_release_manifest", message: "release manifest must be valid base64 and no larger than 2 MB"}
 	}
 	signature, err := decodeYingzoBase64(input.SignatureBase64)
 	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(publicKey, manifestBytes, signature) {
-		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_proof_invalid", message: "Ed25519 release proof verification failed"}
+		return nil, nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_proof_invalid", message: "Ed25519 release proof verification failed"}
 	}
 	var manifest yingzoSignedReleaseManifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return nil, &yingzoUploadError{status: http.StatusBadRequest, code: "invalid_release_manifest", message: "release manifest is not valid JSON"}
+		return nil, nil, &yingzoUploadError{status: http.StatusBadRequest, code: "invalid_release_manifest", message: "release manifest is not valid JSON"}
 	}
 	if err := validateYingzoSignedManifest(release, manifest); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return &yingzoReleaseProofEnvelope{
 		Algorithm: "Ed25519", KeyID: keyID, ManifestBase64: base64.StdEncoding.EncodeToString(manifestBytes),
 		SignatureBase64: base64.StdEncoding.EncodeToString(signature), VerifiedAt: time.Now().UTC().Format(time.RFC3339Nano),
-	}, nil
+	}, &manifest, nil
 }
 
 func validateYingzoSignedManifest(release *yingzoRelease, manifest yingzoSignedReleaseManifest) error {
-	if release == nil || manifest.SchemaVersion != 2 || manifest.Product != "yingzo" || manifest.Version != release.Version || manifest.RuntimeProtocol != release.RuntimeProtocol || !manifest.CompleteArtifactMatrix || !manifest.PublicSigningRequired {
+	if release == nil || manifest.SchemaVersion != 2 || manifest.Product != "yingzo" || manifest.Version != release.Version || manifest.RuntimeProtocol != release.RuntimeProtocol || !manifest.CompleteArtifactMatrix {
 		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "release manifest identity, protocol, or signing policy does not match the draft"}
 	}
 	if manifest.Channel != "prerelease" && manifest.Channel != "stable" {
@@ -1016,11 +1039,24 @@ func validateYingzoSignedManifest(release *yingzoRelease, manifest yingzoSignedR
 	if release == nil || manifest.Channel != release.Channel {
 		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "release manifest channel does not match the draft"}
 	}
+	macOSSigning := strings.TrimSpace(manifest.NativeSigning.MacOS.Status)
+	windowsSigning := strings.TrimSpace(manifest.NativeSigning.Windows.Status)
+	if macOSSigning != "verified" || (windowsSigning != "verified" && windowsSigning != "unsigned") {
+		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_native_signing_invalid", message: "macOS signing must be verified and Windows signing must be verified or unsigned"}
+	}
+	fullySigned := macOSSigning == "verified" && windowsSigning == "verified"
+	if manifest.StableEligible != fullySigned || manifest.PublicSigningRequired != fullySigned {
+		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "stable_eligible and public_signing_required must match the native signing status"}
+	}
+	if !fullySigned && release.Channel != "prerelease" {
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_not_stable_eligible", message: "unsigned Windows artifacts are allowed only in prerelease releases"}
+	}
 	expectedSpecs := yingzoV2ArtifactSpecs(release.Version)
 	if len(manifest.Artifacts) != len(expectedSpecs) || len(release.Artifacts) != len(expectedSpecs) {
 		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "release proof requires the exact eight-artifact matrix"}
 	}
 	seen := make(map[string]bool, len(expectedSpecs))
+	windowsUnsignedDetected := false
 	for _, signed := range manifest.Artifacts {
 		spec, ok := findYingzoV2Spec(release.Version, signed.ArtifactKind, signed.Target, signed.OS, signed.Arch)
 		if !ok || seen[spec.key()] {
@@ -1031,6 +1067,14 @@ func validateYingzoSignedManifest(release *yingzoRelease, manifest yingzoSignedR
 		if artifact == nil || signed.Filename != spec.Filename || signed.Format != spec.Format || signed.ContentType != spec.ContentType || signed.RuntimeProtocol != release.RuntimeProtocol || signed.Bytes != artifact.SizeBytes || !strings.EqualFold(signed.SHA256, artifact.SHA256) {
 			return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "release manifest artifact metadata does not match the uploaded file"}
 		}
+		if yingzoWindowsBearingSpec(spec) {
+			if artifact.SignatureStatus == "failed" {
+				return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_native_signing_invalid", message: "a Windows-bearing artifact has a failed native signature"}
+			}
+			if artifact.SignatureStatus != "verified" {
+				windowsUnsignedDetected = true
+			}
+		}
 		info, statErr := os.Stat(artifact.StorageKey)
 		if statErr != nil || !info.Mode().IsRegular() || info.Size() != artifact.SizeBytes {
 			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifact_file_missing", message: "a release artifact file is missing from local storage"}
@@ -1039,6 +1083,9 @@ func validateYingzoSignedManifest(release *yingzoRelease, manifest yingzoSignedR
 		if hashErr != nil || !strings.EqualFold(actualSHA, artifact.SHA256) {
 			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifact_integrity_failed", message: "a release artifact no longer matches its uploaded checksum"}
 		}
+	}
+	if (windowsSigning == "unsigned") != windowsUnsignedDetected {
+		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "Windows native signing status does not match the uploaded artifacts"}
 	}
 	return nil
 }
@@ -1099,12 +1146,17 @@ func (h *AgentHandler) PromoteYingzoRelease(c *gin.Context) {
 	defer func() { _ = tx.Rollback() }()
 	var status, channel, version string
 	var schemaVersion, runtimeProtocol int
+	var stableEligible bool
 	var releaseSignature sql.NullString
-	if err := tx.QueryRowContext(c, `SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &channel, &schemaVersion, &runtimeProtocol, &version, &releaseSignature); err != nil || status != "published" || channel != "prerelease" || schemaVersion != 2 {
+	if err := tx.QueryRowContext(c, `SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &channel, &schemaVersion, &stableEligible, &runtimeProtocol, &version, &releaseSignature); err != nil || status != "published" || channel != "prerelease" || schemaVersion != 2 {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
-	if err = validateYingzoV2PublishMatrix(c, tx, id, version, channel, runtimeProtocol, releaseSignature.String, false); err != nil {
+	if !stableEligible {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_not_stable_eligible", "message": "unsigned Windows prereleases cannot be promoted; publish a new fully signed version"}})
+		return
+	}
+	if err = validateYingzoV2PublishMatrix(c, tx, id, version, channel, stableEligible, runtimeProtocol, releaseSignature.String, false); err != nil {
 		var uploadErr *yingzoUploadError
 		if errors.As(err, &uploadErr) {
 			c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
@@ -1151,8 +1203,9 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 	defer func() { _ = tx.Rollback() }()
 	var status, channel, version string
 	var schemaVersion, runtimeProtocol int
+	var stableEligible bool
 	var releaseSignature sql.NullString
-	if err = tx.QueryRowContext(c, `SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &channel, &schemaVersion, &runtimeProtocol, &version, &releaseSignature); err != nil || status == "disabled" || (!rollback && status != "draft") || (rollback && status != "superseded") {
+	if err = tx.QueryRowContext(c, `SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &channel, &schemaVersion, &stableEligible, &runtimeProtocol, &version, &releaseSignature); err != nil || status == "disabled" || (!rollback && status != "draft") || (rollback && status != "superseded") {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
@@ -1189,7 +1242,10 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_artifacts_incomplete"}})
 			return
 		}
-	} else if err = validateYingzoV2PublishMatrix(c, tx, id, version, channel, runtimeProtocol, releaseSignature.String, rollback && channel == "stable"); err != nil {
+	} else if channel == "stable" && !stableEligible {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_not_stable_eligible", "message": "stable publication requires fully signed native artifacts"}})
+		return
+	} else if err = validateYingzoV2PublishMatrix(c, tx, id, version, channel, stableEligible, runtimeProtocol, releaseSignature.String, rollback && channel == "stable"); err != nil {
 		var uploadErr *yingzoUploadError
 		if errors.As(err, &uploadErr) {
 			c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
@@ -1217,14 +1273,14 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 	c.JSON(http.StatusOK, release)
 }
 
-func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version, channel string, runtimeProtocol int, releaseSignature string, allowPromotedPrereleaseProof bool) error {
+func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version, channel string, stableEligible bool, runtimeProtocol int, releaseSignature string, allowPromotedPrereleaseProof bool) error {
 	rows, err := tx.QueryContext(ctx, `SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=$1`, releaseID)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
 	found := map[string]bool{}
-	proofRelease := &yingzoRelease{ID: releaseID, Version: version, Channel: channel, RuntimeProtocol: runtimeProtocol, Signature: releaseSignature, Artifacts: map[string]*yingzoReleaseArtifact{}}
+	proofRelease := &yingzoRelease{ID: releaseID, Version: version, Channel: channel, StableEligible: stableEligible, RuntimeProtocol: runtimeProtocol, Signature: releaseSignature, Artifacts: map[string]*yingzoReleaseArtifact{}}
 	for rows.Next() {
 		var kind, target, targetOS, arch, validationStatus, signatureStatus, packageFilename, storageKey, expectedSHA string
 		var artifactProtocol int
@@ -1233,7 +1289,8 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 			return err
 		}
 		spec, ok := findYingzoV2Spec(version, kind, target, targetOS, arch)
-		if !ok || packageFilename != spec.Filename || artifactProtocol != runtimeProtocol || validationStatus != "validated" || signatureStatus != "verified" {
+		validSignatureStatus := signatureStatus == "verified" || (!stableEligible && channel == "prerelease" && yingzoWindowsBearingSpec(spec) && signatureStatus == "unverified")
+		if !ok || packageFilename != spec.Filename || artifactProtocol != runtimeProtocol || validationStatus != "validated" || !validSignatureStatus {
 			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_invalid", message: "every v2 artifact must match the release matrix, protocol, validation, and signature requirements"}
 		}
 		info, statErr := os.Stat(storageKey)
@@ -1256,11 +1313,11 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 		return err
 	}
 	if len(found) != len(yingzoV2ArtifactSpecs(version)) {
-		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight signed release artifacts are required before publishing"}
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight release artifacts are required before publishing"}
 	}
 	for _, spec := range yingzoV2ArtifactSpecs(version) {
 		if !found[spec.key()] {
-			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight signed release artifacts are required before publishing"}
+			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight release artifacts are required before publishing"}
 		}
 	}
 	var envelope yingzoReleaseProofEnvelope
@@ -1279,8 +1336,12 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 			proofRelease.Channel = "prerelease"
 		}
 	}
-	if _, err := verifyYingzoReleaseProof(proofRelease, yingzoReleaseProofInput{Algorithm: envelope.Algorithm, KeyID: envelope.KeyID, ManifestBase64: envelope.ManifestBase64, SignatureBase64: envelope.SignatureBase64}); err != nil {
+	_, manifest, err := verifyYingzoReleaseProof(proofRelease, yingzoReleaseProofInput{Algorithm: envelope.Algorithm, KeyID: envelope.KeyID, ManifestBase64: envelope.ManifestBase64, SignatureBase64: envelope.SignatureBase64})
+	if err != nil {
 		return err
+	}
+	if manifest.StableEligible != stableEligible {
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_manifest_mismatch", message: "release stable eligibility no longer matches its signed proof"}
 	}
 	return nil
 }
@@ -1467,7 +1528,7 @@ func scanYingzoRelease(scanner yingzoReleaseScanner) (*yingzoRelease, error) {
 	var compatibility []byte
 	var signature, minCodex, minClaude, notes sql.NullString
 	var published sql.NullTime
-	err := scanner.Scan(&release.ID, &release.Version, &release.Status, &release.DistributionSchemaVersion, &release.Channel, &release.RuntimeProtocol, &compatibility, &signature, &minCodex, &minClaude, &notes, &release.CreatedAt, &published, &release.UpdatedAt)
+	err := scanner.Scan(&release.ID, &release.Version, &release.Status, &release.DistributionSchemaVersion, &release.Channel, &release.StableEligible, &release.RuntimeProtocol, &compatibility, &signature, &minCodex, &minClaude, &notes, &release.CreatedAt, &published, &release.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1670,18 +1731,67 @@ func publicYingzoRelease(release *yingzoRelease) gin.H {
 			artifacts[artifact.key()] = summary
 		}
 	}
-	return gin.H{
+	response := gin.H{
 		"version": release.Version, "distribution_schema_version": release.DistributionSchemaVersion,
-		"channel": release.Channel, "runtime_protocol": release.RuntimeProtocol, "compatibility": release.Compatibility,
+		"channel": release.Channel, "stable_eligible": release.StableEligible, "runtime_protocol": release.RuntimeProtocol, "compatibility": release.Compatibility,
 		"size_bytes": totalSize, "artifacts": artifacts, "artifact_items": items,
 		"signature_status":  map[bool]string{true: "signed", false: "unsigned"}[release.Signature != ""],
+		"native_signing":    yingzoNativeSigningSummary(release),
 		"min_codex_version": release.MinCodexVersion, "min_claude_version": release.MinClaudeVersion,
 		"release_notes": release.ReleaseNotes, "published_at": release.PublishedAt,
 	}
+	if yingzoUnsignedWindowsPrerelease(release) {
+		response["warning"] = yingzoReleaseWarning(release)
+	}
+	return response
+}
+
+func yingzoNativeSigningSummary(release *yingzoRelease) yingzoNativeSigning {
+	macOSStatus := "unverified"
+	windowsStatus := "unsigned"
+	if release != nil && release.DistributionSchemaVersion >= 2 {
+		macOSStatus = "verified"
+		windowsStatus = "verified"
+		for _, artifact := range release.Artifacts {
+			if artifact.SignatureStatus == "failed" {
+				if artifact.OS == "macos" {
+					macOSStatus = "failed"
+				}
+				if artifact.OS == "windows" || artifact.Target == "claude-desktop" {
+					windowsStatus = "failed"
+				}
+				continue
+			}
+			if artifact.OS == "macos" && artifact.SignatureStatus != "verified" && macOSStatus != "failed" {
+				macOSStatus = "unverified"
+			}
+			if (artifact.OS == "windows" || artifact.Target == "claude-desktop") && artifact.SignatureStatus != "verified" && windowsStatus != "failed" {
+				windowsStatus = "unsigned"
+			}
+		}
+	}
+	return yingzoNativeSigning{
+		MacOS:   yingzoNativeSigningPlatform{Status: macOSStatus},
+		Windows: yingzoNativeSigningPlatform{Status: windowsStatus},
+	}
+}
+
+func yingzoUnsignedWindowsPrerelease(release *yingzoRelease) bool {
+	return release != nil && release.Channel == "prerelease" && !release.StableEligible
+}
+
+func yingzoReleaseWarning(release *yingzoRelease) string {
+	if !yingzoUnsignedWindowsPrerelease(release) {
+		return ""
+	}
+	return "此预发布版本包含未签名 Windows 产物。Windows 安装时可能触发 Microsoft Defender SmartScreen；该版本不能提升为稳定版。"
 }
 
 func yingzoV2InstallPrompt(host string, release *yingzoRelease, hostURL string, runtimeDescriptor gin.H, runtimeResolution string) string {
 	message := fmt.Sprintf("请安装或升级 Yingzo（影作）到版本 %s。宿主安装包：%s。保留现有 Yingzo 认证和项目数据，安装后验证 Runtime 协议 %d 与 MCP 连接。", release.Version, hostURL, release.RuntimeProtocol)
+	if yingzoUnsignedWindowsPrerelease(release) {
+		message += " 注意：这是包含未签名 Windows 产物的预发布版，只用于测试且不能提升为稳定版；在 Windows 安装时 Microsoft Defender SmartScreen 可能显示未知发布者警告。"
+	}
 	if runtimeDescriptor != nil && runtimeResolution == "required" {
 		message += fmt.Sprintf(" 请先安装或升级 Yingzo Runtime：%s。", runtimeDescriptor["download_url"])
 	} else if runtimeDescriptor != nil && runtimeResolution == "probe" {
@@ -1771,7 +1881,7 @@ func validateYingzoV2Artifact(filename string, spec yingzoArtifactSpec) error {
 			return errors.New("Windows installer is not a valid PE executable")
 		}
 		defer func() { _ = file.Close() }()
-		return validateSignedAMD64PEFile(file)
+		return validateAMD64PEFile(file)
 	case "dmg":
 		file, err := os.Open(filename)
 		if err != nil {
@@ -1793,6 +1903,45 @@ func validateYingzoV2Artifact(filename string, spec yingzoArtifactSpec) error {
 	default:
 		return errors.New("unsupported artifact format")
 	}
+}
+
+func inspectYingzoV2Artifact(filename string, spec yingzoArtifactSpec) (bool, error) {
+	if err := validateYingzoV2Artifact(filename, spec); err != nil {
+		return false, err
+	}
+	if !yingzoWindowsBearingSpec(spec) {
+		return false, nil
+	}
+	if spec.Format == "exe" {
+		file, err := pe.Open(filename)
+		if err != nil {
+			return false, errors.New("Windows installer is not a valid PE executable")
+		}
+		defer func() { _ = file.Close() }()
+		return inspectAMD64PEFile(file)
+	}
+	archiveFormat := "zip"
+	entries, err := yingzoZipEntryNames(filename)
+	if err != nil {
+		return false, err
+	}
+	root, err := findYingzoV2HostRoot(entries, spec)
+	if err != nil {
+		return false, err
+	}
+	launcherName := "runtime/yingzo-mcp.exe"
+	if spec.Target == "claude-desktop" {
+		launcherName = "server/yingzo-mcp.exe"
+	}
+	launcher, err := readYingzoArchiveEntry(filename, archiveFormat, root+launcherName, 64<<20)
+	if err != nil {
+		return false, err
+	}
+	return inspectAMD64PE(launcher.Data)
+}
+
+func yingzoWindowsBearingSpec(spec yingzoArtifactSpec) bool {
+	return spec.OS == "windows" || spec.Target == "claude-desktop"
 }
 
 func validateYingzoV2HostLayout(entries []string, spec yingzoArtifactSpec) error {
@@ -1931,7 +2080,7 @@ func validateYingzoV2HostContents(filename, archiveFormat, root string, spec yin
 			return err
 		}
 		if spec.OS == "windows" {
-			if err := validateSignedAMD64PE(launcher.Data); err != nil {
+			if err := validateAMD64PE(launcher.Data); err != nil {
 				return fmt.Errorf("Windows host launcher: %w", err)
 			}
 		} else if launcher.Mode&0111 == 0 || !bytes.HasPrefix(launcher.Data, []byte("#!")) {
@@ -1968,7 +2117,7 @@ func validateYingzoV2HostContents(filename, archiveFormat, root string, spec yin
 		if err != nil {
 			return err
 		}
-		if err := validateSignedAMD64PE(windowsLauncher.Data); err != nil {
+		if err := validateAMD64PE(windowsLauncher.Data); err != nil {
 			return fmt.Errorf("MCPB Windows launcher: %w", err)
 		}
 	}
@@ -2048,24 +2197,34 @@ func readYingzoArchiveEntry(filename, archiveFormat, wanted string, maxBytes int
 	return nil, fmt.Errorf("package is missing %s", wanted)
 }
 
-func validateSignedAMD64PE(data []byte) error {
-	file, err := pe.NewFile(bytes.NewReader(data))
-	if err != nil {
-		return errors.New("binary must be a valid AMD64 PE executable")
-	}
-	defer func() { _ = file.Close() }()
-	return validateSignedAMD64PEFile(file)
+func validateAMD64PE(data []byte) error {
+	_, err := inspectAMD64PE(data)
+	return err
 }
 
-func validateSignedAMD64PEFile(file *pe.File) error {
+func validateAMD64PEFile(file *pe.File) error {
+	_, err := inspectAMD64PEFile(file)
+	return err
+}
+
+func inspectAMD64PE(data []byte) (bool, error) {
+	file, err := pe.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return false, errors.New("binary must be a valid AMD64 PE executable")
+	}
+	defer func() { _ = file.Close() }()
+	return inspectAMD64PEFile(file)
+}
+
+func inspectAMD64PEFile(file *pe.File) (bool, error) {
 	if file == nil || file.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
-		return errors.New("binary must be a valid AMD64 PE executable")
+		return false, errors.New("binary must be a valid AMD64 PE executable")
 	}
 	optional, ok := file.OptionalHeader.(*pe.OptionalHeader64)
-	if !ok || len(optional.DataDirectory) <= 4 || optional.DataDirectory[4].Size == 0 {
-		return errors.New("binary is missing an Authenticode certificate table")
+	if !ok {
+		return false, errors.New("binary must be a valid AMD64 PE executable")
 	}
-	return nil
+	return len(optional.DataDirectory) > 4 && optional.DataDirectory[4].Size > 0, nil
 }
 
 func yingzoTarEntryNames(filename string) ([]string, error) {

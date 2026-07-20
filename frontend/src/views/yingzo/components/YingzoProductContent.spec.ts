@@ -46,7 +46,9 @@ describe('YingzoProductContent install actions', () => {
   })
 
   it('loads prerelease only after the user opts in', async () => {
-    mocks.getLatestRelease.mockImplementation(async (channel: string) => release(channel))
+    mocks.getLatestRelease.mockImplementation(async (channel: string) => channel === 'prerelease'
+      ? { ...release(channel), stable_eligible: false, warning: '此预发布版本包含未签名 Windows 产物。Windows 安装时可能触发 Microsoft Defender SmartScreen；该版本不能提升为稳定版。' }
+      : release(channel))
     const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
     await flushPromises()
     expect(mocks.getLatestRelease).toHaveBeenCalledWith('stable')
@@ -55,6 +57,7 @@ describe('YingzoProductContent install actions', () => {
     await flushPromises()
     expect(mocks.getLatestRelease).toHaveBeenCalledWith('prerelease')
     expect(wrapper.text()).toContain('预发布版 0.3.0')
+    expect(wrapper.text()).toContain('Microsoft Defender SmartScreen')
   })
 
   it('does not offer Claude Desktop for a legacy schema 1 stable release', async () => {

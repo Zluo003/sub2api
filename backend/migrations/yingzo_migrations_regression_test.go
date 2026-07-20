@@ -19,6 +19,7 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		"169_require_agent_image_generation.sql",
 		"170_yingzo_release_artifacts.sql",
 		"171_yingzo_distribution_v2.sql",
+		"172_yingzo_prerelease_native_signing.sql",
 	} {
 		content, err := FS.ReadFile(name)
 		require.NoError(t, err)
@@ -26,6 +27,18 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		require.NotContains(t, sql, "+goose down", "%s must use the repository's forward-only migration format", name)
 		require.NotContains(t, sql, "drop table", "%s must not contain rollback DDL", name)
 	}
+}
+
+func TestYingzoPrereleaseNativeSigningMigrationKeepsStableStrict(t *testing.T) {
+	content, err := FS.ReadFile("172_yingzo_prerelease_native_signing.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(content))
+
+	require.Contains(t, sql, "stable_eligible boolean not null default true")
+	require.Contains(t, sql, "where distribution_schema_version = 2")
+	require.Contains(t, sql, "and status = 'draft'")
+	require.Contains(t, sql, "status <> 'published' or channel <> 'stable' or stable_eligible")
+	require.NotContains(t, sql, "bytea")
 }
 
 func TestYingzoDistributionV2MigrationPreservesLegacyAndAddsChannelMatrix(t *testing.T) {

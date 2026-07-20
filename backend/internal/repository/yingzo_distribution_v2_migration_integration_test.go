@@ -44,6 +44,13 @@ func TestYingzoDistributionV2MigrationBackfillsLegacyAndPublishesPerChannel(t *t
 	require.NoError(t, err)
 	_, err = tx.ExecContext(ctx, string(content))
 	require.NoError(t, err)
+	legacyDraftID := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,runtime_protocol,compatibility) VALUES($1,'0.3.0-legacy-draft','draft',2,'prerelease',1,'{}')`, legacyDraftID)
+	require.NoError(t, err)
+	content, err = migrations.FS.ReadFile("172_yingzo_prerelease_native_signing.sql")
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err)
 
 	var schemaVersion, runtimeProtocol int
 	var channel string
@@ -53,6 +60,11 @@ func TestYingzoDistributionV2MigrationBackfillsLegacyAndPublishesPerChannel(t *t
 	require.Equal(t, "stable", channel)
 	require.Zero(t, runtimeProtocol)
 	require.Equal(t, "{}", compatibility)
+	var stableEligible bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT stable_eligible FROM yingzo_releases WHERE id=$1`, legacyID).Scan(&stableEligible))
+	require.True(t, stableEligible, "legacy stable releases remain eligible")
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT stable_eligible FROM yingzo_releases WHERE id=$1`, legacyDraftID).Scan(&stableEligible))
+	require.False(t, stableEligible, "existing schema 2 drafts must prove native signing again")
 
 	var kind, target, targetOS, arch, format, contentType, validationStatus string
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT artifact_kind,target,os,arch,format,content_type,validation_status FROM yingzo_release_artifacts WHERE release_id=$1`, legacyID).Scan(&kind, &target, &targetOS, &arch, &format, &contentType, &validationStatus))
@@ -67,6 +79,15 @@ func TestYingzoDistributionV2MigrationBackfillsLegacyAndPublishesPerChannel(t *t
 	prereleaseID := uuid.New()
 	_, err = tx.ExecContext(ctx, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,runtime_protocol,compatibility,published_at) VALUES($1,'0.3.0','published',2,'prerelease',1,'{}',NOW())`, prereleaseID)
 	require.NoError(t, err, "one published stable and one published prerelease must coexist")
+	_, err = tx.ExecContext(ctx, `UPDATE yingzo_releases SET stable_eligible=FALSE WHERE id=$1`, prereleaseID)
+	require.NoError(t, err, "unsigned prereleases may be published")
+
+	_, err = tx.ExecContext(ctx, `SAVEPOINT unsigned_stable`)
+	require.NoError(t, err)
+	_, unsignedStableErr := tx.ExecContext(ctx, `UPDATE yingzo_releases SET channel='stable' WHERE id=$1`, prereleaseID)
+	require.Error(t, unsignedStableErr)
+	_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT unsigned_stable`)
+	require.NoError(t, err)
 
 	_, err = tx.ExecContext(ctx, `SAVEPOINT duplicate_stable`)
 	require.NoError(t, err)

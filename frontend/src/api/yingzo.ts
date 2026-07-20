@@ -41,6 +41,7 @@ export interface YingzoReleaseSummary {
   version: string
   status?: 'draft' | 'published' | 'superseded' | 'disabled'
   channel?: YingzoReleaseChannel
+  stable_eligible?: boolean
   distribution_schema_version?: 1 | 2
   runtime_protocol?: number
   compatibility?: Record<string, unknown>
@@ -50,6 +51,11 @@ export interface YingzoReleaseSummary {
   artifact_items?: YingzoReleaseArtifact[]
   signature?: string
   signature_status?: 'signed' | 'unsigned'
+  native_signing?: {
+    macos: { status: 'verified' | 'unverified' | 'failed' }
+    windows: { status: 'verified' | 'unsigned' | 'failed' }
+  }
+  warning?: string
   min_codex_version: string
   min_claude_version: string
   release_notes?: string
@@ -67,6 +73,7 @@ export interface YingzoArtifactDownload {
   content_type: string
   download_url: string
   expires_at: string
+  signature_status?: 'unverified' | 'verified' | 'failed'
 }
 
 export interface YingzoInstallRequest {
@@ -86,6 +93,9 @@ export interface YingzoInstallInstructions {
   channel?: YingzoReleaseChannel
   runtime_protocol?: number
   signature?: string
+  stable_eligible?: boolean
+  native_signing?: YingzoReleaseSummary['native_signing']
+  warning?: string
   download_url: string
   expires_at: string
   prompt: string

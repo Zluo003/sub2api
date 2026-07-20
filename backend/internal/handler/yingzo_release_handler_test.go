@@ -461,9 +461,9 @@ func TestPublishYingzoReleaseRejectsIncompleteDualArtifacts(t *testing.T) {
 	openAISHA, err := yingzoFileSHA256(openAIFile)
 	require.NoError(t, err)
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
 		WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("draft", "stable", 1, 0, "0.2.0", nil))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("draft", "stable", 1, true, 0, "0.2.0", nil))
 	mock.ExpectQuery("SELECT host_family,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").
 		WithArgs(releaseID).
 		WillReturnRows(sqlmock.NewRows([]string{"host_family", "storage_key", "size_bytes", "sha256"}).AddRow("openai", openAIFile, int64(6), openAISHA))
@@ -491,7 +491,7 @@ type yingzoLegacyArtifactRow struct {
 
 func legacyYingzoReleaseRows(id uuid.UUID, version, status string, now time.Time, publishedAt any) *sqlmock.Rows {
 	return sqlmock.NewRows(strings.Split(yingzoReleaseColumns, ",")).
-		AddRow(id, version, status, 1, "stable", 0, []byte(`{}`), nil, nil, nil, nil, now, publishedAt, now)
+		AddRow(id, version, status, 1, "stable", true, 0, []byte(`{}`), nil, nil, nil, nil, now, publishedAt, now)
 }
 
 func legacyYingzoArtifactRows(releaseID uuid.UUID, now time.Time, artifacts ...yingzoLegacyArtifactRow) *sqlmock.Rows {

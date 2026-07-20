@@ -51,6 +51,33 @@ func TestYingzoV2ArtifactMatrixIsExact(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestUnsignedAMD64PEIsStructurallyValidButNotSigned(t *testing.T) {
+	signed, err := inspectAMD64PE(minimalUnsignedAMD64PEBytes())
+	require.NoError(t, err)
+	require.False(t, signed)
+	require.NoError(t, validateAMD64PE(minimalUnsignedAMD64PEBytes()), "structural PE validation must not require Authenticode for prerelease uploads")
+}
+
+func TestUnsignedWindowsPayloadIsDetectedAcrossEveryContainer(t *testing.T) {
+	for _, spec := range []yingzoArtifactSpec{
+		mustYingzoV2Spec(t, "host_package", "openai", "windows", "x64"),
+		mustYingzoV2Spec(t, "host_package", "claude-desktop", "any", "any"),
+		mustYingzoV2Spec(t, "runtime_installer", "runtime", "windows", "x64"),
+	} {
+		t.Run(spec.Target, func(t *testing.T) {
+			artifact := filepath.Join(t.TempDir(), spec.Filename)
+			if spec.Format == "exe" {
+				require.NoError(t, os.WriteFile(artifact, minimalUnsignedAMD64PEBytes(), 0600))
+			} else {
+				writeV2HostArchiveWithWindowsSigning(t, artifact, spec, false)
+			}
+			signed, err := inspectYingzoV2Artifact(artifact, spec)
+			require.NoError(t, err)
+			require.False(t, signed)
+		})
+	}
+}
+
 func TestCreateYingzoV2DraftDoesNotRequireArtifacts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
@@ -122,6 +149,64 @@ func TestUploadYingzoV2ArtifactStoresValidatedLocalFile(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.True(t, strings.HasSuffix(entries[0].Name(), ".tar.gz"))
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadUnsignedWindowsArtifactIsAllowedOnlyForPrerelease(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		channel     string
+		wantStatus  int
+		wantCode    string
+		expectWrite bool
+	}{
+		{name: "prerelease persists unsigned status", channel: "prerelease", wantStatus: http.StatusCreated, expectWrite: true},
+		{name: "stable rejects unsigned Windows", channel: "stable", wantStatus: http.StatusUnprocessableEntity, wantCode: "unsigned_windows_artifact"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			h, mock := newAgentHandlerMock(t)
+			releaseID := uuid.New()
+			now := time.Now().UTC()
+			mock.ExpectBegin()
+			expectV2Release(t, mock, releaseID, "draft", tc.channel, now, nil)
+			if tc.expectWrite {
+				mock.ExpectExec("UPDATE yingzo_releases SET signature=NULL").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='unverified'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec("INSERT INTO yingzo_release_artifacts").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			} else {
+				mock.ExpectRollback()
+			}
+
+			spec := mustYingzoV2Spec(t, "host_package", "openai", "windows", "x64")
+			archive := filepath.Join(t.TempDir(), spec.Filename)
+			writeV2HostArchiveWithWindowsSigning(t, archive, spec, false)
+			body := &bytes.Buffer{}
+			writer := multipart.NewWriter(body)
+			require.NoError(t, writer.WriteField("artifact_kind", spec.ArtifactKind))
+			require.NoError(t, writer.WriteField("target", spec.Target))
+			require.NoError(t, writer.WriteField("os", spec.OS))
+			require.NoError(t, writer.WriteField("arch", spec.Arch))
+			require.NoError(t, writer.WriteField("runtime_protocol", "1"))
+			writeYingzoMultipartFile(t, writer, "file", archive)
+			require.NoError(t, writer.Close())
+
+			router := gin.New()
+			router.POST("/releases/:id/artifacts", h.UploadYingzoReleaseArtifact)
+			request := httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/artifacts", body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			require.Equal(t, tc.wantStatus, response.Code, response.Body.String())
+			if tc.expectWrite {
+				require.Contains(t, response.Body.String(), `"signature_status":"unverified"`)
+			} else {
+				require.Equal(t, tc.wantCode, responseCode(response))
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
 
 func TestUploadYingzoV2ArtifactRechecksDraftStateUnderReleaseLock(t *testing.T) {
@@ -211,6 +296,40 @@ func TestYingzoV2InstallReturnsHostAndRuntimeTickets(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestYingzoV2InstallWarnsForUnsignedWindowsPrerelease(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	h.yingzoTicketStore = newMemoryYingzoTicketStore()
+	releaseID := uuid.New()
+	now := time.Now().UTC()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE status='published' AND channel=\\$1").
+		WithArgs("prerelease").
+		WillReturnRows(v2YingzoReleaseRowsWithEligibility(releaseID, "published", "prerelease", false, now, now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").
+		WithArgs(releaseID).
+		WillReturnRows(v2YingzoArtifactRowsWithWindowsStatus(releaseID, now, "0.3.0", "/tmp", "unverified"))
+
+	router := gin.New()
+	router.POST("/install", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
+		h.CreateYingzoInstallInstructions(c)
+	})
+	request := httptest.NewRequest(http.MethodPost, "https://api-key.cc/install", strings.NewReader(`{
+		"host":"codex","os":"windows","arch":"x64","channel":"prerelease","runtime_capability":"missing"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.Equal(t, false, body["stable_eligible"])
+	require.Contains(t, body["warning"], "SmartScreen")
+	require.Contains(t, body["prompt"], "未签名 Windows")
+	require.Equal(t, "unverified", body["host_package"].(map[string]any)["signature_status"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestYingzoDownloadTicketSupportsHeadRangeAndRetry(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
@@ -271,8 +390,8 @@ func TestPublishYingzoV2RequiresAndAcceptsExactSignedMatrix(t *testing.T) {
 	rows, proof := v2YingzoPublishRows(t, releaseID, storage, "verified")
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("draft", "prerelease", 2, 1, "0.3.0", proof))
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("draft", "prerelease", 2, true, 1, "0.3.0", proof))
 	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).WillReturnRows(rows)
 	mock.ExpectExec("UPDATE yingzo_releases SET status='superseded'").WithArgs("prerelease", releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE yingzo_releases SET status='published'").WithArgs(releaseID, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -291,6 +410,32 @@ func TestPublishYingzoV2RequiresAndAcceptsExactSignedMatrix(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestPublishUnsignedWindowsPrereleaseWithSignedProof(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	rows, _, proof := v2YingzoUnsignedRows(t, releaseID, t.TempDir())
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("draft", "prerelease", 2, false, 1, "0.3.0", proof))
+	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).WillReturnRows(rows)
+	mock.ExpectExec("UPDATE yingzo_releases SET status='superseded'").WithArgs("prerelease", releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_releases SET status='published'").WithArgs(releaseID, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1").WithArgs(releaseID).WillReturnError(context.Canceled)
+
+	router := gin.New()
+	router.POST("/releases/:id/publish", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.PublishYingzoRelease(c)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/publish", nil))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestPublishYingzoV2RejectsUnverifiedArtifact(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
@@ -298,8 +443,8 @@ func TestPublishYingzoV2RejectsUnverifiedArtifact(t *testing.T) {
 	storage := t.TempDir()
 	rows, _ := v2YingzoPublishRows(t, releaseID, storage, "unverified")
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("draft", "prerelease", 2, 1, "0.3.0", ""))
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("draft", "prerelease", 2, true, 1, "0.3.0", ""))
 	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
 		WillReturnRows(rows)
 	mock.ExpectRollback()
@@ -323,8 +468,8 @@ func TestPublishStableYingzoV2RejectsPrereleaseProof(t *testing.T) {
 	storage := t.TempDir()
 	rows, proof := v2YingzoPublishRows(t, releaseID, storage, "verified")
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("draft", "stable", 2, 1, "0.3.0", proof))
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("draft", "stable", 2, true, 1, "0.3.0", proof))
 	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
 		WillReturnRows(rows)
 	mock.ExpectRollback()
@@ -348,8 +493,8 @@ func TestPromoteYingzoV2RevalidatesArtifactsAndMovesSameReleaseToStable(t *testi
 	storage := t.TempDir()
 	rows, proof := v2YingzoPublishRows(t, releaseID, storage, "verified")
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("published", "prerelease", 2, 1, "0.3.0", proof))
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("published", "prerelease", 2, true, 1, "0.3.0", proof))
 	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
 		WillReturnRows(rows)
 	mock.ExpectExec("UPDATE yingzo_releases SET status='superseded'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -369,6 +514,28 @@ func TestPromoteYingzoV2RevalidatesArtifactsAndMovesSameReleaseToStable(t *testi
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestPromoteUnsignedWindowsPrereleaseIsRejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("published", "prerelease", 2, false, 1, "0.3.0", "proof"))
+	mock.ExpectRollback()
+
+	router := gin.New()
+	router.POST("/releases/:id/promote", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.PromoteYingzoRelease(c)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/promote", nil))
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, "release_not_stable_eligible", responseCode(response))
+	require.Contains(t, response.Body.String(), "new fully signed version")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestRollbackPromotedYingzoV2AcceptsOriginalPrereleaseProof(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
@@ -376,8 +543,8 @@ func TestRollbackPromotedYingzoV2AcceptsOriginalPrereleaseProof(t *testing.T) {
 	storage := t.TempDir()
 	rows, proof := v2YingzoPublishRows(t, releaseID, storage, "verified")
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("superseded", "stable", 2, 1, "0.3.0", proof))
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("superseded", "stable", 2, true, 1, "0.3.0", proof))
 	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
 		WillReturnRows(rows)
 	mock.ExpectExec("UPDATE yingzo_releases SET status='superseded'").WithArgs("stable", releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -394,6 +561,27 @@ func TestRollbackPromotedYingzoV2AcceptsOriginalPrereleaseProof(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/rollback", nil))
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	require.Contains(t, response.Body.String(), `"channel":"stable"`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRollbackStableYingzoV2RejectsIneligibleRelease(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "stable_eligible", "runtime_protocol", "version", "signature"}).AddRow("superseded", "stable", 2, false, 1, "0.3.0", "proof"))
+	mock.ExpectRollback()
+
+	router := gin.New()
+	router.POST("/releases/:id/rollback", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.RollbackYingzoRelease(c)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/rollback", nil))
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Equal(t, "release_not_stable_eligible", responseCode(response))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -635,7 +823,7 @@ func TestVerifyYingzoReleaseProofBindsExactManifestBytes(t *testing.T) {
 		now := time.Now().UTC()
 		mock.ExpectBegin()
 		expectV2Release(t, mock, releaseID, "draft", "prerelease", now, rows)
-		mock.ExpectExec("UPDATE yingzo_releases SET signature").WithArgs(releaseID, sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("UPDATE yingzo_releases SET signature").WithArgs(releaseID, sqlmock.AnyArg(), true).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='verified'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 8))
 		mock.ExpectCommit()
 
@@ -672,7 +860,7 @@ func TestVerifyYingzoReleaseProofBindsExactManifestBytes(t *testing.T) {
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 	t.Run("non-Ed25519 algorithms are rejected", func(t *testing.T) {
-		_, err := verifyYingzoReleaseProof(nil, yingzoReleaseProofInput{Algorithm: "RSA-PSS"})
+		_, _, err := verifyYingzoReleaseProof(nil, yingzoReleaseProofInput{Algorithm: "RSA-PSS"})
 		require.ErrorContains(t, err, "algorithm must be Ed25519")
 	})
 	t.Run("manifest channel is bound to the release", func(t *testing.T) {
@@ -682,6 +870,52 @@ func TestVerifyYingzoReleaseProofBindsExactManifestBytes(t *testing.T) {
 		)
 		require.ErrorContains(t, err, "channel does not match")
 	})
+}
+
+func TestVerifyUnsignedWindowsPrereleaseProofPreservesNativeStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	_, rows, proof := v2YingzoUnsignedRows(t, releaseID, t.TempDir())
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	expectV2Release(t, mock, releaseID, "draft", "prerelease", now, rows)
+	mock.ExpectExec("UPDATE yingzo_releases SET signature").WithArgs(releaseID, sqlmock.AnyArg(), false).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='verified'.*NOT \\(os='windows' OR target='claude-desktop'\\)").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 4))
+	mock.ExpectCommit()
+
+	router := gin.New()
+	router.PUT("/releases/:id/proof", h.VerifyYingzoReleaseProof)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/releases/"+releaseID.String()+"/proof", strings.NewReader(proof)))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), `"stable_eligible":false`)
+	require.Contains(t, response.Body.String(), `"windows":{"status":"unsigned"}`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUnsignedPrereleasePublicResponseWarnsAboutSmartScreen(t *testing.T) {
+	release := &yingzoRelease{
+		Version: "0.3.0", Channel: "prerelease", DistributionSchemaVersion: 2, StableEligible: false,
+		Artifacts: map[string]*yingzoReleaseArtifact{
+			"runtime:windows:x64": {Target: "runtime", OS: "windows", Arch: "x64", SignatureStatus: "unverified"},
+		},
+	}
+	response := publicYingzoRelease(release)
+	require.Equal(t, false, response["stable_eligible"])
+	require.Contains(t, response["warning"], "SmartScreen")
+	nativeSigning := response["native_signing"].(yingzoNativeSigning)
+	require.Equal(t, "unsigned", nativeSigning.Windows.Status)
+	require.Contains(t, yingzoV2InstallPrompt("codex", release, "https://example.test/host.zip", nil, "compatible"), "SmartScreen")
+}
+
+func TestManifestRejectsMissingMacOSSigningAttestation(t *testing.T) {
+	err := validateYingzoSignedManifest(&yingzoRelease{Version: "0.3.0", Channel: "prerelease", RuntimeProtocol: 1}, yingzoSignedReleaseManifest{
+		SchemaVersion: 2, Product: "yingzo", Version: "0.3.0", Channel: "prerelease", RuntimeProtocol: 1,
+		CompleteArtifactMatrix: true, PublicSigningRequired: false, StableEligible: false,
+		NativeSigning: yingzoNativeSigning{MacOS: yingzoNativeSigningPlatform{Status: "unverified"}, Windows: yingzoNativeSigningPlatform{Status: "unsigned"}},
+	})
+	require.ErrorContains(t, err, "macOS signing must be verified")
 }
 
 func expectV2Release(t *testing.T, mock sqlmock.Sqlmock, releaseID uuid.UUID, status, channel string, now time.Time, artifacts *sqlmock.Rows) {
@@ -695,15 +929,27 @@ func expectV2Release(t *testing.T, mock sqlmock.Sqlmock, releaseID uuid.UUID, st
 }
 
 func v2YingzoReleaseRows(id uuid.UUID, status, channel string, now time.Time, publishedAt any) *sqlmock.Rows {
+	return v2YingzoReleaseRowsWithEligibility(id, status, channel, true, now, publishedAt)
+}
+
+func v2YingzoReleaseRowsWithEligibility(id uuid.UUID, status, channel string, stableEligible bool, now time.Time, publishedAt any) *sqlmock.Rows {
 	return sqlmock.NewRows(strings.Split(yingzoReleaseColumns, ",")).
-		AddRow(id, "0.3.0", status, 2, channel, 1, []byte(`{"project_schema":1}`), nil, "0.128.0", "0.0.0", "preview", now, publishedAt, now)
+		AddRow(id, "0.3.0", status, 2, channel, stableEligible, 1, []byte(`{"project_schema":1}`), nil, "0.128.0", "0.0.0", "preview", now, publishedAt, now)
 }
 
 func v2YingzoArtifactRows(releaseID uuid.UUID, now time.Time, version, storageRoot string) *sqlmock.Rows {
+	return v2YingzoArtifactRowsWithWindowsStatus(releaseID, now, version, storageRoot, "verified")
+}
+
+func v2YingzoArtifactRowsWithWindowsStatus(releaseID uuid.UUID, now time.Time, version, storageRoot, windowsStatus string) *sqlmock.Rows {
 	rows := sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ","))
 	for _, spec := range yingzoV2ArtifactSpecs(version) {
+		signatureStatus := "verified"
+		if yingzoWindowsBearingSpec(spec) {
+			signatureStatus = windowsStatus
+		}
 		rows.AddRow(uuid.New(), releaseID, nil, spec.ArtifactKind, spec.Target, spec.OS, spec.Arch, spec.Format, spec.ContentType, 1,
-			"validated", "verified", now, spec.Filename, "local", filepath.Join(storageRoot, spec.Filename), int64(100), strings.Repeat("a", 64), now, now)
+			"validated", signatureStatus, now, spec.Filename, "local", filepath.Join(storageRoot, spec.Filename), int64(100), strings.Repeat("a", 64), now, now)
 	}
 	return rows
 }
@@ -732,7 +978,9 @@ func v2YingzoPublishRows(t *testing.T, releaseID uuid.UUID, storageRoot, signatu
 	}
 	manifestBytes, err := json.Marshal(yingzoSignedReleaseManifest{
 		SchemaVersion: 2, Product: "yingzo", Version: "0.3.0", Channel: "prerelease", RuntimeProtocol: 1,
-		CompleteArtifactMatrix: true, PublicSigningRequired: true, Artifacts: manifestArtifacts,
+		CompleteArtifactMatrix: true, PublicSigningRequired: true, StableEligible: true,
+		NativeSigning: yingzoNativeSigning{MacOS: yingzoNativeSigningPlatform{Status: "verified"}, Windows: yingzoNativeSigningPlatform{Status: "verified"}},
+		Artifacts:     manifestArtifacts,
 	})
 	require.NoError(t, err)
 	manifestBytes = append(manifestBytes, '\n')
@@ -765,6 +1013,60 @@ func v2YingzoProofRows(t *testing.T, releaseID uuid.UUID, storageRoot, signature
 	return rows, proof
 }
 
+func v2YingzoUnsignedRows(t *testing.T, releaseID uuid.UUID, storageRoot string) (*sqlmock.Rows, *sqlmock.Rows, string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	publicKeys, err := json.Marshal(map[string]string{"test-release": base64.StdEncoding.EncodeToString(publicKey)})
+	require.NoError(t, err)
+	t.Setenv(yingzoReleasePublicKeysEnv, string(publicKeys))
+
+	now := time.Now().UTC()
+	publishRows := sqlmock.NewRows([]string{"artifact_kind", "target", "os", "arch", "runtime_protocol", "validation_status", "signature_status", "package_filename", "storage_key", "size_bytes", "sha256"})
+	proofRows := sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ","))
+	manifestArtifacts := make([]yingzoSignedManifestArtifact, 0, len(yingzoV2ArtifactSpecs("0.3.0")))
+	for _, spec := range yingzoV2ArtifactSpecs("0.3.0") {
+		storageKey := filepath.Join(storageRoot, spec.Filename)
+		if spec.Format == "exe" {
+			require.NoError(t, os.WriteFile(storageKey, minimalUnsignedAMD64PEBytes(), 0600))
+		} else if (spec.Format == "zip" || spec.Format == "mcpb") && yingzoWindowsBearingSpec(spec) {
+			writeV2HostArchiveWithWindowsSigning(t, storageKey, spec, false)
+		} else {
+			writeV2ArtifactFixture(t, storageKey, spec)
+		}
+		sha, hashErr := yingzoFileSHA256(storageKey)
+		require.NoError(t, hashErr)
+		info, statErr := os.Stat(storageKey)
+		require.NoError(t, statErr)
+		signatureStatus := "verified"
+		if yingzoWindowsBearingSpec(spec) {
+			signatureStatus = "unverified"
+		}
+		publishRows.AddRow(spec.ArtifactKind, spec.Target, spec.OS, spec.Arch, 1, "validated", signatureStatus, spec.Filename, storageKey, info.Size(), sha)
+		proofRows.AddRow(uuid.New(), releaseID, nil, spec.ArtifactKind, spec.Target, spec.OS, spec.Arch, spec.Format, spec.ContentType, 1,
+			"validated", signatureStatus, now, spec.Filename, "local", storageKey, info.Size(), sha, now, now)
+		manifestArtifacts = append(manifestArtifacts, yingzoSignedManifestArtifact{
+			Filename: spec.Filename, ArtifactKind: spec.ArtifactKind, Target: spec.Target, OS: spec.OS, Arch: spec.Arch,
+			Format: spec.Format, ContentType: spec.ContentType, Bytes: info.Size(), SHA256: sha, RuntimeProtocol: 1,
+		})
+	}
+	manifestBytes, err := json.Marshal(yingzoSignedReleaseManifest{
+		SchemaVersion: 2, Product: "yingzo", Version: "0.3.0", Channel: "prerelease", RuntimeProtocol: 1,
+		CompleteArtifactMatrix: true, PublicSigningRequired: false, StableEligible: false,
+		NativeSigning: yingzoNativeSigning{MacOS: yingzoNativeSigningPlatform{Status: "verified"}, Windows: yingzoNativeSigningPlatform{Status: "unsigned"}},
+		Artifacts:     manifestArtifacts,
+	})
+	require.NoError(t, err)
+	manifestBytes = append(manifestBytes, '\n')
+	signature := ed25519.Sign(privateKey, manifestBytes)
+	envelopeBytes, err := json.Marshal(yingzoReleaseProofEnvelope{
+		Algorithm: "Ed25519", KeyID: "test-release", ManifestBase64: base64.StdEncoding.EncodeToString(manifestBytes),
+		SignatureBase64: base64.StdEncoding.EncodeToString(signature), VerifiedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	require.NoError(t, err)
+	return publishRows, proofRows, string(envelopeBytes)
+}
+
 func mustYingzoV2Spec(t *testing.T, kind, target, operatingSystem, arch string) yingzoArtifactSpec {
 	t.Helper()
 	spec, ok := findYingzoV2Spec("0.3.0", kind, target, operatingSystem, arch)
@@ -792,15 +1094,23 @@ func writeV2ArtifactFixture(t *testing.T, target string, spec yingzoArtifactSpec
 }
 
 func writeV2HostArchive(t *testing.T, target string, spec yingzoArtifactSpec) {
+	writeV2HostArchiveWithWindowsSigning(t, target, spec, true)
+}
+
+func writeV2HostArchiveWithWindowsSigning(t *testing.T, target string, spec yingzoArtifactSpec, windowsSigned bool) {
 	t.Helper()
 	version := "0.3.0"
 	entries := map[string]string{}
+	windowsLauncher := minimalUnsignedAMD64PEBytes()
+	if windowsSigned {
+		windowsLauncher = minimalAMD64PEBytes()
+	}
 	if spec.Target == "claude-desktop" {
 		root := "outer/"
 		entries[root+"manifest.json"] = `{"name":"yingzo","version":"` + version + `","server":{"entry_point":"server/yingzo-mcp","mcp_config":{"command":"${__dirname}/server/yingzo-mcp","platform_overrides":{"win32":{"command":"${__dirname}/server/yingzo-mcp.exe"}}}}}`
 		entries[root+"ui-manifest.json"] = `{"schema_version":1,"product_version":"` + version + `"}`
 		entries[root+"server/yingzo-mcp"] = "#!/bin/sh\n"
-		entries[root+"server/yingzo-mcp.exe"] = string(minimalAMD64PEBytes())
+		entries[root+"server/yingzo-mcp.exe"] = string(windowsLauncher)
 	} else {
 		root := "outer/marketplace/plugins/yingzo/"
 		entries[root+"ui-manifest.json"] = `{"schema_version":1,"product_version":"` + version + `"}`
@@ -816,7 +1126,7 @@ func writeV2HostArchive(t *testing.T, target string, spec yingzoArtifactSpec) {
 		launcher := root + "runtime/yingzo-mcp"
 		if spec.OS == "windows" {
 			launcher += ".exe"
-			entries[launcher] = string(minimalAMD64PEBytes())
+			entries[launcher] = string(windowsLauncher)
 		} else {
 			entries[launcher] = "#!/bin/sh\n"
 		}
@@ -891,6 +1201,15 @@ func writeMinimalAMD64PE(t *testing.T, target string) {
 }
 
 func minimalAMD64PEBytes() []byte {
+	data := minimalUnsignedAMD64PEBytes()
+	optional := 0x98
+	// IMAGE_DIRECTORY_ENTRY_SECURITY is a file-offset based certificate table.
+	binary.LittleEndian.PutUint32(data[optional+112+4*8:optional+112+4*8+4], 0x3000)
+	binary.LittleEndian.PutUint32(data[optional+112+4*8+4:optional+112+4*8+8], 8)
+	return data
+}
+
+func minimalUnsignedAMD64PEBytes() []byte {
 	data := make([]byte, 0x4000)
 	copy(data, []byte("MZ"))
 	binary.LittleEndian.PutUint32(data[0x3c:0x40], 0x80)
@@ -900,8 +1219,5 @@ func minimalAMD64PEBytes() []byte {
 	optional := 0x98
 	binary.LittleEndian.PutUint16(data[optional:optional+2], 0x20b)
 	binary.LittleEndian.PutUint32(data[optional+108:optional+112], 16)
-	// IMAGE_DIRECTORY_ENTRY_SECURITY is a file-offset based certificate table.
-	binary.LittleEndian.PutUint32(data[optional+112+4*8:optional+112+4*8+4], 0x3000)
-	binary.LittleEndian.PutUint32(data[optional+112+4*8+4:optional+112+4*8+8], 8)
 	return data
 }

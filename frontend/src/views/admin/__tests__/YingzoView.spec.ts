@@ -40,6 +40,23 @@ function schema2Draft() {
   }
 }
 
+function unsignedArtifactMatrix() {
+  return [
+    ['openai', 'macos', 'any', 'verified'],
+    ['openai', 'windows', 'x64', 'unverified'],
+    ['claude-code', 'macos', 'any', 'verified'],
+    ['claude-code', 'windows', 'x64', 'unverified'],
+    ['claude-desktop', 'any', 'any', 'unverified'],
+    ['runtime', 'macos', 'arm64', 'verified'],
+    ['runtime', 'macos', 'x64', 'verified'],
+    ['runtime', 'windows', 'x64', 'unverified'],
+  ].map(([target, os, arch, signature_status], index) => ({
+    id: `artifact-${index}`, artifact_kind: target === 'runtime' ? 'runtime_installer' : 'host_package',
+    target, os, arch, package_filename: `artifact-${index}`, size_bytes: 1024,
+    validation_status: 'validated', signature_status,
+  }))
+}
+
 describe('Yingzo release administration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -134,6 +151,27 @@ describe('Yingzo release administration', () => {
 
     expect(mocks.promote).toHaveBeenCalledWith('release-1')
     expect(mocks.createDraft).not.toHaveBeenCalled()
+  })
+
+  it('publishes but cannot promote a proof-verified unsigned Windows prerelease', async () => {
+    const unsigned = {
+      ...schema2Draft(), signature: 'verified-proof', stable_eligible: false,
+      artifact_matrix: unsignedArtifactMatrix(),
+    }
+    mocks.list.mockResolvedValue([unsigned])
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const publish = wrapper.findAll('button').find((button) => button.text() === '发布')
+    expect(publish?.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('未签名，仅预发布')
+    expect(wrapper.text()).toContain('不能提升为稳定版')
+
+    mocks.list.mockResolvedValue([{ ...unsigned, status: 'published' }])
+    await wrapper.findAll('button').find((button) => button.attributes('title') === '刷新')!.trigger('click')
+    await flushPromises()
+    const promote = wrapper.findAll('button').find((button) => button.text() === '提升为稳定版')
+    expect(promote?.attributes('disabled')).toBeDefined()
   })
 
   it('does not render the legacy artifact list for a published schema 2 release', async () => {
