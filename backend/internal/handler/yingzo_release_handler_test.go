@@ -331,6 +331,65 @@ func TestListYingzoReleasesReturnsDatabaseErrorAfterIterationFailure(t *testing.
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestListYingzoReleasesIncludesCurrentRequirementsAndCompleteArtifacts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	artifactID := uuid.New()
+	createdAt := time.Date(2026, time.July, 20, 8, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+	validatedAt := createdAt.Add(30 * time.Minute)
+
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases ORDER BY created_at DESC").
+		WillReturnRows(sqlmock.NewRows(strings.Split(yingzoReleaseColumns, ",")).AddRow(
+			releaseID, "0.3.0", "draft", 3, "prerelease", true, 1, []byte(`{"project_schema":1}`), nil,
+			"0.143.0", "2.1.201", "preview", createdAt, nil, updatedAt,
+		))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").
+		WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ",")).AddRow(
+			artifactID, releaseID, nil, "host_package", "openai", "macos", "any", "tar.gz", "application/gzip", 1,
+			"validated", "verified", validatedAt, "yingzo-openai-macos-0.3.0.tar.gz", "local", "/redacted/storage-key",
+			int64(1234), strings.Repeat("a", 64), createdAt, updatedAt,
+		))
+
+	router := gin.New()
+	router.GET("/releases", h.ListYingzoReleases)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/releases", nil))
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var payload struct {
+		Items []struct {
+			ID                uuid.UUID                         `json:"id"`
+			Status            string                            `json:"status"`
+			CreatedAt         time.Time                         `json:"created_at"`
+			UpdatedAt         time.Time                         `json:"updated_at"`
+			RequiredArtifacts []yingzoArtifactRequirement       `json:"required_artifacts"`
+			ArtifactCount     int                               `json:"artifact_count"`
+			Artifacts         map[string]*yingzoReleaseArtifact `json:"artifacts"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.Len(t, payload.Items, 1)
+	item := payload.Items[0]
+	require.Equal(t, releaseID, item.ID)
+	require.Equal(t, "draft", item.Status)
+	require.Equal(t, createdAt, item.CreatedAt)
+	require.Equal(t, updatedAt, item.UpdatedAt)
+	require.Equal(t, 7, item.ArtifactCount)
+	require.Len(t, item.RequiredArtifacts, 7)
+	artifact := item.Artifacts["openai:macos:any"]
+	require.NotNil(t, artifact)
+	require.Equal(t, artifactID, artifact.ID)
+	require.Equal(t, "validated", artifact.ValidationStatus)
+	require.Equal(t, "verified", artifact.SignatureStatus)
+	require.NotNil(t, artifact.ValidatedAt)
+	require.Equal(t, validatedAt, *artifact.ValidatedAt)
+	require.NotContains(t, response.Body.String(), "/redacted/storage-key")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUploadYingzoReleaseCleansArtifactsWhenTransactionCannotStart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)

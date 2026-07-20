@@ -1,15 +1,10 @@
 package handler
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
-	"debug/pe"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -19,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -117,6 +111,22 @@ type yingzoArtifactSpec struct {
 	ContentType     string
 	Filename        string
 	RuntimeProtocol int
+}
+
+type yingzoArtifactRequirement struct {
+	ArtifactKind    string `json:"artifact_kind"`
+	Target          string `json:"target"`
+	OS              string `json:"os"`
+	Arch            string `json:"arch"`
+	Format          string `json:"format"`
+	ContentType     string `json:"content_type"`
+	PackageFilename string `json:"package_filename"`
+}
+
+type yingzoReleaseListItem struct {
+	*yingzoRelease
+	RequiredArtifacts []yingzoArtifactRequirement `json:"required_artifacts"`
+	ArtifactCount     int                         `json:"artifact_count"`
 }
 
 type yingzoReleaseProofEnvelope struct {
@@ -220,6 +230,23 @@ func yingzoV2ArtifactSpecs(version string) []yingzoArtifactSpec {
 
 func yingzoV3ArtifactSpecs(version string) []yingzoArtifactSpec {
 	return yingzoArtifactSpecsForSchema(yingzoDistributionSchema3, version)
+}
+
+func yingzoArtifactRequirements(schemaVersion int, version string) []yingzoArtifactRequirement {
+	specs := yingzoArtifactSpecsForSchema(schemaVersion, version)
+	requirements := make([]yingzoArtifactRequirement, 0, len(specs))
+	for _, spec := range specs {
+		requirements = append(requirements, yingzoArtifactRequirement{
+			ArtifactKind:    spec.ArtifactKind,
+			Target:          spec.Target,
+			OS:              spec.OS,
+			Arch:            spec.Arch,
+			Format:          spec.Format,
+			ContentType:     spec.ContentType,
+			PackageFilename: spec.Filename,
+		})
+	}
+	return requirements
 }
 
 func yingzoDistributionSchemaSupported(schemaVersion int) bool {
@@ -549,14 +576,19 @@ func (h *AgentHandler) ListYingzoReleases(c *gin.Context) {
 		return
 	}
 	defer func() { _ = rows.Close() }()
-	items := make([]*yingzoRelease, 0)
+	items := make([]yingzoReleaseListItem, 0)
 	for rows.Next() {
 		release, scanErr := scanYingzoRelease(rows)
 		if scanErr != nil || h.loadYingzoArtifacts(c, release) != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
 			return
 		}
-		items = append(items, release)
+		requiredArtifacts := yingzoArtifactRequirements(release.DistributionSchemaVersion, release.Version)
+		items = append(items, yingzoReleaseListItem{
+			yingzoRelease:     release,
+			RequiredArtifacts: requiredArtifacts,
+			ArtifactCount:     len(requiredArtifacts),
+		})
 	}
 	if err := rows.Err(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
@@ -591,7 +623,7 @@ func (h *AgentHandler) createYingzoReleaseDraft(c *gin.Context) {
 		return
 	}
 	var input yingzoReleaseDraftInput
-	if c.ShouldBindJSON(&input) != nil || !yingzoVersionPattern.MatchString(strings.TrimSpace(input.Version)) || !yingzoDistributionSchemaSupported(input.DistributionSchemaVersion) || input.RuntimeProtocol <= 0 {
+	if c.ShouldBindJSON(&input) != nil || !yingzoVersionPattern.MatchString(strings.TrimSpace(input.Version)) || input.DistributionSchemaVersion != yingzoDistributionSchema3 || input.RuntimeProtocol <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_release_draft"}})
 		return
 	}
@@ -1704,10 +1736,6 @@ func normalizeYingzoArchTrusted(raw string) string {
 	return value
 }
 
-func yingzoPlatformSupported(targetOS, arch string) bool {
-	return yingzoPlatformSupportedForSchema(yingzoDistributionSchema2, targetOS, arch)
-}
-
 func yingzoPlatformSupportedForSchema(schemaVersion int, targetOS, arch string) bool {
 	if schemaVersion == yingzoDistributionSchema3 {
 		return (targetOS == "macos" && arch == "arm64") || (targetOS == "windows" && arch == "x64")
@@ -1755,18 +1783,7 @@ func resolveYingzoRuntimeCapability(input yingzoInstallRequest, release *yingzoR
 func publicYingzoRelease(release *yingzoRelease) gin.H {
 	artifacts := gin.H{}
 	items := make([]gin.H, 0, len(release.Artifacts))
-	requiredArtifacts := make([]gin.H, 0)
-	for _, spec := range yingzoArtifactSpecsForSchema(release.DistributionSchemaVersion, release.Version) {
-		requiredArtifacts = append(requiredArtifacts, gin.H{
-			"artifact_kind":    spec.ArtifactKind,
-			"target":           spec.Target,
-			"os":               spec.OS,
-			"arch":             spec.Arch,
-			"format":           spec.Format,
-			"content_type":     spec.ContentType,
-			"package_filename": spec.Filename,
-		})
-	}
+	requiredArtifacts := yingzoArtifactRequirements(release.DistributionSchemaVersion, release.Version)
 	var totalSize int64
 	for _, artifact := range release.Artifacts {
 		summary := gin.H{"artifact_kind": artifact.ArtifactKind, "target": artifact.Target, "os": artifact.OS, "arch": artifact.Arch, "package_filename": artifact.PackageFilename, "content_type": artifact.ContentType, "size_bytes": artifact.SizeBytes}
@@ -1882,581 +1899,8 @@ func validateYingzoPackageFilename(filename, version, hostFamily string) (string
 	return "", fmt.Errorf("package filename must be %s", strings.Join(allowed, " or "))
 }
 
-func validateYingzoV2Artifact(filename string, spec yingzoArtifactSpec) error {
-	switch spec.Format {
-	case "tar.gz":
-		if err := validateTarArchiveSafety(filename); err != nil {
-			return err
-		}
-		entries, err := yingzoTarEntryNames(filename)
-		if err != nil {
-			return err
-		}
-		root, err := findYingzoV2HostRoot(entries, spec)
-		if err != nil {
-			return err
-		}
-		return validateYingzoV2HostContents(filename, "tar.gz", root, spec)
-	case "zip", "mcpb":
-		if err := validateZipArchiveSafety(filename); err != nil {
-			return err
-		}
-		entries, err := yingzoZipEntryNames(filename)
-		if err != nil {
-			return err
-		}
-		root, err := findYingzoV2HostRoot(entries, spec)
-		if err != nil {
-			return err
-		}
-		return validateYingzoV2HostContents(filename, "zip", root, spec)
-	case "exe":
-		file, err := pe.Open(filename)
-		if err != nil {
-			return errors.New("windows installer is not a valid PE executable")
-		}
-		defer func() { _ = file.Close() }()
-		return validateAMD64PEFile(file)
-	case "dmg":
-		file, err := os.Open(filename)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = file.Close() }()
-		info, err := file.Stat()
-		if err != nil || info.Size() < 512 {
-			return errors.New("macOS installer is not a valid UDIF disk image")
-		}
-		if _, err := file.Seek(-512, io.SeekEnd); err != nil {
-			return err
-		}
-		trailer := make([]byte, 4)
-		if _, err := io.ReadFull(file, trailer); err != nil || string(trailer) != "koly" {
-			return errors.New("macOS installer is not a valid UDIF disk image")
-		}
-		return nil
-	default:
-		return errors.New("unsupported artifact format")
-	}
-}
-
-func inspectYingzoV2Artifact(filename string, spec yingzoArtifactSpec) (bool, error) {
-	if err := validateYingzoV2Artifact(filename, spec); err != nil {
-		return false, err
-	}
-	if !yingzoWindowsBearingSpec(spec) {
-		return false, nil
-	}
-	if spec.Format == "exe" {
-		file, err := pe.Open(filename)
-		if err != nil {
-			return false, errors.New("windows installer is not a valid PE executable")
-		}
-		defer func() { _ = file.Close() }()
-		return inspectAMD64PEFile(file)
-	}
-	archiveFormat := "zip"
-	entries, err := yingzoZipEntryNames(filename)
-	if err != nil {
-		return false, err
-	}
-	root, err := findYingzoV2HostRoot(entries, spec)
-	if err != nil {
-		return false, err
-	}
-	launcherName := "runtime/yingzo-mcp.exe"
-	if spec.Target == "claude-desktop" {
-		launcherName = "server/yingzo-mcp.exe"
-	}
-	launcher, err := readYingzoArchiveEntry(filename, archiveFormat, root+launcherName, 64<<20)
-	if err != nil {
-		return false, err
-	}
-	return inspectAMD64PE(launcher.Data)
-}
-
 func yingzoWindowsBearingSpec(spec yingzoArtifactSpec) bool {
 	return spec.OS == "windows" || spec.Target == "claude-desktop"
-}
-
-func findYingzoV2HostRoot(entries []string, spec yingzoArtifactSpec) (string, error) {
-	var required []string
-	switch spec.Target {
-	case "openai":
-		launcher := "runtime/yingzo-mcp"
-		if spec.OS == "windows" {
-			launcher = "runtime/yingzo-mcp.exe"
-		}
-		required = []string{".codex-plugin/plugin.json", ".mcp.json", "ui-manifest.json", "runtime/runtime-helper.json", launcher}
-	case "claude-code":
-		launcher := "runtime/yingzo-mcp"
-		if spec.OS == "windows" {
-			launcher = "runtime/yingzo-mcp.exe"
-		}
-		required = []string{".claude-plugin/plugin.json", ".mcp.json", "ui-manifest.json", "runtime/runtime-helper.json", launcher}
-	case "claude-desktop":
-		required = []string{"manifest.json", "ui-manifest.json", "server/yingzo-mcp", "server/yingzo-mcp.exe"}
-	default:
-		return "", nil
-	}
-	entrySet := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		entrySet[entry] = true
-	}
-	marker := required[0]
-	for entry := range entrySet {
-		if !strings.HasSuffix(entry, marker) {
-			continue
-		}
-		root := strings.TrimSuffix(entry, marker)
-		if root != "" && !strings.HasSuffix(root, "/") {
-			continue
-		}
-		complete := true
-		for _, requiredEntry := range required {
-			if !entrySet[root+requiredEntry] {
-				complete = false
-				break
-			}
-		}
-		if complete {
-			return root, nil
-		}
-	}
-	return "", fmt.Errorf("package is missing the required %s layout", spec.Target)
-}
-
-type yingzoArchiveEntryData struct {
-	Data []byte
-	Mode os.FileMode
-}
-
-func validateYingzoV2HostContents(filename, archiveFormat, root string, spec yingzoArtifactSpec) error {
-	uiManifest, err := readYingzoArchiveEntry(filename, archiveFormat, root+"ui-manifest.json", 2<<20)
-	if err != nil {
-		return err
-	}
-	var ui struct {
-		SchemaVersion  int    `json:"schema_version"`
-		ProductVersion string `json:"product_version"`
-	}
-	expectedVersion := strings.TrimSuffix(strings.TrimPrefix(spec.Filename, artifactFilenamePrefix(spec)), artifactFilenameSuffix(spec))
-	if json.Unmarshal(uiManifest.Data, &ui) != nil || ui.SchemaVersion != 1 || ui.ProductVersion != expectedVersion {
-		return errors.New("ui-manifest.json product_version does not match the release")
-	}
-
-	switch spec.Target {
-	case "openai", "claude-code":
-		if !strings.HasSuffix(root, "marketplace/plugins/yingzo/") {
-			return errors.New("host package must contain the self-contained marketplace/plugins/yingzo layout")
-		}
-		marketplaceRoot := strings.TrimSuffix(root, "plugins/yingzo/")
-		marketplaceManifest := ".agents/plugins/marketplace.json"
-		if spec.Target == "claude-code" {
-			marketplaceManifest = ".claude-plugin/marketplace.json"
-		}
-		marketplaceEntry, err := readYingzoArchiveEntry(filename, archiveFormat, marketplaceRoot+marketplaceManifest, 2<<20)
-		if err != nil || !json.Valid(marketplaceEntry.Data) {
-			return errors.New("host package marketplace manifest is missing or invalid")
-		}
-		pluginPath := ".codex-plugin/plugin.json"
-		if spec.Target == "claude-code" {
-			pluginPath = ".claude-plugin/plugin.json"
-		}
-		pluginEntry, err := readYingzoArchiveEntry(filename, archiveFormat, root+pluginPath, 2<<20)
-		if err != nil {
-			return err
-		}
-		var plugin struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-		}
-		if json.Unmarshal(pluginEntry.Data, &plugin) != nil || plugin.Name != "yingzo" || plugin.Version != expectedVersion {
-			return errors.New("plugin manifest name or version does not match the release")
-		}
-		helperEntry, err := readYingzoArchiveEntry(filename, archiveFormat, root+"runtime/runtime-helper.json", 2<<20)
-		if err != nil {
-			return err
-		}
-		var helper struct {
-			SchemaVersion          int    `json:"schema_version"`
-			ProductVersion         string `json:"product_version"`
-			RuntimeProtocolVersion int    `json:"runtime_protocol_version"`
-		}
-		if json.Unmarshal(helperEntry.Data, &helper) != nil || helper.SchemaVersion != 1 || helper.ProductVersion != expectedVersion || helper.RuntimeProtocolVersion <= 0 || (spec.RuntimeProtocol > 0 && helper.RuntimeProtocolVersion != spec.RuntimeProtocol) {
-			return errors.New("runtime-helper.json version or protocol is invalid")
-		}
-		mcpEntry, err := readYingzoArchiveEntry(filename, archiveFormat, root+".mcp.json", 2<<20)
-		if err != nil {
-			return err
-		}
-		var mcp struct {
-			MCPServers map[string]struct {
-				Command string `json:"command"`
-			} `json:"mcpServers"`
-		}
-		if json.Unmarshal(mcpEntry.Data, &mcp) != nil || mcp.MCPServers["yingzo"].Command == "" {
-			return errors.New(".mcp.json must configure the Yingzo launcher")
-		}
-		launcherName := "runtime/yingzo-mcp"
-		if spec.OS == "windows" {
-			launcherName += ".exe"
-		}
-		if !strings.HasSuffix(strings.ReplaceAll(mcp.MCPServers["yingzo"].Command, "\\", "/"), launcherName) {
-			return errors.New(".mcp.json points to the wrong platform launcher")
-		}
-		launcher, err := readYingzoArchiveEntry(filename, archiveFormat, root+launcherName, 64<<20)
-		if err != nil {
-			return err
-		}
-		if spec.OS == "windows" {
-			if err := validateAMD64PE(launcher.Data); err != nil {
-				return fmt.Errorf("windows host launcher: %w", err)
-			}
-		} else if launcher.Mode&0111 == 0 || !bytes.HasPrefix(launcher.Data, []byte("#!")) {
-			return errors.New("macOS host launcher must be an executable script")
-		}
-	case "claude-desktop":
-		manifestEntry, err := readYingzoArchiveEntry(filename, archiveFormat, root+"manifest.json", 2<<20)
-		if err != nil {
-			return err
-		}
-		var manifest struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			Server  struct {
-				EntryPoint string `json:"entry_point"`
-				MCPConfig  struct {
-					Command           string `json:"command"`
-					PlatformOverrides struct {
-						Win32 struct {
-							Command string `json:"command"`
-						} `json:"win32"`
-					} `json:"platform_overrides"`
-				} `json:"mcp_config"`
-			} `json:"server"`
-		}
-		if json.Unmarshal(manifestEntry.Data, &manifest) != nil || manifest.Name != "yingzo" || manifest.Version != expectedVersion || manifest.Server.EntryPoint != "server/yingzo-mcp" || !strings.HasSuffix(manifest.Server.MCPConfig.Command, "/server/yingzo-mcp") || !strings.HasSuffix(manifest.Server.MCPConfig.PlatformOverrides.Win32.Command, "/server/yingzo-mcp.exe") {
-			return errors.New("MCPB manifest version or platform_overrides are invalid")
-		}
-		macLauncher, err := readYingzoArchiveEntry(filename, archiveFormat, root+"server/yingzo-mcp", 64<<20)
-		if err != nil || macLauncher.Mode&0111 == 0 || !bytes.HasPrefix(macLauncher.Data, []byte("#!")) {
-			return errors.New("MCPB macOS launcher must be an executable script")
-		}
-		windowsLauncher, err := readYingzoArchiveEntry(filename, archiveFormat, root+"server/yingzo-mcp.exe", 64<<20)
-		if err != nil {
-			return err
-		}
-		if err := validateAMD64PE(windowsLauncher.Data); err != nil {
-			return fmt.Errorf("MCPB Windows launcher: %w", err)
-		}
-	}
-	return nil
-}
-
-func artifactFilenamePrefix(spec yingzoArtifactSpec) string {
-	switch spec.Target {
-	case "openai":
-		return "yingzo-openai-" + spec.OS + map[bool]string{true: "-x64", false: ""}[spec.OS == "windows"] + "-"
-	case "claude-code":
-		return "yingzo-claude-code-" + spec.OS + map[bool]string{true: "-x64", false: ""}[spec.OS == "windows"] + "-"
-	case "claude-desktop":
-		return "yingzo-claude-desktop-"
-	default:
-		return ""
-	}
-}
-
-func artifactFilenameSuffix(spec yingzoArtifactSpec) string { return "." + spec.Format }
-
-func readYingzoArchiveEntry(filename, archiveFormat, wanted string, maxBytes int64) (*yingzoArchiveEntryData, error) {
-	if archiveFormat == "tar.gz" {
-		file, err := os.Open(filename)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = file.Close() }()
-		gzipReader, err := gzip.NewReader(file)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = gzipReader.Close() }()
-		reader := tar.NewReader(gzipReader)
-		for {
-			header, nextErr := reader.Next()
-			if errors.Is(nextErr, io.EOF) {
-				break
-			}
-			if nextErr != nil {
-				return nil, nextErr
-			}
-			if normalizeArchivePath(header.Name) != wanted {
-				continue
-			}
-			data, readErr := io.ReadAll(io.LimitReader(reader, maxBytes+1))
-			if readErr != nil || int64(len(data)) > maxBytes {
-				return nil, errors.New("required archive entry is unreadable or too large")
-			}
-			return &yingzoArchiveEntryData{Data: data, Mode: os.FileMode(header.Mode)}, nil
-		}
-	} else {
-		reader, err := zip.OpenReader(filename)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = reader.Close() }()
-		for _, entry := range reader.File {
-			if normalizeArchivePath(entry.Name) != wanted {
-				continue
-			}
-			if entry.UncompressedSize64 > uint64(maxBytes) {
-				return nil, errors.New("required archive entry is too large")
-			}
-			content, openErr := entry.Open()
-			if openErr != nil {
-				return nil, openErr
-			}
-			data, readErr := io.ReadAll(io.LimitReader(content, maxBytes+1))
-			closeErr := content.Close()
-			if readErr != nil || closeErr != nil || int64(len(data)) > maxBytes {
-				return nil, errors.New("required archive entry is unreadable or too large")
-			}
-			return &yingzoArchiveEntryData{Data: data, Mode: entry.Mode()}, nil
-		}
-	}
-	return nil, fmt.Errorf("package is missing %s", wanted)
-}
-
-func validateAMD64PE(data []byte) error {
-	_, err := inspectAMD64PE(data)
-	return err
-}
-
-func validateAMD64PEFile(file *pe.File) error {
-	_, err := inspectAMD64PEFile(file)
-	return err
-}
-
-func inspectAMD64PE(data []byte) (bool, error) {
-	file, err := pe.NewFile(bytes.NewReader(data))
-	if err != nil {
-		return false, errors.New("binary must be a valid AMD64 PE executable")
-	}
-	defer func() { _ = file.Close() }()
-	return inspectAMD64PEFile(file)
-}
-
-func inspectAMD64PEFile(file *pe.File) (bool, error) {
-	if file == nil || file.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
-		return false, errors.New("binary must be a valid AMD64 PE executable")
-	}
-	optional, ok := file.OptionalHeader.(*pe.OptionalHeader64)
-	if !ok {
-		return false, errors.New("binary must be a valid AMD64 PE executable")
-	}
-	return len(optional.DataDirectory) > 4 && optional.DataDirectory[4].Size > 0, nil
-}
-
-func yingzoTarEntryNames(filename string) ([]string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	gzipReader, err := gzip.NewReader(file)
-	if err != nil {
-		return nil, errors.New("package is not a valid gzip archive")
-	}
-	defer func() { _ = gzipReader.Close() }()
-	tarReader := tar.NewReader(gzipReader)
-	entries := make([]string, 0)
-	for {
-		header, nextErr := tarReader.Next()
-		if errors.Is(nextErr, io.EOF) {
-			break
-		}
-		if nextErr != nil {
-			return nil, errors.New("package tar stream is invalid")
-		}
-		entries = append(entries, normalizeArchivePath(header.Name))
-	}
-	return entries, nil
-}
-
-func yingzoZipEntryNames(filename string) ([]string, error) {
-	reader, err := zip.OpenReader(filename)
-	if err != nil {
-		return nil, errors.New("package is not a valid ZIP archive")
-	}
-	defer func() { _ = reader.Close() }()
-	entries := make([]string, 0, len(reader.File))
-	for _, entry := range reader.File {
-		entries = append(entries, normalizeArchivePath(entry.Name))
-	}
-	return entries, nil
-}
-
-func validateTarArchiveSafety(filename string) error {
-	file, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-	gzipReader, err := gzip.NewReader(file)
-	if err != nil {
-		return errors.New("package is not a valid gzip archive")
-	}
-	defer func() { _ = gzipReader.Close() }()
-	tarReader := tar.NewReader(gzipReader)
-	entries := 0
-	var expanded int64
-	for {
-		header, nextErr := tarReader.Next()
-		if errors.Is(nextErr, io.EOF) {
-			break
-		}
-		if nextErr != nil {
-			return errors.New("package tar stream is invalid")
-		}
-		entries++
-		if entries > 20_000 {
-			return errors.New("package contains too many entries")
-		}
-		if err := validateArchiveEntry(header.Name, header.Size); err != nil {
-			return err
-		}
-		typeflag := header.Typeflag
-		if typeflag == 0 {
-			typeflag = tar.TypeReg
-		}
-		switch typeflag {
-		case tar.TypeReg, tar.TypeDir, tar.TypeXHeader, tar.TypeXGlobalHeader:
-		default:
-			return errors.New("package special files and links are not allowed")
-		}
-		if header.Size > yingzoExpandedArchiveMax-expanded {
-			return errors.New("package expands beyond the safety limit")
-		}
-		expanded += header.Size
-	}
-	if entries == 0 {
-		return errors.New("package archive is empty")
-	}
-	return nil
-}
-
-func validateZipArchiveSafety(filename string) error {
-	reader, err := zip.OpenReader(filename)
-	if err != nil {
-		return errors.New("package is not a valid ZIP archive")
-	}
-	defer func() { _ = reader.Close() }()
-	if len(reader.File) == 0 {
-		return errors.New("package archive is empty")
-	}
-	if len(reader.File) > 20_000 {
-		return errors.New("package contains too many entries")
-	}
-	var expanded int64
-	for _, entry := range reader.File {
-		if entry.UncompressedSize64 > uint64(yingzoExpandedArchiveMax) {
-			return errors.New("package expands beyond the safety limit")
-		}
-		if err := validateArchiveEntry(entry.Name, int64(entry.UncompressedSize64)); err != nil {
-			return err
-		}
-		if mode := entry.Mode(); !mode.IsRegular() && !mode.IsDir() {
-			return errors.New("package special files and links are not allowed")
-		}
-		if entry.FileInfo().IsDir() {
-			continue
-		}
-		content, openErr := entry.Open()
-		if openErr != nil {
-			return errors.New("package contains an unreadable ZIP entry")
-		}
-		readBytes, readErr := io.Copy(io.Discard, io.LimitReader(content, int64(entry.UncompressedSize64)+1))
-		closeErr := content.Close()
-		if readErr != nil || closeErr != nil || readBytes != int64(entry.UncompressedSize64) {
-			return errors.New("package contains an incomplete or corrupt ZIP entry")
-		}
-		expanded += int64(entry.UncompressedSize64)
-		if expanded > yingzoExpandedArchiveMax {
-			return errors.New("package expands beyond the safety limit")
-		}
-	}
-	return nil
-}
-
-func validateArchiveEntry(name string, size int64) error {
-	normalized := strings.ReplaceAll(name, "\\", "/")
-	clean := normalizeArchivePath(normalized)
-	firstSegment := strings.SplitN(normalized, "/", 2)[0]
-	if name == "" || path.IsAbs(normalized) || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(firstSegment, ":") {
-		return errors.New("package contains an unsafe path")
-	}
-	if size < 0 {
-		return errors.New("package contains an invalid entry size")
-	}
-	return nil
-}
-
-func normalizeArchivePath(name string) string {
-	return path.Clean(strings.ReplaceAll(name, "\\", "/"))
-}
-
-func validateYingzoArchive(filename, packageFilename, hostFamily string) error {
-	if err := validateTarArchiveSafety(filename); err != nil {
-		return err
-	}
-	file, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-	gzipReader, err := gzip.NewReader(file)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = gzipReader.Close() }()
-	tarReader := tar.NewReader(gzipReader)
-	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
-	required := map[string]bool{root + "plugins/yingzo/distribution.json": false}
-	switch hostFamily {
-	case "openai":
-		required[root+".agents/plugins/marketplace.json"] = false
-		required[root+"plugins/yingzo/.codex-plugin/plugin.json"] = false
-		required[root+"plugins/yingzo/apps/review/dist/index.html"] = false
-	case "claude":
-		required[root+".claude-plugin/marketplace.json"] = false
-		required[root+"plugins/yingzo/.claude-plugin/plugin.json"] = false
-		required[root+"plugins/yingzo/apps/review/dist/index.html"] = false
-	case "combined":
-		required[root+".agents/plugins/marketplace.json"] = false
-		required[root+".claude-plugin/marketplace.json"] = false
-		required[root+"plugins/yingzo/.codex-plugin/plugin.json"] = false
-	default:
-		return errors.New("unsupported host family")
-	}
-	for {
-		header, nextErr := tarReader.Next()
-		if errors.Is(nextErr, io.EOF) {
-			break
-		}
-		if nextErr != nil {
-			return errors.New("package tar stream is invalid")
-		}
-		clean := filepath.ToSlash(filepath.Clean(header.Name))
-		if _, ok := required[clean]; ok {
-			required[clean] = true
-		}
-	}
-	for name, found := range required {
-		if !found {
-			return fmt.Errorf("package is missing %s", strings.TrimPrefix(name, root))
-		}
-	}
-	return nil
 }
 
 func (h *AgentHandler) yingzoReleaseStorageRoot() (string, error) {

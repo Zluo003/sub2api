@@ -94,13 +94,9 @@ func TestYingzoSignedManifestSchemaDefaultsToV2AndRequiresV3Marker(t *testing.T)
 	require.Equal(t, "release_manifest_mismatch", uploadErr.code)
 }
 
-func TestCreateYingzoV2DraftDoesNotRequireArtifacts(t *testing.T) {
+func TestCreateYingzoV2DraftIsRejected(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
-	mock.ExpectExec("INSERT INTO yingzo_releases").
-		WithArgs(sqlmock.AnyArg(), "0.3.0", 2, "prerelease", true, 1, sqlmock.AnyArg(), "0.128.0", "0.0.0", "preview", int64(7)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1").WillReturnError(context.Canceled)
 
 	router := gin.New()
 	router.POST("/releases", func(c *gin.Context) {
@@ -117,10 +113,8 @@ func TestCreateYingzoV2DraftDoesNotRequireArtifacts(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 
-	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
-	require.Contains(t, response.Body.String(), `"distribution_schema_version":2`)
-	require.Contains(t, response.Body.String(), `"channel":"prerelease"`)
-	require.NotContains(t, response.Body.String(), "frontend-must-not-be-trusted")
+	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), `"code":"invalid_release_draft"`)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

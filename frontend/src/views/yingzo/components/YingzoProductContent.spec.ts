@@ -81,6 +81,35 @@ describe('YingzoProductContent install actions', () => {
     expect(wrapper.text()).toContain('macOS arm64 · Windows x64')
   })
 
+  it('requires an explicit Apple Silicon confirmation when the browser cannot report its architecture', async () => {
+    mocks.getLatestRelease.mockResolvedValue(release('stable', 3))
+    const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前浏览器无法确认 Mac 架构')
+    const installButtons = wrapper.findAll('button').filter((button) => button.text().includes('复制给'))
+    expect(installButtons.every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+
+    await wrapper.find('.yingzo-architecture-confirmation input').setValue(true)
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('当前浏览器无法确认 Mac 架构')
+    expect(installButtons.every((button) => button.attributes('disabled') === undefined)).toBe(true)
+  })
+
+  it('accepts a browser-reported Apple Silicon architecture without another confirmation', async () => {
+    Object.defineProperty(navigator, 'userAgentData', {
+      configurable: true,
+      value: { getHighEntropyValues: vi.fn().mockResolvedValue({ architecture: 'arm' }) },
+    })
+    mocks.getLatestRelease.mockResolvedValue(release('stable', 3))
+    const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    expect(wrapper.find('.yingzo-architecture-confirmation').exists()).toBe(false)
+    const installButtons = wrapper.findAll('button').filter((button) => button.text().includes('复制给'))
+    expect(installButtons.every((button) => button.attributes('disabled') === undefined)).toBe(true)
+  })
+
   it('blocks installation instead of serving arm64 to a detected Intel Mac', async () => {
     Object.defineProperty(navigator, 'userAgentData', {
       configurable: true,
