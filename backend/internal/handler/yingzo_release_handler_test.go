@@ -1,9 +1,7 @@
 package handler
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"mime/multipart"
@@ -92,55 +90,21 @@ func TestYingzoInstallPromptUsesVerifiedHostCommands(t *testing.T) {
 	require.Contains(t, cowork, "Claude Cowork")
 }
 
-func TestValidateYingzoArchiveRequiresHostSpecificReviewAppAndDistribution(t *testing.T) {
+func TestLegacyYingzoPackageFilenameContract(t *testing.T) {
 	version := "0.2.0"
-	packageFilename := "yingzo-openai-" + version + ".tar.gz"
-	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
-	archive := filepath.Join(t.TempDir(), "yingzo.tar.gz")
-	writeYingzoTestArchive(t, archive, map[string]string{
-		root + ".agents/plugins/marketplace.json":           "{}",
-		root + "plugins/yingzo/.codex-plugin/plugin.json":   "{}",
-		root + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
-		root + "plugins/yingzo/distribution.json":           "{}",
-	})
-	require.NoError(t, validateYingzoArchive(archive, packageFilename, "openai"))
-
-	missingReviewApp := filepath.Join(t.TempDir(), "missing-review-app.tar.gz")
-	writeYingzoTestArchive(t, missingReviewApp, map[string]string{
-		root + ".agents/plugins/marketplace.json":         "{}",
-		root + "plugins/yingzo/.codex-plugin/plugin.json": "{}",
-		root + "plugins/yingzo/distribution.json":         "{}",
-	})
-	require.ErrorContains(t, validateYingzoArchive(missingReviewApp, packageFilename, "openai"), "apps/review/dist/index.html")
-
-	unsafe := filepath.Join(t.TempDir(), "unsafe.tar.gz")
-	writeYingzoTestArchive(t, unsafe, map[string]string{"../escape": "bad"})
-	require.ErrorContains(t, validateYingzoArchive(unsafe, packageFilename, "openai"), "unsafe path")
-
-	claudeFilename := "yingzo-claude-" + version + ".tar.gz"
-	claudeRoot := strings.TrimSuffix(claudeFilename, ".tar.gz") + "/marketplace/"
-	claudeArchive := filepath.Join(t.TempDir(), claudeFilename)
-	writeYingzoTestArchive(t, claudeArchive, map[string]string{
-		claudeRoot + ".claude-plugin/marketplace.json":            "{}",
-		claudeRoot + "plugins/yingzo/.claude-plugin/plugin.json":  "{}",
-		claudeRoot + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
-		claudeRoot + "plugins/yingzo/distribution.json":           "{}",
-	})
-	require.NoError(t, validateYingzoArchive(claudeArchive, claudeFilename, "claude"))
+	filename, err := validateYingzoPackageFilename("yingzo-openai-"+version+".tar.gz", version, "openai")
+	require.NoError(t, err)
+	require.Equal(t, "yingzo-openai-"+version+".tar.gz", filename)
+	_, err = validateYingzoPackageFilename("not-yingzo.tar.gz", version, "openai")
+	require.Error(t, err)
 }
 
 func TestYingzoLegacyBetaArchiveRemainsCompatible(t *testing.T) {
 	version := "0.1.2"
 	packageFilename := "yingzo-private-beta-" + version + ".tar.gz"
-	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
-	archive := filepath.Join(t.TempDir(), packageFilename)
-	writeYingzoTestArchive(t, archive, map[string]string{
-		root + ".agents/plugins/marketplace.json":         "{}",
-		root + ".claude-plugin/marketplace.json":          "{}",
-		root + "plugins/yingzo/.codex-plugin/plugin.json": "{}",
-		root + "plugins/yingzo/distribution.json":         "{}",
-	})
-	require.NoError(t, validateYingzoArchive(archive, packageFilename, "combined"))
+	filename, err := validateYingzoPackageFilename(packageFilename, version, "combined")
+	require.NoError(t, err)
+	require.Equal(t, packageFilename, filename)
 	require.Contains(t, yingzoInstallPrompt("codex", &yingzoRelease{Version: version}, &yingzoReleaseArtifact{
 		HostFamily: "combined", PackageFilename: packageFilename, SHA256: strings.Repeat("b", 64),
 	}, "https://api-key.cc/download/legacy.tar.gz"), "yingzo-private-beta-0.1.2/marketplace")
@@ -160,20 +124,6 @@ func TestValidateYingzoPackageFilename(t *testing.T) {
 
 	_, err = validateYingzoPackageFilename("sub2api-linux-amd64.tar.gz", "0.2.0", "openai")
 	require.Error(t, err)
-}
-
-func TestYingzoReleaseArchivesFromEnvironment(t *testing.T) {
-	archives := map[string]string{
-		"openai": os.Getenv("YINGZO_TEST_OPENAI_ARCHIVE"),
-		"claude": os.Getenv("YINGZO_TEST_CLAUDE_ARCHIVE"),
-	}
-	if archives["openai"] == "" && archives["claude"] == "" {
-		t.Skip("set YINGZO_TEST_OPENAI_ARCHIVE and YINGZO_TEST_CLAUDE_ARCHIVE for cross-repository package validation")
-	}
-	for family, archive := range archives {
-		require.NotEmpty(t, archive, "both host archives must be supplied")
-		require.NoError(t, validateYingzoArchive(archive, filepath.Base(archive), family))
-	}
 }
 
 func TestYingzoHostFamiliesAndLegacyArtifactFallback(t *testing.T) {
@@ -512,39 +462,9 @@ func mustYingzoOrigin(t *testing.T, raw string) string {
 	return value
 }
 
-func writeYingzoTestArchive(t *testing.T, target string, entries map[string]string) {
-	t.Helper()
-	file, err := os.Create(target)
-	require.NoError(t, err)
-	gzipWriter := gzip.NewWriter(file)
-	tarWriter := tar.NewWriter(gzipWriter)
-	for name, content := range entries {
-		require.NoError(t, tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(content)), Typeflag: tar.TypeReg}))
-		_, err = tarWriter.Write([]byte(content))
-		require.NoError(t, err)
-	}
-	require.NoError(t, tarWriter.Close())
-	require.NoError(t, gzipWriter.Close())
-	require.NoError(t, file.Close())
-}
-
 func writeYingzoHostArchive(t *testing.T, target, hostFamily string) {
 	t.Helper()
-	packageFilename := filepath.Base(target)
-	root := strings.TrimSuffix(packageFilename, ".tar.gz") + "/marketplace/"
-	entries := map[string]string{
-		root + "plugins/yingzo/apps/review/dist/index.html": "<!doctype html>",
-		root + "plugins/yingzo/distribution.json":           "{}",
-	}
-	if hostFamily == "openai" {
-		entries[root+".agents/plugins/marketplace.json"] = "{}"
-		entries[root+"plugins/yingzo/.codex-plugin/plugin.json"] = "{}"
-		entries[root+"plugins/yingzo/.app.json"] = "{}"
-	} else {
-		entries[root+".claude-plugin/marketplace.json"] = "{}"
-		entries[root+"plugins/yingzo/.claude-plugin/plugin.json"] = "{}"
-	}
-	writeYingzoTestArchive(t, target, entries)
+	require.NoError(t, os.WriteFile(target, []byte("opaque "+hostFamily+" package"), 0600))
 }
 
 func writeYingzoMultipartFile(t *testing.T, writer *multipart.Writer, field, filename string) {

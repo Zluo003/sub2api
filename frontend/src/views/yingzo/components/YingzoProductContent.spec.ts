@@ -47,7 +47,7 @@ describe('YingzoProductContent install actions', () => {
 
   it('loads prerelease only after the user opts in', async () => {
     mocks.getLatestRelease.mockImplementation(async (channel: string) => channel === 'prerelease'
-      ? { ...release(channel), stable_eligible: false, warning: '此预发布版本包含未签名 Windows 产物。Windows 安装时可能触发 Microsoft Defender SmartScreen；该版本不能提升为稳定版。' }
+      ? release(channel)
       : release(channel))
     const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
     await flushPromises()
@@ -57,7 +57,7 @@ describe('YingzoProductContent install actions', () => {
     await flushPromises()
     expect(mocks.getLatestRelease).toHaveBeenCalledWith('prerelease')
     expect(wrapper.text()).toContain('预发布版 0.3.0')
-    expect(wrapper.text()).toContain('Microsoft Defender SmartScreen')
+    expect(wrapper.text()).not.toContain('不能提升为稳定版')
   })
 
   it('does not offer Claude Desktop for a legacy schema 1 stable release', async () => {
@@ -79,7 +79,20 @@ describe('YingzoProductContent install actions', () => {
     await wrapper.findAll('button.yingzo-copy-button')[4].trigger('click')
     await flushPromises()
     expect(mocks.writeText).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('生成安装提示词失败')
+    expect(wrapper.text()).toContain('生成安装提示词失败：Install host mismatch')
+    consoleError.mockRestore()
+  })
+
+  it('shows the server platform error instead of hiding it behind a generic download error', async () => {
+    mocks.createInstructions.mockRejectedValue({ error: 'Windows x64 package is unavailable for this host' })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    await wrapper.findAll('button.yingzo-copy-button')[4].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Windows x64 package is unavailable for this host')
     consoleError.mockRestore()
   })
 })

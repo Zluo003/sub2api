@@ -6,7 +6,7 @@ import YingzoView from '../YingzoView.vue'
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), settings: vi.fn(), createDraft: vi.fn(), uploadArtifact: vi.fn(),
   replaceArtifact: vi.fn(), deleteArtifact: vi.fn(), updateSettings: vi.fn(),
-  publish: vi.fn(), promote: vi.fn(), rollback: vi.fn(), disable: vi.fn(), verifyProof: vi.fn(),
+  publish: vi.fn(), promote: vi.fn(), rollback: vi.fn(), disable: vi.fn(),
 }))
 
 vi.mock('@/api/yingzo', () => ({
@@ -21,7 +21,6 @@ vi.mock('@/api/yingzo', () => ({
   promoteYingzoRelease: mocks.promote,
   rollbackYingzoRelease: mocks.rollback,
   disableYingzoRelease: mocks.disable,
-  verifyYingzoReleaseProof: mocks.verifyProof,
 }))
 
 const global = {
@@ -40,20 +39,19 @@ function schema2Draft() {
   }
 }
 
-function unsignedArtifactMatrix() {
+function artifactMatrix() {
   return [
-    ['openai', 'macos', 'any', 'verified'],
-    ['openai', 'windows', 'x64', 'unverified'],
-    ['claude-code', 'macos', 'any', 'verified'],
-    ['claude-code', 'windows', 'x64', 'unverified'],
-    ['claude-desktop', 'any', 'any', 'unverified'],
-    ['runtime', 'macos', 'arm64', 'verified'],
-    ['runtime', 'macos', 'x64', 'verified'],
-    ['runtime', 'windows', 'x64', 'unverified'],
-  ].map(([target, os, arch, signature_status], index) => ({
+    ['openai', 'macos', 'any'],
+    ['openai', 'windows', 'x64'],
+    ['claude-code', 'macos', 'any'],
+    ['claude-code', 'windows', 'x64'],
+    ['claude-desktop', 'any', 'any'],
+    ['runtime', 'macos', 'arm64'],
+    ['runtime', 'macos', 'x64'],
+    ['runtime', 'windows', 'x64'],
+  ].map(([target, os, arch], index) => ({
     id: `artifact-${index}`, artifact_kind: target === 'runtime' ? 'runtime_installer' : 'host_package',
     target, os, arch, package_filename: `artifact-${index}`, size_bytes: 1024,
-    validation_status: 'validated', signature_status,
   }))
 }
 
@@ -87,7 +85,7 @@ describe('Yingzo release administration', () => {
     await flushPromises()
 
     const files = wrapper.findAll('input[type="file"]')
-    expect(files).toHaveLength(9)
+    expect(files).toHaveLength(8)
     expect(wrapper.text()).toContain('OpenAI / Codex · macOS')
     expect(wrapper.text()).toContain('Runtime · Windows x64')
 
@@ -104,27 +102,27 @@ describe('Yingzo release administration', () => {
     }))
   })
 
-  it('submits the CI proof envelope as one file without trusting client status', async () => {
-    mocks.list.mockResolvedValue([schema2Draft()])
-    mocks.verifyProof.mockResolvedValue({ verified: true })
+  it('enables publishing only after all eight slots contain an artifact', async () => {
+    mocks.list.mockResolvedValue([{ ...schema2Draft(), artifact_matrix: artifactMatrix().slice(0, -1) }])
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    const files = wrapper.findAll('input[type="file"]')
-    const proof = new File([JSON.stringify({ algorithm: 'Ed25519', key_id: 'release-2026', manifest_base64: 'bWFuaWZlc3Q=', signature_base64: 'c2ln' })], 'yingzo-release-0.3.0.proof.json', { type: 'application/json' })
-    Object.defineProperty(files[8].element, 'files', { configurable: true, value: [proof] })
-    await files[8].trigger('change')
-    await wrapper.findAll('button').find((button) => button.text() === '验证发行证明')!.trigger('click')
-    await vi.waitFor(() => {
-      expect(mocks.verifyProof).toHaveBeenCalledWith('release-1', {
-        algorithm: 'Ed25519', key_id: 'release-2026', manifest_base64: 'bWFuaWZlc3Q=', signature_base64: 'c2ln',
-      })
-    })
+    const publish = wrapper.findAll('button').find((button) => button.text() === '发布')
+    expect(publish?.attributes('disabled')).toBeDefined()
+
+    mocks.list.mockResolvedValue([{ ...schema2Draft(), artifact_matrix: artifactMatrix() }])
+    await wrapper.findAll('button').find((button) => button.attributes('title') === '刷新')!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('button').find((button) => button.text() === '发布')?.attributes('disabled')).toBeUndefined()
+    await wrapper.findAll('button').find((button) => button.text() === '发布')!.trigger('click')
+    await flushPromises()
+    expect(mocks.publish).toHaveBeenCalledWith('release-1')
   })
 
-  it('shows normalized artifact validation failures', async () => {
+  it('shows the server filename or slot error when an upload is rejected', async () => {
     mocks.list.mockResolvedValue([schema2Draft()])
-    mocks.uploadArtifact.mockRejectedValue({ error: { code: 'invalid_release_archive', message: 'package is missing .codex-plugin/plugin.json' } })
+    mocks.uploadArtifact.mockRejectedValue({ error: { code: 'invalid_package_filename', message: 'package filename must be yingzo-openai-macos-0.3.0.tar.gz' } })
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
@@ -134,7 +132,7 @@ describe('Yingzo release administration', () => {
     await wrapper.findAll('button').find((button) => button.text() === '上传')!.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('package is missing .codex-plugin/plugin.json')
+    expect(wrapper.text()).toContain('package filename must be yingzo-openai-macos-0.3.0.tar.gz')
   })
 
   it('promotes the same published prerelease without creating another release', async () => {
@@ -153,25 +151,15 @@ describe('Yingzo release administration', () => {
     expect(mocks.createDraft).not.toHaveBeenCalled()
   })
 
-  it('publishes but cannot promote a proof-verified unsigned Windows prerelease', async () => {
-    const unsigned = {
-      ...schema2Draft(), signature: 'verified-proof', stable_eligible: false,
-      artifact_matrix: unsignedArtifactMatrix(),
-    }
-    mocks.list.mockResolvedValue([unsigned])
+  it('allows a published prerelease to be promoted when legacy stable eligibility is false', async () => {
+    mocks.list.mockResolvedValue([{
+      ...schema2Draft(), status: 'published', stable_eligible: false, artifact_matrix: artifactMatrix(),
+    }])
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    const publish = wrapper.findAll('button').find((button) => button.text() === '发布')
-    expect(publish?.attributes('disabled')).toBeUndefined()
-    expect(wrapper.text()).toContain('未签名，仅预发布')
-    expect(wrapper.text()).toContain('不能提升为稳定版')
-
-    mocks.list.mockResolvedValue([{ ...unsigned, status: 'published' }])
-    await wrapper.findAll('button').find((button) => button.attributes('title') === '刷新')!.trigger('click')
-    await flushPromises()
     const promote = wrapper.findAll('button').find((button) => button.text() === '提升为稳定版')
-    expect(promote?.attributes('disabled')).toBeDefined()
+    expect(promote?.attributes('disabled')).toBeUndefined()
   })
 
   it('does not render the legacy artifact list for a published schema 2 release', async () => {
@@ -181,7 +169,6 @@ describe('Yingzo release administration', () => {
       artifact_matrix: [{
         id: 'artifact-1', artifact_kind: 'host_package', target: 'openai', os: 'macos', arch: 'any',
         package_filename: 'yingzo-openai-macos-0.3.0.tar.gz', size_bytes: 1024,
-        validation_status: 'validated', signature_status: 'verified',
       }],
     }])
     const wrapper = mount(YingzoView, { global })

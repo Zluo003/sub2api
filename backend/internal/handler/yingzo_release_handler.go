@@ -384,7 +384,7 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"host": input.Host, "host_family": hostFamily, "channel": channel,
 		"os": targetOS, "arch": arch, "version": release.Version, "signature": release.Signature,
-		"stable_eligible": release.StableEligible, "native_signing": yingzoNativeSigningSummary(release), "warning": yingzoReleaseWarning(release),
+		"stable_eligible": release.StableEligible, "native_signing": yingzoNativeSigningSummary(release),
 		"runtime_protocol": release.RuntimeProtocol, "download_url": hostURL,
 		"expires_at": hostDescriptor["expires_at"], "host_package": hostDescriptor,
 		"runtime_installer": runtimeDescriptor, "runtime_installer_required": runtimeRequired,
@@ -570,8 +570,11 @@ func (h *AgentHandler) createYingzoReleaseDraft(c *gin.Context) {
 		return
 	}
 	releaseID := uuid.New()
-	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',2,$3,FALSE,$4,$5::jsonb,NULL,$6,$7,$8,$9)`,
-		releaseID, strings.TrimSpace(input.Version), channel, input.RuntimeProtocol, string(compatibilityJSON), strings.TrimSpace(input.MinCodexVersion), strings.TrimSpace(input.MinClaudeVersion), strings.TrimSpace(input.ReleaseNotes), subject.UserID)
+	// Stable/prerelease is an operator-selected channel, not a signing verdict.
+	// A published prerelease may be promoted later without rebuilding its files.
+	stableEligible := true
+	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',2,$3,$4,$5,$6::jsonb,NULL,$7,$8,$9,$10)`,
+		releaseID, strings.TrimSpace(input.Version), channel, stableEligible, input.RuntimeProtocol, string(compatibilityJSON), strings.TrimSpace(input.MinCodexVersion), strings.TrimSpace(input.MinClaudeVersion), strings.TrimSpace(input.ReleaseNotes), subject.UserID)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -812,9 +815,7 @@ func (h *AgentHandler) saveYingzoReleaseArtifact(c *gin.Context, replace bool) {
 		writeYingzoUploadError(c, err)
 		return
 	}
-	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,stable_eligible=FALSE,updated_at=NOW() WHERE id=$1`, release.ID); err == nil {
-		// Invalidating the proof removes its macOS attestation. PE inspection is
-		// independent, so preserve the status of Windows-bearing artifacts.
+	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,updated_at=NOW() WHERE id=$1`, release.ID); err == nil {
 		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1 AND NOT (os='windows' OR target='claude-desktop')`, release.ID)
 	}
 	if err == nil && replace {
@@ -884,7 +885,7 @@ func (h *AgentHandler) DeleteYingzoReleaseArtifact(c *gin.Context) {
 	}
 	result, err := tx.ExecContext(c, `DELETE FROM yingzo_release_artifacts WHERE id=$1 AND release_id=$2`, artifactID, releaseID)
 	if err == nil {
-		_, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,stable_eligible=FALSE,updated_at=NOW() WHERE id=$1`, releaseID)
+		_, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,updated_at=NOW() WHERE id=$1`, releaseID)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1 AND NOT (os='windows' OR target='claude-desktop')`, releaseID)
@@ -932,10 +933,6 @@ func (h *AgentHandler) storeLegacyYingzoArtifact(reader io.Reader, originalFilen
 	if err := h.writeYingzoArtifact(reader, artifact); err != nil {
 		return nil, err
 	}
-	if err := validateYingzoArchive(artifact.StorageKey, packageFilename, hostFamily); err != nil {
-		h.removeYingzoStorageFile(releaseID, artifact.StorageKey)
-		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "invalid_release_archive", message: err.Error()}
-	}
 	return artifact, nil
 }
 
@@ -947,18 +944,6 @@ func (h *AgentHandler) storeYingzoV2Artifact(reader io.Reader, originalFilename 
 	artifact := &yingzoReleaseArtifact{ID: uuid.New(), ReleaseID: release.ID, ArtifactKind: spec.ArtifactKind, Target: spec.Target, OS: spec.OS, Arch: spec.Arch, Format: spec.Format, ContentType: spec.ContentType, RuntimeProtocol: release.RuntimeProtocol, ValidationStatus: "validated", SignatureStatus: "unverified", PackageFilename: packageFilename, StorageBackend: "local"}
 	if err := h.writeYingzoArtifact(reader, artifact); err != nil {
 		return nil, err
-	}
-	windowsSigned, err := inspectYingzoV2Artifact(artifact.StorageKey, spec)
-	if err != nil {
-		h.removeYingzoStorageFile(release.ID, artifact.StorageKey)
-		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "invalid_release_artifact", message: err.Error()}
-	}
-	if yingzoWindowsBearingSpec(spec) && windowsSigned {
-		artifact.SignatureStatus = "verified"
-	}
-	if release.Channel == "stable" && yingzoWindowsBearingSpec(spec) && !windowsSigned {
-		h.removeYingzoStorageFile(release.ID, artifact.StorageKey)
-		return nil, &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "unsigned_windows_artifact", message: "stable releases require Authenticode-signed Windows artifacts"}
 	}
 	now := time.Now().UTC()
 	artifact.ValidatedAt = &now
@@ -1160,11 +1145,7 @@ func (h *AgentHandler) PromoteYingzoRelease(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
-	if !stableEligible {
-		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_not_stable_eligible", "message": "unsigned Windows prereleases cannot be promoted; publish a new fully signed version"}})
-		return
-	}
-	if err = validateYingzoV2PublishMatrix(c, tx, id, version, channel, stableEligible, runtimeProtocol, releaseSignature.String, false); err != nil {
+	if err = validateYingzoV2PublishMatrix(c, tx, id, version, runtimeProtocol); err != nil {
 		var uploadErr *yingzoUploadError
 		if errors.As(err, &uploadErr) {
 			c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
@@ -1174,7 +1155,7 @@ func (h *AgentHandler) PromoteYingzoRelease(c *gin.Context) {
 		return
 	}
 	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET status='superseded',updated_at=NOW() WHERE status='published' AND channel='stable' AND id<>$1`, id); err == nil {
-		_, err = tx.ExecContext(c, `UPDATE yingzo_releases SET channel='stable',published_at=NOW(),published_by=$2,updated_at=NOW() WHERE id=$1 AND status='published' AND channel='prerelease'`, id, subject.UserID)
+		_, err = tx.ExecContext(c, `UPDATE yingzo_releases SET channel='stable',stable_eligible=TRUE,published_at=NOW(),published_by=$2,updated_at=NOW() WHERE id=$1 AND status='published' AND channel='prerelease'`, id, subject.UserID)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
@@ -1250,10 +1231,7 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_artifacts_incomplete"}})
 			return
 		}
-	} else if channel == "stable" && !stableEligible {
-		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_not_stable_eligible", "message": "stable publication requires fully signed native artifacts"}})
-		return
-	} else if err = validateYingzoV2PublishMatrix(c, tx, id, version, channel, stableEligible, runtimeProtocol, releaseSignature.String, rollback && channel == "stable"); err != nil {
+	} else if err = validateYingzoV2PublishMatrix(c, tx, id, version, runtimeProtocol); err != nil {
 		var uploadErr *yingzoUploadError
 		if errors.As(err, &uploadErr) {
 			c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
@@ -1281,14 +1259,13 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 	c.JSON(http.StatusOK, release)
 }
 
-func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version, channel string, stableEligible bool, runtimeProtocol int, releaseSignature string, allowPromotedPrereleaseProof bool) error {
+func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version string, runtimeProtocol int) error {
 	rows, err := tx.QueryContext(ctx, `SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=$1`, releaseID)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
 	found := map[string]bool{}
-	proofRelease := &yingzoRelease{ID: releaseID, Version: version, Channel: channel, StableEligible: stableEligible, RuntimeProtocol: runtimeProtocol, Signature: releaseSignature, Artifacts: map[string]*yingzoReleaseArtifact{}}
 	for rows.Next() {
 		var kind, target, targetOS, arch, validationStatus, signatureStatus, packageFilename, storageKey, expectedSHA string
 		var artifactProtocol int
@@ -1297,9 +1274,8 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 			return err
 		}
 		spec, ok := findYingzoV2Spec(version, kind, target, targetOS, arch)
-		validSignatureStatus := signatureStatus == "verified" || (!stableEligible && channel == "prerelease" && yingzoWindowsBearingSpec(spec) && signatureStatus == "unverified")
-		if !ok || packageFilename != spec.Filename || artifactProtocol != runtimeProtocol || validationStatus != "validated" || !validSignatureStatus {
-			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_invalid", message: "every v2 artifact must match the release matrix, protocol, validation, and signature requirements"}
+		if !ok || packageFilename != spec.Filename || artifactProtocol != runtimeProtocol || validationStatus != "validated" {
+			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_invalid", message: "every v2 artifact must match the release filename, platform slot, and protocol"}
 		}
 		info, statErr := os.Stat(storageKey)
 		if statErr != nil || !info.Mode().IsRegular() || info.Size() != expectedSize {
@@ -1310,12 +1286,6 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifact_integrity_failed", message: "a release artifact no longer matches its uploaded checksum"}
 		}
 		found[spec.key()] = true
-		proofRelease.Artifacts[spec.key()] = &yingzoReleaseArtifact{
-			ReleaseID: releaseID, ArtifactKind: kind, Target: target, OS: targetOS, Arch: arch,
-			Format: spec.Format, ContentType: spec.ContentType, RuntimeProtocol: artifactProtocol,
-			ValidationStatus: validationStatus, SignatureStatus: signatureStatus, PackageFilename: packageFilename,
-			StorageBackend: "local", StorageKey: storageKey, SizeBytes: expectedSize, SHA256: expectedSHA,
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -1327,29 +1297,6 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 		if !found[spec.key()] {
 			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight release artifacts are required before publishing"}
 		}
-	}
-	var envelope yingzoReleaseProofEnvelope
-	if json.Unmarshal([]byte(releaseSignature), &envelope) != nil {
-		return &yingzoUploadError{status: http.StatusConflict, code: "release_proof_required", message: "a server-verified signed release manifest is required before publishing"}
-	}
-	// Promotion deliberately keeps the original signed prerelease manifest so
-	// the exact published bytes can move to stable without being rebuilt. A
-	// later stable rollback may therefore revalidate that prerelease proof. This
-	// exception is enabled only by the superseded stable rollback path; draft
-	// publication and promotion continue to require an exact channel match.
-	if allowPromotedPrereleaseProof {
-		manifestBytes, decodeErr := decodeYingzoBase64(envelope.ManifestBase64)
-		var manifest yingzoSignedReleaseManifest
-		if decodeErr == nil && json.Unmarshal(manifestBytes, &manifest) == nil && manifest.Channel == "prerelease" {
-			proofRelease.Channel = "prerelease"
-		}
-	}
-	_, manifest, err := verifyYingzoReleaseProof(proofRelease, yingzoReleaseProofInput{Algorithm: envelope.Algorithm, KeyID: envelope.KeyID, ManifestBase64: envelope.ManifestBase64, SignatureBase64: envelope.SignatureBase64})
-	if err != nil {
-		return err
-	}
-	if manifest.StableEligible != stableEligible {
-		return &yingzoUploadError{status: http.StatusConflict, code: "release_manifest_mismatch", message: "release stable eligibility no longer matches its signed proof"}
 	}
 	return nil
 }
@@ -1748,9 +1695,6 @@ func publicYingzoRelease(release *yingzoRelease) gin.H {
 		"min_codex_version": release.MinCodexVersion, "min_claude_version": release.MinClaudeVersion,
 		"release_notes": release.ReleaseNotes, "published_at": release.PublishedAt,
 	}
-	if yingzoUnsignedWindowsPrerelease(release) {
-		response["warning"] = yingzoReleaseWarning(release)
-	}
 	return response
 }
 
@@ -1784,22 +1728,8 @@ func yingzoNativeSigningSummary(release *yingzoRelease) yingzoNativeSigning {
 	}
 }
 
-func yingzoUnsignedWindowsPrerelease(release *yingzoRelease) bool {
-	return release != nil && release.Channel == "prerelease" && !release.StableEligible
-}
-
-func yingzoReleaseWarning(release *yingzoRelease) string {
-	if !yingzoUnsignedWindowsPrerelease(release) {
-		return ""
-	}
-	return "此预发布版本包含未签名 Windows 产物。Windows 安装时可能触发 Microsoft Defender SmartScreen；该版本不能提升为稳定版。"
-}
-
 func yingzoV2InstallPrompt(host string, release *yingzoRelease, hostURL string, runtimeDescriptor gin.H, runtimeResolution string) string {
 	message := fmt.Sprintf("请安装或升级 Yingzo（影作）到版本 %s。宿主安装包：%s。保留现有 Yingzo 认证和项目数据，安装后验证 Runtime 协议 %d 与 MCP 连接。", release.Version, hostURL, release.RuntimeProtocol)
-	if yingzoUnsignedWindowsPrerelease(release) {
-		message += " 注意：这是包含未签名 Windows 产物的预发布版，只用于测试且不能提升为稳定版；在 Windows 安装时 Microsoft Defender SmartScreen 可能显示未知发布者警告。"
-	}
 	if runtimeDescriptor != nil && runtimeResolution == "required" {
 		message += fmt.Sprintf(" 请先安装或升级 Yingzo Runtime：%s。", runtimeDescriptor["download_url"])
 	} else if runtimeDescriptor != nil && runtimeResolution == "probe" {

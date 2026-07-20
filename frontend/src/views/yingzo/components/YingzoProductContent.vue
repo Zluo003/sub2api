@@ -131,8 +131,6 @@
           <div class="yingzo-release-meta" v-else>
             <span>{{ releaseLoading ? '正在读取发行信息' : '管理员尚未发布安装包' }}</span>
           </div>
-          <p v-if="release?.warning" class="yingzo-release-warning" role="alert">{{ release.warning }}</p>
-
           <div class="yingzo-platform-controls" aria-label="安装平台">
             <label>系统
               <select v-model="selectedOS">
@@ -196,6 +194,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Icon } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import {
   createYingzoInstallInstructions, getLatestYingzoRelease, type YingzoArchitecture,
   type YingzoHost, type YingzoOperatingSystem, type YingzoReleaseChannel, type YingzoReleaseSummary,
@@ -278,7 +277,7 @@ async function copyInstallPrompt(host: YingzoHost) {
       if (copiedHost.value === host) copiedHost.value = null
     }, 5000)
   } catch (error) {
-    installError.value = '生成安装提示词失败。请确认当前版本已发布，并重新登录后再试。'
+    installError.value = `生成安装提示词失败：${extractApiErrorMessage(error, '请确认当前版本已发布，并重新登录后再试。')}`
     console.error(error)
   } finally {
     copyingHost.value = null
@@ -803,15 +802,6 @@ onMounted(async () => { await detectPlatform(); await loadRelease() })
   gap: 8px 18px;
   color: #bdbdbd;
   font-size: 12px;
-}
-
-.yingzo-release-warning {
-  margin: 12px 0 0;
-  border-left: 3px solid #f0b75b;
-  padding: 8px 10px;
-  color: #ffd997;
-  font-size: 13px;
-  line-height: 1.55;
 }
 
 .yingzo-platform-controls {

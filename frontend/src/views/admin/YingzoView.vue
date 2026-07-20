@@ -25,7 +25,7 @@
 
         <form class="border-t-2 border-[#df5b48] pt-5" @submit.prevent="createDraft">
           <h2 class="text-base font-semibold text-gray-900 dark:text-white">创建发行草稿</h2>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">先保存版本元数据，再逐项上传八个产物。预发布可包含未签名 Windows 产物；稳定版必须全部完成原生签名。</p>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">先保存版本，再把本地生成的八个安装包上传到对应位置。</p>
           <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <label class="field-label">版本<input v-model.trim="draftForm.version" required class="input mt-1 w-full" placeholder="0.3.0" /></label>
             <label class="field-label">通道<select v-model="draftForm.channel" class="input mt-1 w-full"><option value="prerelease">预发布</option><option value="stable">稳定版</option></select></label>
@@ -62,7 +62,7 @@
               </div>
               <div class="flex flex-wrap gap-2">
                 <button v-if="release.status === 'draft'" type="button" class="btn btn-primary btn-xs" :disabled="!canPublish(release)" @click="publish(release)">发布</button>
-                <button v-if="release.status === 'published' && release.channel === 'prerelease'" type="button" class="btn btn-primary btn-xs" :disabled="release.stable_eligible === false" :title="release.stable_eligible === false ? '未签名 Windows 预发布不能提升为稳定版；请发布新的完整签名版本' : ''" @click="promote(release)">提升为稳定版</button>
+                <button v-if="release.status === 'published' && release.channel === 'prerelease'" type="button" class="btn btn-primary btn-xs" @click="promote(release)">提升为稳定版</button>
                 <button v-if="release.status === 'superseded'" type="button" class="btn btn-secondary btn-xs" @click="rollback(release)">回滚至此版本</button>
                 <button v-if="release.status !== 'disabled'" type="button" class="btn btn-danger btn-xs" @click="disable(release)">停用</button>
               </div>
@@ -73,10 +73,7 @@
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
                     <strong class="text-sm text-gray-800 dark:text-gray-100">{{ slot.label }}</strong>
-                    <span v-if="artifactForSlot(release, slot)?.signature_status === 'verified'" class="verified-mark">{{ release.signature ? '原生签名已验证' : '原生签名已检测，待发行证明' }}</span>
-                    <span v-else-if="artifactForSlot(release, slot)?.signature_status === 'failed'" class="failed-mark">签名校验失败</span>
-                    <span v-else-if="artifactForSlot(release, slot) && release.channel === 'prerelease' && windowsBearing(slot)" class="unverified-mark">未签名，仅预发布</span>
-                    <span v-else-if="artifactForSlot(release, slot)" class="unverified-mark">签名未确认</span>
+                    <span v-if="artifactForSlot(release, slot)" class="verified-mark">已上传</span>
                     <span v-else class="missing-mark">缺少</span>
                   </div>
                   <p class="mt-1 truncate text-xs text-gray-400" :title="expectedFilename(slot, release.version)">{{ artifactForSlot(release, slot)?.package_filename || expectedFilename(slot, release.version) }}</p>
@@ -91,19 +88,6 @@
                 </div>
               </section>
             </div>
-
-            <p v-if="release.signature && release.channel === 'prerelease' && release.stable_eligible === false" class="release-warning">此版本包含未签名 Windows 产物，只能用于预发布，不能提升为稳定版。</p>
-
-            <section v-if="release.status === 'draft' && release.id && (release.distribution_schema_version || 1) >= 2" class="proof-panel">
-              <div>
-                <strong class="text-sm text-gray-800 dark:text-gray-100">Ed25519 发行证明</strong>
-                <p class="mt-1 text-xs text-gray-500">八个文件上传完成后，直接上传 CI 生成的单个 <code>yingzo-release-版本.proof.json</code>。服务端会验证原始 manifest 字节、签名和八项文件哈希。</p>
-              </div>
-              <div class="proof-inputs">
-                <input type="file" accept=".proof.json,application/json" class="input" @change="selectProofFile(release.id, $event)" />
-                <button type="button" class="btn btn-secondary btn-sm" :disabled="!proofReady(release.id) || verifyingProof === release.id" @click="submitProof(release)">{{ verifyingProof === release.id ? '验签中' : '验证发行证明' }}</button>
-              </div>
-            </section>
 
             <div v-if="(release.distribution_schema_version || 1) < 2" class="mt-4 grid gap-3 md:grid-cols-2">
               <div v-for="artifact in artifactRows(release)" :key="artifact.id || artifact.package_filename" class="legacy-artifact">
@@ -137,7 +121,7 @@ import {
   getYingzoAdminSettings, listYingzoReleases, publishYingzoRelease,
   promoteYingzoRelease, replaceYingzoReleaseArtifact, rollbackYingzoRelease, updateYingzoAdminSettings,
   uploadYingzoReleaseArtifact, type YingzoAdminSettings, type YingzoArtifactUploadInput,
-  type YingzoReleaseArtifact, type YingzoReleaseSummary, verifyYingzoReleaseProof,
+  type YingzoReleaseArtifact, type YingzoReleaseSummary,
 } from '@/api/yingzo'
 
 type ArtifactSlot = Omit<YingzoArtifactUploadInput, 'file' | 'runtime_protocol'> & { key: string; label: string; filename: (version: string) => string; accept: string }
@@ -161,8 +145,6 @@ const savingSettings = ref(false)
 const creatingDraft = ref(false)
 const uploadingSlot = ref<string | null>(null)
 const selectedFiles = reactive<Record<string, File | undefined>>({})
-const proofFiles = reactive<Record<string, File | undefined>>({})
-const verifyingProof = ref<string | null>(null)
 const message = ref('')
 const messageKind = ref<'success' | 'error'>('success')
 const draftForm = reactive({ version: '0.3.0', channel: 'prerelease' as 'prerelease' | 'stable', runtimeProtocol: 1, minCodex: '0.143.0', minClaude: '2.1.201', notes: '' })
@@ -191,31 +173,13 @@ function artifactRows(release: YingzoReleaseSummary): YingzoReleaseArtifact[] {
   return artifacts ? Object.values(artifacts).filter((item): item is YingzoReleaseArtifact => Boolean(item)) : []
 }
 
-function windowsBearing(slot: ArtifactSlot) {
-  return slot.os === 'windows' || slot.target === 'claude-desktop'
-}
-
-function artifactValidated(artifact?: YingzoReleaseArtifact) {
-  if (!artifact) return false
-  return artifact.validation_status === undefined || artifact.validation_status === 'validated'
-}
-
 function artifactForSlot(release: YingzoReleaseSummary, slot: ArtifactSlot): YingzoReleaseArtifact | undefined {
   return artifactRows(release).find((artifact) => artifact.target === slot.target && artifact.os === slot.os && artifact.arch === slot.arch)
 }
 
 function canPublish(release: YingzoReleaseSummary) {
   if ((release.distribution_schema_version || 1) < 2) return artifactRows(release).length >= 1
-  if (!release.signature) return false
-  return artifactSlots.every((slot) => {
-    const artifact = artifactForSlot(release, slot)
-    if (!artifactValidated(artifact)) return false
-    if (artifact?.signature_status === 'verified') return true
-    return release.channel === 'prerelease'
-      && release.stable_eligible === false
-      && windowsBearing(slot)
-      && artifact?.signature_status === 'unverified'
-  })
+  return artifactSlots.every((slot) => Boolean(artifactForSlot(release, slot)))
 }
 
 async function loadAll() {
@@ -272,55 +236,10 @@ async function uploadArtifact(release: YingzoReleaseSummary, slot: ArtifactSlot)
     if (existing?.id) await replaceYingzoReleaseArtifact(release.id, existing.id, input)
     else await uploadYingzoReleaseArtifact(release.id, input)
     delete selectedFiles[key]
-    showMessage(`${slot.label} 已上传并通过内部校验。`)
+    showMessage(`${slot.label} 已上传。`)
     await loadAll()
-  } catch (error) { showMessage(`上传失败：${apiErrorDetail(error, '请检查文件名、格式和签名状态')}`, 'error'); console.error(error) }
+  } catch (error) { showMessage(`上传失败：${apiErrorDetail(error, '请检查文件名和对应平台')}`, 'error'); console.error(error) }
   finally { uploadingSlot.value = null }
-}
-
-function selectProofFile(releaseID: string, event: Event) {
-  proofFiles[releaseID] = (event.target as HTMLInputElement).files?.[0]
-}
-
-function proofReady(releaseID: string) {
-  return Boolean(proofFiles[releaseID])
-}
-
-async function submitProof(release: YingzoReleaseSummary) {
-  if (!release.id || !proofReady(release.id)) return
-  verifyingProof.value = release.id
-  try {
-    const proofFile = proofFiles[release.id]!
-    const proofText = await readFileText(proofFile)
-    const proof = JSON.parse(proofText) as { algorithm?: string; key_id?: string; manifest_base64?: string; signature_base64?: string }
-    if (proof.algorithm !== 'Ed25519' || !proof.key_id || !proof.manifest_base64 || !proof.signature_base64) {
-      throw new Error('proof envelope must contain algorithm, key_id, manifest_base64, and signature_base64')
-    }
-    await verifyYingzoReleaseProof(release.id, {
-      algorithm: 'Ed25519',
-      key_id: proof.key_id.trim(),
-      manifest_base64: proof.manifest_base64,
-      signature_base64: proof.signature_base64,
-    })
-    showMessage('发行 manifest、八项哈希与 Ed25519 detached signature 已由服务端验证。')
-    await loadAll()
-  } catch (error) {
-    showMessage(`发行证明验证失败：${apiErrorDetail(error, '请核对 key_id、manifest 原始字节和 detached signature')}`, 'error')
-    console.error(error)
-  } finally {
-    verifyingProof.value = null
-  }
-}
-
-async function readFileText(file: File): Promise<string> {
-  if (typeof file.text === 'function') return file.text()
-  if (typeof file.arrayBuffer === 'function') return new TextDecoder().decode(await file.arrayBuffer())
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(reader.error || new Error('proof file could not be read'))
-    reader.readAsText(file)
-  })
 }
 
 async function removeArtifact(release: YingzoReleaseSummary, artifact: YingzoReleaseArtifact) {
@@ -329,8 +248,8 @@ async function removeArtifact(release: YingzoReleaseSummary, artifact: YingzoRel
   catch (error) { showMessage('删除产物失败。', 'error'); console.error(error) }
 }
 
-async function publish(release: YingzoReleaseSummary) { if (!release.id) return; try { await publishYingzoRelease(release.id); showMessage(`版本 ${release.version} 已发布到${channelLabel(release.channel)}通道。`); await loadAll() } catch (error) { showMessage(`发布失败：${apiErrorDetail(error, '请确认八项产物完整且协议一致')}`, 'error'); console.error(error) } }
-async function promote(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认将 ${release.version} 的同一组已签名二进制提升为稳定版？`)) return; try { await promoteYingzoRelease(release.id); showMessage(`版本 ${release.version} 已提升为稳定版，没有重新构建或替换二进制。`); await loadAll() } catch (error) { showMessage(`提升失败：${apiErrorDetail(error, '请确认八项文件仍完整可用')}`, 'error'); console.error(error) } }
+async function publish(release: YingzoReleaseSummary) { if (!release.id) return; try { await publishYingzoRelease(release.id); showMessage(`版本 ${release.version} 已发布到${channelLabel(release.channel)}通道。`); await loadAll() } catch (error) { showMessage(`发布失败：${apiErrorDetail(error, '请确认八个文件都已上传')}`, 'error'); console.error(error) } }
+async function promote(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认将 ${release.version} 提升为稳定版？`)) return; try { await promoteYingzoRelease(release.id); showMessage(`版本 ${release.version} 已提升为稳定版。`); await loadAll() } catch (error) { showMessage(`提升失败：${apiErrorDetail(error, '请确认八个文件仍然存在')}`, 'error'); console.error(error) } }
 async function rollback(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认将${channelLabel(release.channel)}回滚到 ${release.version}？`)) return; try { await rollbackYingzoRelease(release.id); showMessage(`已回滚到 ${release.version}。`); await loadAll() } catch (error) { showMessage('回滚失败。', 'error'); console.error(error) } }
 async function disable(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认停用 ${release.version}？`)) return; try { await disableYingzoRelease(release.id); showMessage(`版本 ${release.version} 已停用。`); await loadAll() } catch (error) { showMessage('停用失败。', 'error'); console.error(error) } }
 
@@ -344,23 +263,16 @@ onMounted(loadAll)
 .artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .artifact-slot { min-width: 0; border-top: 2px solid #d5d5d5; padding-top: 12px; }
 .legacy-artifact { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.status-mark, .channel-mark, .verified-mark, .unverified-mark, .failed-mark, .missing-mark { display: inline-flex; align-items: center; border-radius: 4px; padding: 3px 8px; font-size: 12px; font-weight: 650; }
+.status-mark, .channel-mark, .verified-mark, .missing-mark { display: inline-flex; align-items: center; border-radius: 4px; padding: 3px 8px; font-size: 12px; font-weight: 650; }
 .status-draft { background: #f1f1f1; color: #555; }
 .status-published { background: #e7f6ed; color: #18733c; }
 .status-superseded { background: #fff0ed; color: #a33f30; }
 .status-disabled { background: #fce8e8; color: #a32121; }
 .channel-mark { background: #edf2f8; color: #35536f; }
 .verified-mark { background: #e7f6ed; color: #18733c; padding: 2px 6px; font-size: 11px; }
-.unverified-mark { background: #fff6dc; color: #8b6511; padding: 2px 6px; font-size: 11px; }
-.failed-mark { background: #fce8e8; color: #a32121; padding: 2px 6px; font-size: 11px; }
 .missing-mark { background: #fff0ed; color: #a33f30; padding: 2px 6px; font-size: 11px; }
-.release-warning { margin-top: 14px; border-left: 3px solid #b7791f; background: #fff8e5; padding: 10px 12px; color: #7a5410; font-size: 13px; }
-.proof-panel { margin-top: 18px; border-top: 2px solid #35536f; padding-top: 14px; }
-.proof-inputs { margin-top: 10px; display: grid; grid-template-columns: minmax(160px, .7fr) repeat(2, minmax(220px, 1fr)) auto; gap: 8px; }
-@media (max-width: 1100px) { .proof-inputs { grid-template-columns: 1fr; } }
 .artifact-family { min-width: 64px; border-radius: 3px; background: #f2f2f2; padding: 2px 6px; color: #555; font-weight: 700; text-align: center; }
 :global(.dark) .field-label { color: #aaa; }
 :global(.dark) .release-panel { border-color: #3c3c3c; }
 :global(.dark) .artifact-slot { border-color: #555; }
-:global(.dark) .release-warning { background: rgba(120, 83, 18, .22); color: #f2cf83; }
 </style>
