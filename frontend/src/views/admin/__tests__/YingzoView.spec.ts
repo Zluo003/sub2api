@@ -39,20 +39,29 @@ function schema2Draft() {
   }
 }
 
-function artifactMatrix() {
-  return [
+function artifactMatrix(schemaVersion = 2) {
+  const slots = [
     ['openai', 'macos', 'any'],
     ['openai', 'windows', 'x64'],
     ['claude-code', 'macos', 'any'],
     ['claude-code', 'windows', 'x64'],
     ['claude-desktop', 'any', 'any'],
     ['runtime', 'macos', 'arm64'],
-    ['runtime', 'macos', 'x64'],
     ['runtime', 'windows', 'x64'],
-  ].map(([target, os, arch], index) => ({
+  ]
+  if (schemaVersion === 2) slots.splice(6, 0, ['runtime', 'macos', 'x64'])
+  return slots.map(([target, os, arch], index) => ({
     id: `artifact-${index}`, artifact_kind: target === 'runtime' ? 'runtime_installer' : 'host_package',
     target, os, arch, package_filename: `artifact-${index}`, size_bytes: 1024,
   }))
+}
+
+function schema3Draft() {
+  return {
+    id: 'release-3', version: '0.3.0', status: 'draft', channel: 'prerelease',
+    distribution_schema_version: 3, runtime_protocol: 1, artifact_matrix: [],
+    min_codex_version: '0.143.0', min_claude_version: '2.1.201',
+  }
 }
 
 describe('Yingzo release administration', () => {
@@ -64,7 +73,7 @@ describe('Yingzo release administration', () => {
     mocks.uploadArtifact.mockResolvedValue({ id: 'artifact-1' })
   })
 
-  it('creates a schema 2 prerelease draft before accepting artifacts', async () => {
+  it('creates a schema 3 prerelease draft with the current seven-artifact contract', async () => {
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
@@ -73,10 +82,36 @@ describe('Yingzo release administration', () => {
     await flushPromises()
 
     expect(mocks.createDraft).toHaveBeenCalledWith(expect.objectContaining({
-      version: '0.3.1', channel: 'prerelease', distribution_schema_version: 2,
+      version: '0.3.1', channel: 'prerelease', distribution_schema_version: 3,
       runtime_protocol: 1,
-      compatibility: { platforms: ['macos-arm64', 'macos-x64', 'windows-x64'], artifact_count: 8 },
+      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7 },
     }))
+  })
+
+  it('renders seven current schema 3 slots and does not offer macOS x64 Runtime', async () => {
+    mocks.list.mockResolvedValue([schema3Draft()])
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    expect(wrapper.findAll('input[type="file"]')).toHaveLength(7)
+    expect(wrapper.text()).toContain('Runtime · macOS arm64')
+    expect(wrapper.text()).not.toContain('Runtime · macOS Intel')
+  })
+
+  it('prefers server-declared schema 3 requirements over the default matrix', async () => {
+    mocks.list.mockResolvedValue([{
+      ...schema3Draft(),
+      required_artifacts: [{
+        key: 'runtime-macos-arm64-custom', label: 'Runtime · macOS arm64（自定义）', artifact_kind: 'runtime_installer',
+        target: 'runtime', os: 'macos', arch: 'arm64', package_filename: 'custom-runtime-{version}.dmg', format: 'dmg',
+      }],
+    }])
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    expect(wrapper.findAll('input[type="file"]')).toHaveLength(1)
+    expect(wrapper.text()).toContain('Runtime · macOS arm64（自定义）')
+    expect(wrapper.text()).toContain('custom-runtime-0.3.0.dmg')
   })
 
   it('renders the exact eight-artifact matrix and uploads one target at a time', async () => {

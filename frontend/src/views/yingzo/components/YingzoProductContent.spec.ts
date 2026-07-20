@@ -24,6 +24,7 @@ describe('YingzoProductContent install actions', () => {
     vi.clearAllMocks()
     mocks.getLatestRelease.mockResolvedValue(release())
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: mocks.writeText } })
+    Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: undefined })
   })
 
   it('requests the selected host with an explicit platform and stable channel', async () => {
@@ -68,6 +69,31 @@ describe('YingzoProductContent install actions', () => {
     const installButtons = wrapper.findAll('button.yingzo-copy-button')
     expect(installButtons).toHaveLength(4)
     expect(installButtons.map((button) => button.text()).join(' ')).not.toContain('Claude Desktop')
+  })
+
+  it('does not offer macOS Intel for the current schema 3 release', async () => {
+    mocks.getLatestRelease.mockResolvedValue(release('stable', 3))
+    const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    const archOptions = wrapper.findAll('select').at(1)?.findAll('option').map((option) => option.attributes('value'))
+    expect(archOptions).toEqual(['arm64'])
+    expect(wrapper.text()).toContain('macOS arm64 · Windows x64')
+  })
+
+  it('blocks installation instead of serving arm64 to a detected Intel Mac', async () => {
+    Object.defineProperty(navigator, 'userAgentData', {
+      configurable: true,
+      value: { getHighEntropyValues: vi.fn().mockResolvedValue({ architecture: 'x86' }) },
+    })
+    mocks.getLatestRelease.mockResolvedValue(release('stable', 3))
+    const wrapper = mount(YingzoProductContent, { global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前版本不支持 macOS Intel')
+    const installButtons = wrapper.findAll('button').filter((button) => button.text().includes('复制给'))
+    expect(installButtons.length).toBeGreaterThan(0)
+    expect(installButtons.every((button) => button.attributes('disabled') !== undefined)).toBe(true)
   })
 
   it('does not copy a prompt when the server returns another host', async () => {

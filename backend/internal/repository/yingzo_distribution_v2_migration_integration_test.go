@@ -51,6 +51,10 @@ func TestYingzoDistributionV2MigrationBackfillsLegacyAndPublishesPerChannel(t *t
 	require.NoError(t, err)
 	_, err = tx.ExecContext(ctx, string(content))
 	require.NoError(t, err)
+	content, err = migrations.FS.ReadFile("173_yingzo_distribution_schema_3.sql")
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(content))
+	require.NoError(t, err)
 
 	var schemaVersion, runtimeProtocol int
 	var channel string
@@ -60,6 +64,10 @@ func TestYingzoDistributionV2MigrationBackfillsLegacyAndPublishesPerChannel(t *t
 	require.Equal(t, "stable", channel)
 	require.Zero(t, runtimeProtocol)
 	require.Equal(t, "{}", compatibility)
+	// Schema 2 remains valid and schema 3 is accepted by the new constraint.
+	schema3ID := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,runtime_protocol,compatibility) VALUES($1,'0.3.1','draft',3,'prerelease',1,'{}')`, schema3ID)
+	require.NoError(t, err)
 	var stableEligible bool
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT stable_eligible FROM yingzo_releases WHERE id=$1`, legacyID).Scan(&stableEligible))
 	require.True(t, stableEligible, "legacy stable releases remain eligible")

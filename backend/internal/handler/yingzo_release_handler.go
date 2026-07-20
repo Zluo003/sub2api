@@ -43,6 +43,7 @@ const (
 	yingzoExpandedArchiveMax   = int64(2 << 30)
 	yingzoReleaseManifestMax   = int64(2 << 20)
 	yingzoDistributionSchema2  = 2
+	yingzoDistributionSchema3  = 3
 )
 
 const yingzoReleaseColumns = `id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at`
@@ -134,16 +135,17 @@ type yingzoReleaseProofInput struct {
 }
 
 type yingzoSignedReleaseManifest struct {
-	SchemaVersion          int                            `json:"schema_version"`
-	Product                string                         `json:"product"`
-	Version                string                         `json:"version"`
-	Channel                string                         `json:"channel"`
-	RuntimeProtocol        int                            `json:"runtime_protocol"`
-	CompleteArtifactMatrix bool                           `json:"complete_artifact_matrix"`
-	PublicSigningRequired  bool                           `json:"public_signing_required"`
-	StableEligible         bool                           `json:"stable_eligible"`
-	NativeSigning          yingzoNativeSigning            `json:"native_signing"`
-	Artifacts              []yingzoSignedManifestArtifact `json:"artifacts"`
+	SchemaVersion             int                            `json:"schema_version"`
+	DistributionSchemaVersion *int                           `json:"distribution_schema_version,omitempty"`
+	Product                   string                         `json:"product"`
+	Version                   string                         `json:"version"`
+	Channel                   string                         `json:"channel"`
+	RuntimeProtocol           int                            `json:"runtime_protocol"`
+	CompleteArtifactMatrix    bool                           `json:"complete_artifact_matrix"`
+	PublicSigningRequired     bool                           `json:"public_signing_required"`
+	StableEligible            bool                           `json:"stable_eligible"`
+	NativeSigning             yingzoNativeSigning            `json:"native_signing"`
+	Artifacts                 []yingzoSignedManifestArtifact `json:"artifacts"`
 }
 
 type yingzoNativeSigning struct {
@@ -179,7 +181,24 @@ func (a *yingzoReleaseArtifact) key() string {
 	return a.HostFamily
 }
 
-func yingzoV2ArtifactSpecs(version string) []yingzoArtifactSpec {
+// yingzoArtifactSpecsForSchema returns the immutable artifact contract for a
+// distribution schema. Keep old schemas byte-for-byte compatible: installed
+// clients may still request a schema-2 release after schema 3 is introduced.
+func yingzoArtifactSpecsForSchema(schemaVersion int, version string) []yingzoArtifactSpec {
+	if schemaVersion == yingzoDistributionSchema3 {
+		return []yingzoArtifactSpec{
+			{ArtifactKind: "host_package", Target: "openai", OS: "macos", Arch: "any", Format: "tar.gz", ContentType: "application/gzip", Filename: "yingzo-openai-macos-" + version + ".tar.gz"},
+			{ArtifactKind: "host_package", Target: "openai", OS: "windows", Arch: "x64", Format: "zip", ContentType: "application/zip", Filename: "yingzo-openai-windows-x64-" + version + ".zip"},
+			{ArtifactKind: "host_package", Target: "claude-code", OS: "macos", Arch: "any", Format: "zip", ContentType: "application/zip", Filename: "yingzo-claude-code-macos-" + version + ".zip"},
+			{ArtifactKind: "host_package", Target: "claude-code", OS: "windows", Arch: "x64", Format: "zip", ContentType: "application/zip", Filename: "yingzo-claude-code-windows-x64-" + version + ".zip"},
+			{ArtifactKind: "host_package", Target: "claude-desktop", OS: "any", Arch: "any", Format: "mcpb", ContentType: "application/zip", Filename: "yingzo-claude-desktop-" + version + ".mcpb"},
+			{ArtifactKind: "runtime_installer", Target: "runtime", OS: "macos", Arch: "arm64", Format: "dmg", ContentType: "application/x-apple-diskimage", Filename: "yingzo-runtime-macos-arm64-" + version + ".dmg"},
+			{ArtifactKind: "runtime_installer", Target: "runtime", OS: "windows", Arch: "x64", Format: "exe", ContentType: "application/vnd.microsoft.portable-executable", Filename: "yingzo-runtime-windows-x64-" + version + "-setup.exe"},
+		}
+	}
+	if schemaVersion != yingzoDistributionSchema2 {
+		return nil
+	}
 	return []yingzoArtifactSpec{
 		{ArtifactKind: "host_package", Target: "openai", OS: "macos", Arch: "any", Format: "tar.gz", ContentType: "application/gzip", Filename: "yingzo-openai-macos-" + version + ".tar.gz"},
 		{ArtifactKind: "host_package", Target: "openai", OS: "windows", Arch: "x64", Format: "zip", ContentType: "application/zip", Filename: "yingzo-openai-windows-x64-" + version + ".zip"},
@@ -192,13 +211,32 @@ func yingzoV2ArtifactSpecs(version string) []yingzoArtifactSpec {
 	}
 }
 
-func findYingzoV2Spec(version, artifactKind, target, targetOS, arch string) (yingzoArtifactSpec, bool) {
-	for _, spec := range yingzoV2ArtifactSpecs(version) {
+// yingzoV2ArtifactSpecs is retained as a named compatibility helper for
+// schema-2 tests and callers. It must never silently switch to the current
+// release matrix.
+func yingzoV2ArtifactSpecs(version string) []yingzoArtifactSpec {
+	return yingzoArtifactSpecsForSchema(yingzoDistributionSchema2, version)
+}
+
+func yingzoV3ArtifactSpecs(version string) []yingzoArtifactSpec {
+	return yingzoArtifactSpecsForSchema(yingzoDistributionSchema3, version)
+}
+
+func yingzoDistributionSchemaSupported(schemaVersion int) bool {
+	return schemaVersion == yingzoDistributionSchema2 || schemaVersion == yingzoDistributionSchema3
+}
+
+func findYingzoArtifactSpec(schemaVersion int, version, artifactKind, target, targetOS, arch string) (yingzoArtifactSpec, bool) {
+	for _, spec := range yingzoArtifactSpecsForSchema(schemaVersion, version) {
 		if spec.ArtifactKind == artifactKind && spec.Target == target && spec.OS == targetOS && spec.Arch == arch {
 			return spec, true
 		}
 	}
 	return yingzoArtifactSpec{}, false
+}
+
+func findYingzoV2Spec(version, artifactKind, target, targetOS, arch string) (yingzoArtifactSpec, bool) {
+	return findYingzoArtifactSpec(yingzoDistributionSchema2, version, artifactKind, target, targetOS, arch)
 }
 
 func (h *AgentHandler) GetYingzoDiscovery(c *gin.Context) {
@@ -304,7 +342,7 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 		if input.Host == "claude-chat" {
 			c.JSON(http.StatusConflict, gin.H{"error": gin.H{
 				"code":    "host_not_supported_by_release",
-				"message": "Claude Desktop requires a schema 2 release with an MCPB artifact",
+				"message": "Claude Desktop requires a schema 2 or 3 release with an MCPB artifact",
 			}})
 			return
 		}
@@ -335,8 +373,8 @@ func (h *AgentHandler) CreateYingzoInstallInstructions(c *gin.Context) {
 
 	targetOS, osErr := normalizeYingzoOS(input.OS)
 	arch, archErr := normalizeYingzoArch(input.Arch)
-	if osErr != nil || archErr != nil || !yingzoPlatformSupported(targetOS, arch) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "unsupported_platform", "message": "supported platforms are macos/arm64, macos/x64, and windows/x64"}})
+	if osErr != nil || archErr != nil || !yingzoPlatformSupportedForSchema(release.DistributionSchemaVersion, targetOS, arch) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "unsupported_platform", "message": yingzoSupportedPlatformMessage(release.DistributionSchemaVersion)}})
 		return
 	}
 	hostArtifact := yingzoHostArtifactForPlatform(release, input.Host, targetOS, arch)
@@ -491,11 +529,13 @@ func yingzoTicketMatchesArtifact(ticket yingzoInstallTicket, release *yingzoRele
 		return false
 	}
 	if artifact.ArtifactKind == "runtime_installer" {
-		return artifact.Target == "runtime" && artifact.OS == ticket.RequestedOS && artifact.Arch == ticket.RequestedArch
+		requestedOS := normalizeYingzoOSTrusted(ticket.RequestedOS)
+		requestedArch := normalizeYingzoArchTrusted(ticket.RequestedArch)
+		return artifact.Target == "runtime" && yingzoPlatformSupportedForSchema(release.DistributionSchemaVersion, requestedOS, requestedArch) && artifact.OS == requestedOS && artifact.Arch == requestedArch
 	}
 	requestedOS := normalizeYingzoOSTrusted(ticket.RequestedOS)
 	requestedArch := normalizeYingzoArchTrusted(ticket.RequestedArch)
-	if !yingzoPlatformSupported(requestedOS, requestedArch) {
+	if !yingzoPlatformSupportedForSchema(release.DistributionSchemaVersion, requestedOS, requestedArch) {
 		return false
 	}
 	expected := yingzoHostArtifactForPlatform(release, ticket.Host, requestedOS, requestedArch)
@@ -551,7 +591,7 @@ func (h *AgentHandler) createYingzoReleaseDraft(c *gin.Context) {
 		return
 	}
 	var input yingzoReleaseDraftInput
-	if c.ShouldBindJSON(&input) != nil || !yingzoVersionPattern.MatchString(strings.TrimSpace(input.Version)) || input.DistributionSchemaVersion != yingzoDistributionSchema2 || input.RuntimeProtocol <= 0 {
+	if c.ShouldBindJSON(&input) != nil || !yingzoVersionPattern.MatchString(strings.TrimSpace(input.Version)) || !yingzoDistributionSchemaSupported(input.DistributionSchemaVersion) || input.RuntimeProtocol <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_release_draft"}})
 		return
 	}
@@ -573,8 +613,8 @@ func (h *AgentHandler) createYingzoReleaseDraft(c *gin.Context) {
 	// Stable/prerelease is an operator-selected channel, not a signing verdict.
 	// A published prerelease may be promoted later without rebuilding its files.
 	stableEligible := true
-	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',2,$3,$4,$5,$6::jsonb,NULL,$7,$8,$9,$10)`,
-		releaseID, strings.TrimSpace(input.Version), channel, stableEligible, input.RuntimeProtocol, string(compatibilityJSON), strings.TrimSpace(input.MinCodexVersion), strings.TrimSpace(input.MinClaudeVersion), strings.TrimSpace(input.ReleaseNotes), subject.UserID)
+	_, err = h.db.ExecContext(c, `INSERT INTO yingzo_releases(id,version,status,distribution_schema_version,channel,stable_eligible,runtime_protocol,compatibility,signature,min_codex_version,min_claude_version,release_notes,created_by) VALUES($1,$2,'draft',$3,$4,$5,$6,$7::jsonb,NULL,$8,$9,$10,$11)`,
+		releaseID, strings.TrimSpace(input.Version), input.DistributionSchemaVersion, channel, stableEligible, input.RuntimeProtocol, string(compatibilityJSON), strings.TrimSpace(input.MinCodexVersion), strings.TrimSpace(input.MinClaudeVersion), strings.TrimSpace(input.ReleaseNotes), subject.UserID)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -586,7 +626,7 @@ func (h *AgentHandler) createYingzoReleaseDraft(c *gin.Context) {
 	}
 	release, err := h.getYingzoRelease(c, releaseID)
 	if err != nil {
-		c.JSON(http.StatusCreated, gin.H{"id": releaseID, "version": input.Version, "status": "draft", "channel": channel, "distribution_schema_version": 2})
+		c.JSON(http.StatusCreated, gin.H{"id": releaseID, "version": input.Version, "status": "draft", "channel": channel, "distribution_schema_version": input.DistributionSchemaVersion})
 		return
 	}
 	c.JSON(http.StatusCreated, release)
@@ -703,7 +743,7 @@ func (h *AgentHandler) VerifyYingzoReleaseProof(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	if release.Status != "draft" || release.DistributionSchemaVersion != yingzoDistributionSchema2 {
+	if release.Status != "draft" || !yingzoDistributionSchemaSupported(release.DistributionSchemaVersion) {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
@@ -780,11 +820,11 @@ func (h *AgentHandler) saveYingzoReleaseArtifact(c *gin.Context, replace bool) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	if release.Status != "draft" || release.DistributionSchemaVersion != 2 {
+	if release.Status != "draft" || !yingzoDistributionSchemaSupported(release.DistributionSchemaVersion) {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
-	spec, ok := findYingzoV2Spec(release.Version, artifactKind, target, targetOS, arch)
+	spec, ok := findYingzoArtifactSpec(release.DistributionSchemaVersion, release.Version, artifactKind, target, targetOS, arch)
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_artifact_target"}})
 		return
@@ -874,7 +914,7 @@ func (h *AgentHandler) DeleteYingzoReleaseArtifact(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	if release.Status != "draft" || release.DistributionSchemaVersion != 2 {
+	if release.Status != "draft" || !yingzoDistributionSchemaSupported(release.DistributionSchemaVersion) {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
@@ -1026,6 +1066,13 @@ func validateYingzoSignedManifest(release *yingzoRelease, manifest yingzoSignedR
 	if release == nil || manifest.SchemaVersion != 2 || manifest.Product != "yingzo" || manifest.Version != release.Version || manifest.RuntimeProtocol != release.RuntimeProtocol || !manifest.CompleteArtifactMatrix {
 		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "release manifest identity, protocol, or signing policy does not match the draft"}
 	}
+	manifestDistributionSchema := yingzoDistributionSchema2
+	if manifest.DistributionSchemaVersion != nil {
+		manifestDistributionSchema = *manifest.DistributionSchemaVersion
+	}
+	if !yingzoDistributionSchemaSupported(release.DistributionSchemaVersion) || manifestDistributionSchema != release.DistributionSchemaVersion {
+		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "release manifest distribution schema does not match the draft"}
+	}
 	if manifest.Channel != "prerelease" && manifest.Channel != "stable" {
 		return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "public release manifest must identify a prerelease or stable build"}
 	}
@@ -1044,14 +1091,17 @@ func validateYingzoSignedManifest(release *yingzoRelease, manifest yingzoSignedR
 	if !fullySigned && release.Channel != "prerelease" {
 		return &yingzoUploadError{status: http.StatusConflict, code: "release_not_stable_eligible", message: "unsigned Windows artifacts are allowed only in prerelease releases"}
 	}
-	expectedSpecs := yingzoV2ArtifactSpecs(release.Version)
+	expectedSpecs := yingzoArtifactSpecsForSchema(release.DistributionSchemaVersion, release.Version)
+	if len(expectedSpecs) == 0 {
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_state_invalid", message: "unsupported Yingzo distribution schema"}
+	}
 	if len(manifest.Artifacts) != len(expectedSpecs) || len(release.Artifacts) != len(expectedSpecs) {
-		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "release proof requires the exact eight-artifact matrix"}
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: fmt.Sprintf("release proof requires the exact %d-artifact matrix", len(expectedSpecs))}
 	}
 	seen := make(map[string]bool, len(expectedSpecs))
 	windowsUnsignedDetected := false
 	for _, signed := range manifest.Artifacts {
-		spec, ok := findYingzoV2Spec(release.Version, signed.ArtifactKind, signed.Target, signed.OS, signed.Arch)
+		spec, ok := findYingzoArtifactSpec(release.DistributionSchemaVersion, release.Version, signed.ArtifactKind, signed.Target, signed.OS, signed.Arch)
 		if !ok || seen[spec.key()] {
 			return &yingzoUploadError{status: http.StatusUnprocessableEntity, code: "release_manifest_mismatch", message: "release manifest contains an unknown or duplicate artifact"}
 		}
@@ -1141,11 +1191,11 @@ func (h *AgentHandler) PromoteYingzoRelease(c *gin.Context) {
 	var schemaVersion, runtimeProtocol int
 	var stableEligible bool
 	var releaseSignature sql.NullString
-	if err := tx.QueryRowContext(c, `SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &channel, &schemaVersion, &stableEligible, &runtimeProtocol, &version, &releaseSignature); err != nil || status != "published" || channel != "prerelease" || schemaVersion != 2 {
+	if err := tx.QueryRowContext(c, `SELECT status,channel,distribution_schema_version,stable_eligible,runtime_protocol,version,signature FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &channel, &schemaVersion, &stableEligible, &runtimeProtocol, &version, &releaseSignature); err != nil || status != "published" || channel != "prerelease" || !yingzoDistributionSchemaSupported(schemaVersion) {
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
-	if err = validateYingzoV2PublishMatrix(c, tx, id, version, runtimeProtocol); err != nil {
+	if err = validateYingzoPublishMatrix(c, tx, id, version, runtimeProtocol, schemaVersion); err != nil {
 		var uploadErr *yingzoUploadError
 		if errors.As(err, &uploadErr) {
 			c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
@@ -1231,13 +1281,19 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_artifacts_incomplete"}})
 			return
 		}
-	} else if err = validateYingzoV2PublishMatrix(c, tx, id, version, runtimeProtocol); err != nil {
-		var uploadErr *yingzoUploadError
-		if errors.As(err, &uploadErr) {
-			c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+	} else if yingzoDistributionSchemaSupported(schemaVersion) {
+		err = validateYingzoPublishMatrix(c, tx, id, version, runtimeProtocol, schemaVersion)
+		if err != nil {
+			var uploadErr *yingzoUploadError
+			if errors.As(err, &uploadErr) {
+				c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code, "message": uploadErr.message}})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+			}
+			return
 		}
+	} else {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
 		return
 	}
 	if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET status='superseded',updated_at=NOW() WHERE status='published' AND channel=$1 AND id<>$2`, channel, id); err == nil {
@@ -1259,7 +1315,11 @@ func (h *AgentHandler) setPublishedYingzoRelease(c *gin.Context, rollback bool) 
 	c.JSON(http.StatusOK, release)
 }
 
-func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version string, runtimeProtocol int) error {
+func validateYingzoPublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version string, runtimeProtocol, schemaVersion int) error {
+	expectedSpecs := yingzoArtifactSpecsForSchema(schemaVersion, version)
+	if len(expectedSpecs) == 0 {
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_state_invalid", message: "unsupported Yingzo distribution schema"}
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=$1`, releaseID)
 	if err != nil {
 		return err
@@ -1273,9 +1333,9 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 		if err := rows.Scan(&kind, &target, &targetOS, &arch, &artifactProtocol, &validationStatus, &signatureStatus, &packageFilename, &storageKey, &expectedSize, &expectedSHA); err != nil {
 			return err
 		}
-		spec, ok := findYingzoV2Spec(version, kind, target, targetOS, arch)
+		spec, ok := findYingzoArtifactSpec(schemaVersion, version, kind, target, targetOS, arch)
 		if !ok || packageFilename != spec.Filename || artifactProtocol != runtimeProtocol || validationStatus != "validated" {
-			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_invalid", message: "every v2 artifact must match the release filename, platform slot, and protocol"}
+			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_invalid", message: "every release artifact must match the release filename, platform slot, and protocol"}
 		}
 		info, statErr := os.Stat(storageKey)
 		if statErr != nil || !info.Mode().IsRegular() || info.Size() != expectedSize {
@@ -1290,15 +1350,19 @@ func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uu
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if len(found) != len(yingzoV2ArtifactSpecs(version)) {
-		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight release artifacts are required before publishing"}
+	if len(found) != len(expectedSpecs) {
+		return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: fmt.Sprintf("all %d release artifacts are required before publishing", len(expectedSpecs))}
 	}
-	for _, spec := range yingzoV2ArtifactSpecs(version) {
+	for _, spec := range expectedSpecs {
 		if !found[spec.key()] {
-			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: "all eight release artifacts are required before publishing"}
+			return &yingzoUploadError{status: http.StatusConflict, code: "release_artifacts_incomplete", message: fmt.Sprintf("all %d release artifacts are required before publishing", len(expectedSpecs))}
 		}
 	}
 	return nil
+}
+
+func validateYingzoV2PublishMatrix(ctx context.Context, tx *sql.Tx, releaseID uuid.UUID, version string, runtimeProtocol int) error {
+	return validateYingzoPublishMatrix(ctx, tx, releaseID, version, runtimeProtocol, yingzoDistributionSchema2)
 }
 
 func (h *AgentHandler) DisableYingzoRelease(c *gin.Context) {
@@ -1327,7 +1391,7 @@ func (h *AgentHandler) DisableYingzoRelease(c *gin.Context) {
 		return
 	}
 	storageKeys := make([]string, 0)
-	if status == "draft" && schemaVersion == yingzoDistributionSchema2 {
+	if status == "draft" && yingzoDistributionSchemaSupported(schemaVersion) {
 		rows, queryErr := tx.QueryContext(c, `DELETE FROM yingzo_release_artifacts WHERE release_id=$1 RETURNING storage_key`, id)
 		if queryErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
@@ -1581,6 +1645,9 @@ func yingzoHostArtifactForPlatform(release *yingzoRelease, host, targetOS, arch 
 	default:
 		return nil
 	}
+	if !yingzoPlatformSupportedForSchema(release.DistributionSchemaVersion, targetOS, arch) {
+		return nil
+	}
 	artifactOS, artifactArch = targetOS, arch
 	if targetOS == "macos" {
 		artifactArch = "any"
@@ -1638,7 +1705,24 @@ func normalizeYingzoArchTrusted(raw string) string {
 }
 
 func yingzoPlatformSupported(targetOS, arch string) bool {
-	return (targetOS == "macos" && (arch == "arm64" || arch == "x64")) || (targetOS == "windows" && arch == "x64")
+	return yingzoPlatformSupportedForSchema(yingzoDistributionSchema2, targetOS, arch)
+}
+
+func yingzoPlatformSupportedForSchema(schemaVersion int, targetOS, arch string) bool {
+	if schemaVersion == yingzoDistributionSchema3 {
+		return (targetOS == "macos" && arch == "arm64") || (targetOS == "windows" && arch == "x64")
+	}
+	if schemaVersion == yingzoDistributionSchema2 {
+		return (targetOS == "macos" && (arch == "arm64" || arch == "x64")) || (targetOS == "windows" && arch == "x64")
+	}
+	return false
+}
+
+func yingzoSupportedPlatformMessage(schemaVersion int) string {
+	if schemaVersion == yingzoDistributionSchema3 {
+		return "supported platforms are macos/arm64 and windows/x64"
+	}
+	return "supported platforms are macos/arm64, macos/x64, and windows/x64"
 }
 
 func resolveYingzoRuntimeCapability(input yingzoInstallRequest, release *yingzoRelease) (string, error) {
@@ -1671,6 +1755,18 @@ func resolveYingzoRuntimeCapability(input yingzoInstallRequest, release *yingzoR
 func publicYingzoRelease(release *yingzoRelease) gin.H {
 	artifacts := gin.H{}
 	items := make([]gin.H, 0, len(release.Artifacts))
+	requiredArtifacts := make([]gin.H, 0)
+	for _, spec := range yingzoArtifactSpecsForSchema(release.DistributionSchemaVersion, release.Version) {
+		requiredArtifacts = append(requiredArtifacts, gin.H{
+			"artifact_kind":    spec.ArtifactKind,
+			"target":           spec.Target,
+			"os":               spec.OS,
+			"arch":             spec.Arch,
+			"format":           spec.Format,
+			"content_type":     spec.ContentType,
+			"package_filename": spec.Filename,
+		})
+	}
 	var totalSize int64
 	for _, artifact := range release.Artifacts {
 		summary := gin.H{"artifact_kind": artifact.ArtifactKind, "target": artifact.Target, "os": artifact.OS, "arch": artifact.Arch, "package_filename": artifact.PackageFilename, "content_type": artifact.ContentType, "size_bytes": artifact.SizeBytes}
@@ -1690,6 +1786,7 @@ func publicYingzoRelease(release *yingzoRelease) gin.H {
 		"version": release.Version, "distribution_schema_version": release.DistributionSchemaVersion,
 		"channel": release.Channel, "stable_eligible": release.StableEligible, "runtime_protocol": release.RuntimeProtocol, "compatibility": release.Compatibility,
 		"size_bytes": totalSize, "artifacts": artifacts, "artifact_items": items,
+		"required_artifacts": requiredArtifacts, "artifact_count": len(requiredArtifacts),
 		"signature_status":  map[bool]string{true: "signed", false: "unsigned"}[release.Signature != ""],
 		"native_signing":    yingzoNativeSigningSummary(release),
 		"min_codex_version": release.MinCodexVersion, "min_claude_version": release.MinClaudeVersion,

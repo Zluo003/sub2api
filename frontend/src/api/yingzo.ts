@@ -36,15 +36,34 @@ export interface YingzoReleaseArtifact {
   updated_at?: string
 }
 
+/**
+ * A server-declared upload slot. Schema 3 uses this list so the UI does not
+ * have to duplicate the release matrix when a package target changes.
+ */
+export interface YingzoArtifactRequirement {
+  key?: string
+  label?: string
+  artifact_kind: YingzoArtifactKind
+  target: Exclude<YingzoArtifactTarget, 'claude' | 'combined'>
+  os: YingzoOperatingSystem
+  arch: YingzoArchitecture
+  package_filename?: string
+  filename?: string
+  format?: YingzoReleaseArtifact['format']
+  content_type?: string
+}
+
 export interface YingzoReleaseSummary {
   id?: string
   version: string
   status?: 'draft' | 'published' | 'superseded' | 'disabled'
   channel?: YingzoReleaseChannel
   stable_eligible?: boolean
-  distribution_schema_version?: 1 | 2
+  distribution_schema_version?: 1 | 2 | 3
   runtime_protocol?: number
   compatibility?: Record<string, unknown>
+  required_artifacts?: YingzoArtifactRequirement[]
+  artifact_count?: number
   size_bytes?: number
   artifacts?: Partial<Record<string, YingzoReleaseArtifact>>
   artifact_matrix?: YingzoReleaseArtifact[]
@@ -109,7 +128,7 @@ export interface YingzoInstallInstructions {
 export interface YingzoReleaseDraftInput {
   version: string
   channel: YingzoReleaseChannel
-  distribution_schema_version: 2
+  distribution_schema_version: 2 | 3
   runtime_protocol: number
   compatibility: Record<string, unknown>
   min_codex_version?: string

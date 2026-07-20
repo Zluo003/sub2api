@@ -44,11 +44,61 @@ func TestYingzoV2ArtifactMatrixIsExact(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestYingzoV3ArtifactMatrixRemovesMacOSIntelRuntime(t *testing.T) {
+	specs := yingzoV3ArtifactSpecs("0.3.0")
+	require.Len(t, specs, 7)
+	filenames := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		filenames = append(filenames, spec.Filename)
+	}
+	require.ElementsMatch(t, []string{
+		"yingzo-openai-macos-0.3.0.tar.gz",
+		"yingzo-openai-windows-x64-0.3.0.zip",
+		"yingzo-claude-code-macos-0.3.0.zip",
+		"yingzo-claude-code-windows-x64-0.3.0.zip",
+		"yingzo-claude-desktop-0.3.0.mcpb",
+		"yingzo-runtime-macos-arm64-0.3.0.dmg",
+		"yingzo-runtime-windows-x64-0.3.0-setup.exe",
+	}, filenames)
+	_, ok := findYingzoArtifactSpec(3, "0.3.0", "runtime_installer", "runtime", "macos", "x64")
+	require.False(t, ok)
+	require.True(t, yingzoPlatformSupportedForSchema(3, "macos", "arm64"))
+	require.False(t, yingzoPlatformSupportedForSchema(3, "macos", "x64"))
+	require.True(t, yingzoPlatformSupportedForSchema(2, "macos", "x64"))
+}
+
+func TestYingzoSignedManifestSchemaDefaultsToV2AndRequiresV3Marker(t *testing.T) {
+	releaseV2 := &yingzoRelease{Version: "0.3.0", DistributionSchemaVersion: 2, Channel: "prerelease", RuntimeProtocol: 1}
+	manifest := yingzoSignedReleaseManifest{
+		SchemaVersion: 2, Product: "yingzo", Version: "0.3.0", Channel: "prerelease", RuntimeProtocol: 1,
+		CompleteArtifactMatrix: true, NativeSigning: yingzoNativeSigning{
+			MacOS: yingzoNativeSigningPlatform{Status: "verified"}, Windows: yingzoNativeSigningPlatform{Status: "unsigned"},
+		},
+	}
+	// The schema-2 manifest format predates the explicit distribution marker.
+	// Its omitted marker must remain valid for already-issued proofs.
+	err := validateYingzoSignedManifest(releaseV2, manifest)
+	var uploadErr *yingzoUploadError
+	require.ErrorAs(t, err, &uploadErr)
+	require.NotEqual(t, "release_manifest_mismatch", uploadErr.code, "the matrix check should be reached after the legacy marker default")
+
+	schema3 := 3
+	releaseV3 := &yingzoRelease{Version: "0.3.0", DistributionSchemaVersion: 3, Channel: "prerelease", RuntimeProtocol: 1}
+	manifest.DistributionSchemaVersion = &schema3
+	err = validateYingzoSignedManifest(releaseV3, manifest)
+	require.ErrorAs(t, err, &uploadErr)
+	require.NotEqual(t, "release_manifest_mismatch", uploadErr.code, "the matrix check should be reached for an explicitly marked schema 3 proof")
+	manifest.DistributionSchemaVersion = nil
+	err = validateYingzoSignedManifest(releaseV3, manifest)
+	require.ErrorAs(t, err, &uploadErr)
+	require.Equal(t, "release_manifest_mismatch", uploadErr.code)
+}
+
 func TestCreateYingzoV2DraftDoesNotRequireArtifacts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
 	mock.ExpectExec("INSERT INTO yingzo_releases").
-		WithArgs(sqlmock.AnyArg(), "0.3.0", "prerelease", true, 1, sqlmock.AnyArg(), "0.128.0", "0.0.0", "preview", int64(7)).
+		WithArgs(sqlmock.AnyArg(), "0.3.0", 2, "prerelease", true, 1, sqlmock.AnyArg(), "0.128.0", "0.0.0", "preview", int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1").WillReturnError(context.Canceled)
 
@@ -71,6 +121,33 @@ func TestCreateYingzoV2DraftDoesNotRequireArtifacts(t *testing.T) {
 	require.Contains(t, response.Body.String(), `"distribution_schema_version":2`)
 	require.Contains(t, response.Body.String(), `"channel":"prerelease"`)
 	require.NotContains(t, response.Body.String(), "frontend-must-not-be-trusted")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateYingzoV3DraftPersistsRequestedDistributionSchema(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	mock.ExpectExec("INSERT INTO yingzo_releases").
+		WithArgs(sqlmock.AnyArg(), "0.3.0", 3, "prerelease", true, 1, sqlmock.AnyArg(), "0.128.0", "0.0.0", "schema 3", int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1").WillReturnError(context.Canceled)
+
+	router := gin.New()
+	router.POST("/releases", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+		h.UploadYingzoRelease(c)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/releases", strings.NewReader(`{
+			"version":"0.3.0","channel":"prerelease","distribution_schema_version":3,
+			"runtime_protocol":1,"compatibility":{"project_schema":1},
+			"min_codex_version":"0.128.0","min_claude_version":"0.0.0","release_notes":"schema 3"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), `"distribution_schema_version":3`)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -731,6 +808,36 @@ func v2YingzoPublishRows(t *testing.T, releaseID uuid.UUID, storageRoot, signatu
 		rows.AddRow(spec.ArtifactKind, spec.Target, spec.OS, spec.Arch, 1, "validated", signatureStatus, spec.Filename, storageKey, info.Size(), sha)
 	}
 	return rows
+}
+
+func v3YingzoPublishRows(t *testing.T, releaseID uuid.UUID, storageRoot, signatureStatus string) *sqlmock.Rows {
+	t.Helper()
+	rows := sqlmock.NewRows([]string{"artifact_kind", "target", "os", "arch", "runtime_protocol", "validation_status", "signature_status", "package_filename", "storage_key", "size_bytes", "sha256"})
+	for _, spec := range yingzoV3ArtifactSpecs("0.3.0") {
+		storageKey := filepath.Join(storageRoot, spec.Filename)
+		writeV2ArtifactFixture(t, storageKey, spec)
+		sha, err := yingzoFileSHA256(storageKey)
+		require.NoError(t, err)
+		info, statErr := os.Stat(storageKey)
+		require.NoError(t, statErr)
+		rows.AddRow(spec.ArtifactKind, spec.Target, spec.OS, spec.Arch, 1, "validated", signatureStatus, spec.Filename, storageKey, info.Size(), sha)
+	}
+	return rows
+}
+
+func TestYingzoV3PublishMatrixAcceptsSevenArtifacts(t *testing.T) {
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	rows := v3YingzoPublishRows(t, releaseID, t.TempDir(), "unverified")
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT artifact_kind,target,os,arch,runtime_protocol,validation_status,signature_status,package_filename,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").
+		WithArgs(releaseID).WillReturnRows(rows)
+	tx, err := h.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	require.NoError(t, validateYingzoPublishMatrix(context.Background(), tx, releaseID, "0.3.0", 1, 3))
+	mock.ExpectRollback()
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func mustYingzoV2Spec(t *testing.T, kind, target, operatingSystem, arch string) yingzoArtifactSpec {

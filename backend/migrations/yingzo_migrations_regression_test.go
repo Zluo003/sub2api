@@ -20,6 +20,7 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		"170_yingzo_release_artifacts.sql",
 		"171_yingzo_distribution_v2.sql",
 		"172_yingzo_prerelease_native_signing.sql",
+		"173_yingzo_distribution_schema_3.sql",
 	} {
 		content, err := FS.ReadFile(name)
 		require.NoError(t, err)
@@ -27,6 +28,17 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		require.NotContains(t, sql, "+goose down", "%s must use the repository's forward-only migration format", name)
 		require.NotContains(t, sql, "drop table", "%s must not contain rollback DDL", name)
 	}
+}
+
+func TestYingzoDistributionSchema3MigrationKeepsSchema2AndAddsSchema3(t *testing.T) {
+	content, err := FS.ReadFile("173_yingzo_distribution_schema_3.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(content))
+	require.Contains(t, sql, "drop constraint if exists yingzo_releases_distribution_schema_version_check")
+	require.Contains(t, sql, "distribution_schema_version in (1, 2, 3)")
+	require.Contains(t, sql, "distribution_schema_version in (2, 3) and runtime_protocol > 0")
+	require.NotContains(t, sql, "drop table")
+	require.NotContains(t, sql, "bytea")
 }
 
 func TestYingzoPrereleaseNativeSigningMigrationKeepsStableStrict(t *testing.T) {

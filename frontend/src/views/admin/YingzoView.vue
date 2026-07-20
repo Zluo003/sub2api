@@ -4,7 +4,7 @@
       <header class="flex flex-col justify-between gap-4 border-b border-gray-200 pb-6 dark:border-dark-700 md:flex-row md:items-end">
         <div>
           <h1 class="text-2xl font-semibold text-gray-950 dark:text-white">Yingzo（影作）发行管理</h1>
-          <p class="mt-2 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">管理稳定版与预发布版、五个宿主包和三个 Runtime 安装器。二进制保存在服务器持久卷，数据库只记录发行元数据。</p>
+          <p class="mt-2 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">管理稳定版与预发布版。当前 schema 3 使用服务端声明的七项发行矩阵；旧 schema 2 版本保留历史八项显示。二进制保存在服务器持久卷，数据库只记录发行元数据。</p>
         </div>
         <router-link to="/yingzo" class="btn btn-secondary btn-sm">查看产品页</router-link>
       </header>
@@ -25,7 +25,7 @@
 
         <form class="border-t-2 border-[#df5b48] pt-5" @submit.prevent="createDraft">
           <h2 class="text-base font-semibold text-gray-900 dark:text-white">创建发行草稿</h2>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">先保存版本，再把本地生成的八个安装包上传到对应位置。</p>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">先保存版本，再按当前发行矩阵把本地安装包逐项上传到对应位置。</p>
           <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <label class="field-label">版本<input v-model.trim="draftForm.version" required class="input mt-1 w-full" placeholder="0.3.0" /></label>
             <label class="field-label">通道<select v-model="draftForm.channel" class="input mt-1 w-full"><option value="prerelease">预发布</option><option value="stable">稳定版</option></select></label>
@@ -35,7 +35,7 @@
             <label class="field-label sm:col-span-2 lg:col-span-3">更新说明<textarea v-model="draftForm.notes" class="input mt-1 min-h-20 w-full py-2" /></label>
           </div>
           <button type="submit" class="btn btn-primary mt-4 inline-flex items-center gap-2" :disabled="creatingDraft">
-            <Icon name="plus" size="sm" />{{ creatingDraft ? '创建中' : '创建八项发行草稿' }}
+            <Icon name="plus" size="sm" />{{ creatingDraft ? '创建中' : '创建七项发行草稿' }}
           </button>
         </form>
       </section>
@@ -69,7 +69,7 @@
             </header>
 
             <div v-if="(release.distribution_schema_version || 1) >= 2" class="mt-4 artifact-grid">
-              <section v-for="slot in artifactSlots" :key="slot.key" class="artifact-slot">
+              <section v-for="slot in artifactSlotsFor(release)" :key="slot.key" class="artifact-slot">
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
                     <strong class="text-sm text-gray-800 dark:text-gray-100">{{ slot.label }}</strong>
@@ -121,12 +121,14 @@ import {
   getYingzoAdminSettings, listYingzoReleases, publishYingzoRelease,
   promoteYingzoRelease, replaceYingzoReleaseArtifact, rollbackYingzoRelease, updateYingzoAdminSettings,
   uploadYingzoReleaseArtifact, type YingzoAdminSettings, type YingzoArtifactUploadInput,
-  type YingzoReleaseArtifact, type YingzoReleaseSummary,
+  type YingzoArtifactRequirement, type YingzoReleaseArtifact, type YingzoReleaseSummary,
 } from '@/api/yingzo'
 
 type ArtifactSlot = Omit<YingzoArtifactUploadInput, 'file' | 'runtime_protocol'> & { key: string; label: string; filename: (version: string) => string; accept: string }
 
-const artifactSlots: ArtifactSlot[] = [
+// Schema 2 is read-only compatibility for already published v0.2.x releases.
+// Keep its eight slots intact so historical release records remain legible.
+const schema2ArtifactSlots: ArtifactSlot[] = [
   { key: 'openai-macos-any', label: 'OpenAI / Codex · macOS', artifact_kind: 'host_package', target: 'openai', os: 'macos', arch: 'any', accept: '.gz,application/gzip', filename: (v) => `yingzo-openai-macos-${v}.tar.gz` },
   { key: 'openai-windows-x64', label: 'OpenAI / Codex · Windows x64', artifact_kind: 'host_package', target: 'openai', os: 'windows', arch: 'x64', accept: '.zip,application/zip', filename: (v) => `yingzo-openai-windows-x64-${v}.zip` },
   { key: 'claude-code-macos-any', label: 'Claude Code · macOS', artifact_kind: 'host_package', target: 'claude-code', os: 'macos', arch: 'any', accept: '.zip,application/zip', filename: (v) => `yingzo-claude-code-macos-${v}.zip` },
@@ -134,6 +136,18 @@ const artifactSlots: ArtifactSlot[] = [
   { key: 'claude-desktop-any-any', label: 'Claude Desktop / Cowork', artifact_kind: 'host_package', target: 'claude-desktop', os: 'any', arch: 'any', accept: '.mcpb,application/zip', filename: (v) => `yingzo-claude-desktop-${v}.mcpb` },
   { key: 'runtime-macos-arm64', label: 'Runtime · macOS arm64', artifact_kind: 'runtime_installer', target: 'runtime', os: 'macos', arch: 'arm64', accept: '.dmg,application/x-apple-diskimage', filename: (v) => `yingzo-runtime-macos-arm64-${v}.dmg` },
   { key: 'runtime-macos-x64', label: 'Runtime · macOS Intel', artifact_kind: 'runtime_installer', target: 'runtime', os: 'macos', arch: 'x64', accept: '.dmg,application/x-apple-diskimage', filename: (v) => `yingzo-runtime-macos-x64-${v}.dmg` },
+  { key: 'runtime-windows-x64', label: 'Runtime · Windows x64', artifact_kind: 'runtime_installer', target: 'runtime', os: 'windows', arch: 'x64', accept: '.exe,application/vnd.microsoft.portable-executable', filename: (v) => `yingzo-runtime-windows-x64-${v}-setup.exe` },
+]
+
+// Schema 3 is the current release contract. The supported macOS target is
+// arm64; the server may override these defaults with required_artifacts.
+const schema3DefaultArtifactSlots: ArtifactSlot[] = [
+  { key: 'openai-macos-any', label: 'OpenAI / Codex · macOS', artifact_kind: 'host_package', target: 'openai', os: 'macos', arch: 'any', accept: '.gz,application/gzip', filename: (v) => `yingzo-openai-macos-${v}.tar.gz` },
+  { key: 'openai-windows-x64', label: 'OpenAI / Codex · Windows x64', artifact_kind: 'host_package', target: 'openai', os: 'windows', arch: 'x64', accept: '.zip,application/zip', filename: (v) => `yingzo-openai-windows-x64-${v}.zip` },
+  { key: 'claude-code-macos-any', label: 'Claude Code · macOS', artifact_kind: 'host_package', target: 'claude-code', os: 'macos', arch: 'any', accept: '.zip,application/zip', filename: (v) => `yingzo-claude-code-macos-${v}.zip` },
+  { key: 'claude-code-windows-x64', label: 'Claude Code · Windows x64', artifact_kind: 'host_package', target: 'claude-code', os: 'windows', arch: 'x64', accept: '.zip,application/zip', filename: (v) => `yingzo-claude-code-windows-x64-${v}.zip` },
+  { key: 'claude-desktop-any-any', label: 'Claude Desktop / Cowork', artifact_kind: 'host_package', target: 'claude-desktop', os: 'any', arch: 'any', accept: '.mcpb,application/zip', filename: (v) => `yingzo-claude-desktop-${v}.mcpb` },
+  { key: 'runtime-macos-arm64', label: 'Runtime · macOS arm64', artifact_kind: 'runtime_installer', target: 'runtime', os: 'macos', arch: 'arm64', accept: '.dmg,application/x-apple-diskimage', filename: (v) => `yingzo-runtime-macos-arm64-${v}.dmg` },
   { key: 'runtime-windows-x64', label: 'Runtime · Windows x64', artifact_kind: 'runtime_installer', target: 'runtime', os: 'windows', arch: 'x64', accept: '.exe,application/vnd.microsoft.portable-executable', filename: (v) => `yingzo-runtime-windows-x64-${v}-setup.exe` },
 ]
 
@@ -173,13 +187,109 @@ function artifactRows(release: YingzoReleaseSummary): YingzoReleaseArtifact[] {
   return artifacts ? Object.values(artifacts).filter((item): item is YingzoReleaseArtifact => Boolean(item)) : []
 }
 
+function artifactSlotsFor(release: YingzoReleaseSummary): ArtifactSlot[] {
+  const schema = release.distribution_schema_version || 1
+  if (schema === 2) return schema2ArtifactSlots
+  if (schema !== 3) return []
+
+  const requirements = requiredArtifactRequirements(release)
+  if (requirements.length === 0) return schema3DefaultArtifactSlots
+  return requirements
+    .map((requirement, index) => requirementToSlot(requirement, index))
+    .filter((slot): slot is ArtifactSlot => slot !== undefined)
+}
+
+function requiredArtifactRequirements(release: YingzoReleaseSummary): YingzoArtifactRequirement[] {
+  if (Array.isArray(release.required_artifacts)) return release.required_artifacts.filter(isArtifactRequirement)
+  const compatibility = release.compatibility
+  const declared = compatibility && typeof compatibility === 'object'
+    ? (compatibility as { required_artifacts?: unknown }).required_artifacts
+    : undefined
+  if (Array.isArray(declared)) return declared.filter(isArtifactRequirement)
+  if (declared && typeof declared === 'object') return Object.values(declared).filter(isArtifactRequirement)
+  return []
+}
+
+function isArtifactRequirement(value: unknown): value is YingzoArtifactRequirement {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<YingzoArtifactRequirement>
+  return typeof item.artifact_kind === 'string'
+    && typeof item.target === 'string'
+    && typeof item.os === 'string'
+    && typeof item.arch === 'string'
+}
+
+function requirementToSlot(requirement: YingzoArtifactRequirement, index: number): ArtifactSlot | undefined {
+  const targets = new Set(['openai', 'claude-code', 'claude-desktop', 'runtime'])
+  const operatingSystems = new Set(['macos', 'windows', 'any'])
+  const architectures = new Set(['arm64', 'x64', 'any'])
+  if (!targets.has(requirement.target) || !operatingSystems.has(requirement.os) || !architectures.has(requirement.arch)) return undefined
+
+  const target = requirement.target as ArtifactSlot['target']
+  const os = requirement.os as ArtifactSlot['os']
+  const arch = requirement.arch as ArtifactSlot['arch']
+  const declaredFilename = requirement.package_filename || requirement.filename
+  const fallback = defaultFilename(target, os, arch)
+  const format = requirement.format || extensionFormat(declaredFilename || fallback('version'))
+  return {
+    key: requirement.key || `${target}-${os}-${arch}-${index}`,
+    label: requirement.label || defaultArtifactLabel(target, os, arch),
+    artifact_kind: requirement.artifact_kind,
+    target,
+    os,
+    arch,
+    accept: acceptForFormat(format, requirement.content_type),
+    filename: (version) => declaredFilename
+      ? declaredFilename.replace(/\{version\}/g, version).replace(/<version>/g, version)
+      : defaultFilename(target, os, arch)(version),
+  }
+}
+
+function defaultArtifactLabel(target: ArtifactSlot['target'], os: ArtifactSlot['os'], arch: ArtifactSlot['arch']) {
+  if (target === 'openai') return `OpenAI / Codex · ${osLabel(os)}`
+  if (target === 'claude-code') return `Claude Code · ${osLabel(os)}`
+  if (target === 'claude-desktop') return 'Claude Desktop / Cowork'
+  return `Runtime · ${osLabel(os)}${arch === 'any' ? '' : ` ${arch}`}`
+}
+
+function osLabel(os: ArtifactSlot['os']) { return os === 'macos' ? 'macOS' : os === 'windows' ? 'Windows' : '通用' }
+
+function defaultFilename(target: ArtifactSlot['target'], os: ArtifactSlot['os'], arch: ArtifactSlot['arch']) {
+  return (version: string) => {
+    if (target === 'openai' && os === 'macos') return `yingzo-openai-macos-${version}.tar.gz`
+    if (target === 'openai') return `yingzo-openai-windows-x64-${version}.zip`
+    if (target === 'claude-code' && os === 'macos') return `yingzo-claude-code-macos-${version}.zip`
+    if (target === 'claude-code') return `yingzo-claude-code-windows-x64-${version}.zip`
+    if (target === 'claude-desktop') return `yingzo-claude-desktop-${version}.mcpb`
+    if (os === 'macos') return `yingzo-runtime-macos-${arch}-${version}.dmg`
+    return `yingzo-runtime-windows-x64-${version}-setup.exe`
+  }
+}
+
+function extensionFormat(filename: string): NonNullable<YingzoArtifactRequirement['format']> {
+  if (filename.endsWith('.tar.gz')) return 'tar.gz'
+  if (filename.endsWith('.mcpb')) return 'mcpb'
+  if (filename.endsWith('.dmg')) return 'dmg'
+  if (filename.endsWith('.exe')) return 'exe'
+  return 'zip'
+}
+
+function acceptForFormat(format: NonNullable<YingzoArtifactRequirement['format']>, contentType?: string) {
+  if (format === 'tar.gz') return '.gz,application/gzip'
+  if (format === 'mcpb') return '.mcpb,application/zip'
+  if (format === 'dmg') return `.dmg,${contentType || 'application/x-apple-diskimage'}`
+  if (format === 'exe') return `.exe,${contentType || 'application/vnd.microsoft.portable-executable'}`
+  return `.zip,${contentType || 'application/zip'}`
+}
+
 function artifactForSlot(release: YingzoReleaseSummary, slot: ArtifactSlot): YingzoReleaseArtifact | undefined {
   return artifactRows(release).find((artifact) => artifact.target === slot.target && artifact.os === slot.os && artifact.arch === slot.arch)
 }
 
 function canPublish(release: YingzoReleaseSummary) {
   if ((release.distribution_schema_version || 1) < 2) return artifactRows(release).length >= 1
-  return artifactSlots.every((slot) => Boolean(artifactForSlot(release, slot)))
+  const slots = artifactSlotsFor(release)
+  return slots.length > 0 && slots.every((slot) => Boolean(artifactForSlot(release, slot)))
 }
 
 async function loadAll() {
@@ -206,14 +316,14 @@ async function createDraft() {
     const created = await createYingzoReleaseDraft({
       version: draftForm.version,
       channel: draftForm.channel,
-      distribution_schema_version: 2,
+      distribution_schema_version: 3,
       runtime_protocol: draftForm.runtimeProtocol,
-      compatibility: { platforms: ['macos-arm64', 'macos-x64', 'windows-x64'], artifact_count: 8 },
+      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7 },
       min_codex_version: draftForm.minCodex,
       min_claude_version: draftForm.minClaude,
       release_notes: draftForm.notes,
     })
-    showMessage(`版本 ${created.version} 的 ${channelLabel(created.channel)}草稿已创建，请上传八个产物。`)
+    showMessage(`版本 ${created.version} 的 ${channelLabel(created.channel)}草稿已创建，请按当前矩阵上传七个产物。`)
     draftForm.notes = ''
     await loadAll()
   } catch (error) { showMessage(`创建草稿失败：${apiErrorDetail(error, '请检查版本是否重复')}`, 'error'); console.error(error) }
@@ -248,8 +358,31 @@ async function removeArtifact(release: YingzoReleaseSummary, artifact: YingzoRel
   catch (error) { showMessage('删除产物失败。', 'error'); console.error(error) }
 }
 
-async function publish(release: YingzoReleaseSummary) { if (!release.id) return; try { await publishYingzoRelease(release.id); showMessage(`版本 ${release.version} 已发布到${channelLabel(release.channel)}通道。`); await loadAll() } catch (error) { showMessage(`发布失败：${apiErrorDetail(error, '请确认八个文件都已上传')}`, 'error'); console.error(error) } }
-async function promote(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认将 ${release.version} 提升为稳定版？`)) return; try { await promoteYingzoRelease(release.id); showMessage(`版本 ${release.version} 已提升为稳定版。`); await loadAll() } catch (error) { showMessage(`提升失败：${apiErrorDetail(error, '请确认八个文件仍然存在')}`, 'error'); console.error(error) } }
+async function publish(release: YingzoReleaseSummary) {
+  if (!release.id) return
+  try {
+    await publishYingzoRelease(release.id)
+    showMessage(`版本 ${release.version} 已发布到${channelLabel(release.channel)}通道。`)
+    await loadAll()
+  } catch (error) {
+    const expected = artifactSlotsFor(release).length
+    showMessage(`发布失败：${apiErrorDetail(error, expected > 0 ? `请确认 ${expected} 个文件都已上传` : '请确认当前发行矩阵完整')}`, 'error')
+    console.error(error)
+  }
+}
+
+async function promote(release: YingzoReleaseSummary) {
+  if (!release.id || !window.confirm(`确认将 ${release.version} 提升为稳定版？`)) return
+  try {
+    await promoteYingzoRelease(release.id)
+    showMessage(`版本 ${release.version} 已提升为稳定版。`)
+    await loadAll()
+  } catch (error) {
+    const expected = artifactSlotsFor(release).length
+    showMessage(`提升失败：${apiErrorDetail(error, expected > 0 ? `请确认 ${expected} 个文件仍然存在` : '请确认当前发行矩阵完整')}`, 'error')
+    console.error(error)
+  }
+}
 async function rollback(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认将${channelLabel(release.channel)}回滚到 ${release.version}？`)) return; try { await rollbackYingzoRelease(release.id); showMessage(`已回滚到 ${release.version}。`); await loadAll() } catch (error) { showMessage('回滚失败。', 'error'); console.error(error) } }
 async function disable(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认停用 ${release.version}？`)) return; try { await disableYingzoRelease(release.id); showMessage(`版本 ${release.version} 已停用。`); await loadAll() } catch (error) { showMessage('停用失败。', 'error'); console.error(error) } }
 

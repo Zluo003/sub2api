@@ -141,7 +141,7 @@
             <label>架构
               <select v-model="selectedArch">
                 <option v-if="selectedOS === 'macos'" value="arm64">Apple Silicon</option>
-                <option value="x64">{{ selectedOS === 'macos' ? 'Intel' : 'x64' }}</option>
+                <option v-if="selectedOS === 'windows' || supportsMacosX64" value="x64">{{ selectedOS === 'macos' ? 'Intel' : 'x64' }}</option>
               </select>
             </label>
             <label class="yingzo-channel-toggle">
@@ -156,7 +156,7 @@
               :key="host.id"
               type="button"
               class="yingzo-copy-button"
-              :disabled="copyingHost !== null || !release"
+              :disabled="copyingHost !== null || !release || currentPlatformUnsupported"
               @click="copyInstallPrompt(host.id)"
             >
               <Icon :name="copiedHost === host.id ? 'check' : 'copy'" size="sm" />
@@ -166,6 +166,7 @@
           <router-link v-else to="/login?redirect=/yingzo" class="yingzo-copy-button">
             登录后生成安装提示词
           </router-link>
+          <p v-if="currentPlatformUnsupported" class="yingzo-error" role="alert">当前版本不支持 macOS Intel，请在 macOS Apple Silicon 或 Windows x64 设备上安装。</p>
           <p v-if="installError" class="yingzo-error" role="alert">{{ installError }}</p>
           <div v-if="lastInstructions?.runtime_resolution === 'probe' && lastInstructions.runtime_helper_uri" class="yingzo-runtime-fallback">
             <a :href="lastInstructions.runtime_helper_uri" class="yingzo-runtime-link">检测已安装 Runtime</a>
@@ -244,11 +245,16 @@ const modelCapabilities = [
   { model: 'Codex Native', title: '视频截帧与镜头分析', description: '直接读取本地视频并截帧分析，不绕行文本中转模型。' },
 ]
 
+const supportsMacosX64 = computed(() => (release.value?.distribution_schema_version || 1) < 3)
+const detectedMacosX64 = ref(false)
+const currentPlatformUnsupported = computed(() => selectedOS.value === 'macos' && detectedMacosX64.value && !supportsMacosX64.value)
+const platformText = computed(() => supportsMacosX64.value ? 'macOS arm64/x64 · Windows x64' : 'macOS arm64 · Windows x64')
+
 const compatibilityText = computed(() => {
   if (!release.value) return ''
   const codex = release.value.min_codex_version || '0.143.0+'
   const claude = release.value.min_claude_version || '2.1.201+'
-  return `Codex ${codex} · Claude Code ${claude}`
+  return `Codex ${codex} · Claude Code ${claude} · ${platformText.value}`
 })
 
 function scrollToSection(id: string) {
@@ -308,11 +314,15 @@ async function detectPlatform() {
   }).userAgentData
   try {
     const architecture = await userAgentData?.getHighEntropyValues?.(['architecture'])
-    selectedArch.value = architecture?.architecture?.toLowerCase().includes('x86') ? 'x64' : 'arm64'
+    detectedMacosX64.value = architecture?.architecture?.toLowerCase().includes('x86') === true
+    selectedArch.value = detectedMacosX64.value ? 'x64' : 'arm64'
   } catch { selectedArch.value = 'arm64' }
 }
 
 watch(selectedOS, (os) => { if (os === 'windows') selectedArch.value = 'x64' })
+watch(supportsMacosX64, (supported) => {
+  if (!supported && selectedOS.value === 'macos') selectedArch.value = 'arm64'
+})
 watch(usePrerelease, () => { void loadRelease() })
 onMounted(async () => { await detectPlatform(); await loadRelease() })
 </script>
