@@ -46,7 +46,7 @@
         <div class="mb-4 flex items-end justify-between gap-4">
           <div>
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">发行记录</h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">稳定版和预发布版独立切换；旧 schema 1 版本继续保留下载与回滚能力。</p>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">稳定版和预发布版独立切换；草稿或从未发布的空白记录可以删除并释放版本号，已发布版本仍保留下载与回滚能力。</p>
           </div>
           <button type="button" class="btn btn-secondary btn-sm" :disabled="loading" title="刷新" @click="loadAll"><Icon name="refresh" size="sm" /></button>
         </div>
@@ -61,10 +61,11 @@
                 <span class="text-xs text-gray-400">schema {{ release.distribution_schema_version || 1 }}</span>
               </div>
               <div class="flex flex-wrap gap-2">
-                <button v-if="release.status === 'draft'" type="button" class="btn btn-primary btn-xs" :disabled="!canPublish(release)" @click="publish(release)">发布</button>
-                <button v-if="release.status === 'published' && release.channel === 'prerelease'" type="button" class="btn btn-primary btn-xs" @click="promote(release)">提升为稳定版</button>
-                <button v-if="release.status === 'superseded'" type="button" class="btn btn-secondary btn-xs" @click="rollback(release)">回滚至此版本</button>
-                <button v-if="release.status !== 'disabled'" type="button" class="btn btn-danger btn-xs" @click="disable(release)">停用</button>
+                <button v-if="release.status === 'draft'" type="button" class="btn btn-primary btn-xs" :disabled="!canPublish(release) || releaseBusy(release)" @click="publish(release)">发布</button>
+                <button v-if="release.status === 'published' && release.channel === 'prerelease'" type="button" class="btn btn-primary btn-xs" :disabled="releaseBusy(release)" @click="promote(release)">提升为稳定版</button>
+                <button v-if="release.status === 'superseded'" type="button" class="btn btn-secondary btn-xs" :disabled="releaseBusy(release)" @click="rollback(release)">回滚至此版本</button>
+                <button v-if="canPurge(release)" type="button" class="btn btn-danger btn-xs" :disabled="releaseBusy(release)" @click="purge(release)">{{ release.status === 'draft' ? '删除草稿' : '清理空白记录' }}</button>
+                <button v-else-if="release.status !== 'disabled'" type="button" class="btn btn-danger btn-xs" :disabled="releaseBusy(release)" @click="disable(release)">停用</button>
               </div>
             </header>
 
@@ -80,10 +81,10 @@
                   <p v-if="artifactForSlot(release, slot)" class="mt-1 text-xs text-gray-500">{{ formatBytes(artifactForSlot(release, slot)?.size_bytes || 0) }}</p>
                 </div>
                 <div v-if="release.status === 'draft' && release.id" class="mt-3 space-y-2">
-                  <input type="file" :accept="slot.accept" class="input w-full py-1.5 text-xs" @change="selectArtifactFile(release.id, slot.key, $event)" />
+                  <input type="file" :accept="slot.accept" :disabled="releaseBusy(release)" class="input w-full py-1.5 text-xs" @change="selectArtifactFile(release.id, slot.key, $event)" />
                   <div class="flex gap-2">
-                    <button type="button" class="btn btn-secondary btn-xs" :disabled="!selectedArtifactFile(release.id, slot.key) || uploadingSlot === selectionKey(release.id, slot.key)" @click="uploadArtifact(release, slot)">{{ artifactForSlot(release, slot) ? '替换' : '上传' }}</button>
-                    <button v-if="artifactForSlot(release, slot)?.id" type="button" class="btn btn-danger btn-xs" @click="removeArtifact(release, artifactForSlot(release, slot)!)">删除</button>
+                    <button type="button" class="btn btn-secondary btn-xs" :disabled="releaseBusy(release) || !selectedArtifactFile(release.id, slot.key)" @click="uploadArtifact(release, slot)">{{ artifactForSlot(release, slot) ? '替换' : '上传' }}</button>
+                    <button v-if="artifactForSlot(release, slot)?.id" type="button" class="btn btn-danger btn-xs" :disabled="releaseBusy(release)" @click="removeArtifact(release, artifactForSlot(release, slot)!)">删除</button>
                   </div>
                 </div>
               </section>
@@ -119,7 +120,7 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import {
   createYingzoReleaseDraft, deleteYingzoReleaseArtifact, disableYingzoRelease,
   getYingzoAdminSettings, listYingzoReleases, publishYingzoRelease,
-  promoteYingzoRelease, replaceYingzoReleaseArtifact, rollbackYingzoRelease, updateYingzoAdminSettings,
+  promoteYingzoRelease, purgeYingzoRelease, replaceYingzoReleaseArtifact, rollbackYingzoRelease, updateYingzoAdminSettings,
   uploadYingzoReleaseArtifact, type YingzoAdminSettings, type YingzoArtifactUploadInput,
   type YingzoArtifactRequirement, type YingzoReleaseArtifact, type YingzoReleaseSummary,
 } from '@/api/yingzo'
@@ -158,6 +159,7 @@ const loading = ref(false)
 const savingSettings = ref(false)
 const creatingDraft = ref(false)
 const uploadingSlot = ref<string | null>(null)
+const purgingReleaseId = ref<string | null>(null)
 const selectedFiles = reactive<Record<string, File | undefined>>({})
 const message = ref('')
 const messageKind = ref<'success' | 'error'>('success')
@@ -170,6 +172,10 @@ function apiErrorDetail(error: unknown, fallback: string) {
 }
 function statusLabel(status?: string) { return ({ draft: '草稿', published: '当前发布', superseded: '历史版本', disabled: '已停用' } as Record<string, string>)[status || ''] || status || '未知' }
 function channelLabel(channel?: string) { return channel === 'prerelease' ? '预发布' : '稳定版' }
+function canPurge(release: YingzoReleaseSummary) { return (release.status === 'draft' || release.status === 'disabled') && !release.published_at }
+function releaseBusy(release: YingzoReleaseSummary) {
+  return Boolean(release.id && (purgingReleaseId.value === release.id || uploadingSlot.value?.startsWith(`${release.id}:`)))
+}
 function artifactLabel(value: string) { return ({ openai: 'OpenAI', claude: 'Claude', combined: '旧版双宿主' } as Record<string, string>)[value] || value }
 function formatBytes(value: number) { return value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.ceil(value / 1024))} KB` }
 function formatDate(value?: string) { return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '-' }
@@ -326,12 +332,19 @@ async function createDraft() {
     showMessage(`版本 ${created.version} 的 ${channelLabel(created.channel)}草稿已创建，请按当前矩阵上传七个产物。`)
     draftForm.notes = ''
     await loadAll()
-  } catch (error) { showMessage(`创建草稿失败：${apiErrorDetail(error, '请检查版本是否重复')}`, 'error'); console.error(error) }
+  } catch (error) {
+    const code = (error as { error?: { code?: string } })?.error?.code
+    const detail = code === 'yingzo_release_version_exists'
+      ? '该版本已存在；如是未发布的空白记录，请在下方点击“删除草稿”或“清理空白记录”后重试'
+      : apiErrorDetail(error, '请检查版本号和发行参数')
+    showMessage(`创建草稿失败：${detail}`, 'error')
+    console.error(error)
+  }
   finally { creatingDraft.value = false }
 }
 
 async function uploadArtifact(release: YingzoReleaseSummary, slot: ArtifactSlot) {
-  if (!release.id) return
+  if (!release.id || releaseBusy(release)) return
   const file = selectedArtifactFile(release.id, slot.key)
   if (!file) return
   const key = selectionKey(release.id, slot.key)
@@ -385,6 +398,16 @@ async function promote(release: YingzoReleaseSummary) {
 }
 async function rollback(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认将${channelLabel(release.channel)}回滚到 ${release.version}？`)) return; try { await rollbackYingzoRelease(release.id); showMessage(`已回滚到 ${release.version}。`); await loadAll() } catch (error) { showMessage('回滚失败。', 'error'); console.error(error) } }
 async function disable(release: YingzoReleaseSummary) { if (!release.id || !window.confirm(`确认停用 ${release.version}？`)) return; try { await disableYingzoRelease(release.id); showMessage(`版本 ${release.version} 已停用。`); await loadAll() } catch (error) { showMessage('停用失败。', 'error'); console.error(error) } }
+async function purge(release: YingzoReleaseSummary) {
+  if (!release.id || !canPurge(release) || releaseBusy(release) || !window.confirm(`确认永久删除 ${release.version}？此操作会释放版本号，不能恢复。`)) return
+  purgingReleaseId.value = release.id
+  try {
+    await purgeYingzoRelease(release.id)
+    showMessage(`版本 ${release.version} 已删除，现在可以重新创建该版本。`)
+    await loadAll()
+  } catch (error) { showMessage(`删除失败：${apiErrorDetail(error, '只有从未发布的草稿或空白记录可以删除')}`, 'error'); console.error(error) }
+  finally { if (purgingReleaseId.value === release.id) purgingReleaseId.value = null }
+}
 
 onMounted(loadAll)
 </script>

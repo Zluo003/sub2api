@@ -227,6 +227,11 @@ export async function disableYingzoRelease(id: string): Promise<void> {
   await apiClient.delete(`/admin/yingzo/releases/${encodeURIComponent(id)}`)
 }
 
+/** Permanently remove a draft or an unpublished disabled release. */
+export async function purgeYingzoRelease(id: string): Promise<void> {
+  await apiClient.delete(`/admin/yingzo/releases/${encodeURIComponent(id)}/purge`)
+}
+
 export async function getYingzoAdminSettings(): Promise<YingzoAdminSettings> {
   const { data } = await apiClient.get<YingzoAdminSettings>('/admin/yingzo/settings')
   return data

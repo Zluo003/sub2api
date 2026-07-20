@@ -6,7 +6,7 @@ import YingzoView from '../YingzoView.vue'
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), settings: vi.fn(), createDraft: vi.fn(), uploadArtifact: vi.fn(),
   replaceArtifact: vi.fn(), deleteArtifact: vi.fn(), updateSettings: vi.fn(),
-  publish: vi.fn(), promote: vi.fn(), rollback: vi.fn(), disable: vi.fn(),
+  publish: vi.fn(), promote: vi.fn(), rollback: vi.fn(), disable: vi.fn(), purge: vi.fn(),
 }))
 
 vi.mock('@/api/yingzo', () => ({
@@ -21,6 +21,7 @@ vi.mock('@/api/yingzo', () => ({
   promoteYingzoRelease: mocks.promote,
   rollbackYingzoRelease: mocks.rollback,
   disableYingzoRelease: mocks.disable,
+  purgeYingzoRelease: mocks.purge,
 }))
 
 const global = {
@@ -86,6 +87,17 @@ describe('Yingzo release administration', () => {
       runtime_protocol: 1,
       compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7 },
     }))
+  })
+
+  it('explains how to release a duplicate version held by an unpublished record', async () => {
+    mocks.createDraft.mockRejectedValue({ error: { code: 'yingzo_release_version_exists' } })
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请在下方点击“删除草稿”或“清理空白记录”后重试')
   })
 
   it('renders seven current schema 3 slots and does not offer macOS x64 Runtime', async () => {
@@ -211,5 +223,50 @@ describe('Yingzo release administration', () => {
 
     expect(wrapper.findAll('.artifact-slot')).toHaveLength(8)
     expect(wrapper.findAll('.legacy-artifact')).toHaveLength(0)
+  })
+
+  it('permanently deletes an unpublished draft so its version can be recreated', async () => {
+    mocks.list.mockResolvedValue([schema3Draft()])
+    mocks.purge.mockResolvedValue(undefined)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const remove = wrapper.findAll('button').find((button) => button.text() === '删除草稿')
+    expect(remove).toBeDefined()
+    await remove!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.purge).toHaveBeenCalledWith('release-3')
+    expect(mocks.disable).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('现在可以重新创建该版本')
+  })
+
+  it('disables the release controls while purge is pending', async () => {
+    let resolvePurge!: () => void
+    mocks.list.mockResolvedValue([schema3Draft()])
+    mocks.purge.mockReturnValue(new Promise<void>((resolve) => { resolvePurge = resolve }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const remove = wrapper.findAll('button').find((button) => button.text() === '删除草稿')!
+    await remove.trigger('click')
+    await flushPromises()
+    expect(remove.attributes('disabled')).toBeDefined()
+
+    resolvePurge()
+    await flushPromises()
+  })
+
+  it('offers cleanup for an unpublished disabled record but preserves published history', async () => {
+    mocks.list.mockResolvedValue([
+      { ...schema3Draft(), id: 'empty-disabled', status: 'disabled' },
+      { ...schema3Draft(), id: 'published-disabled', status: 'disabled', published_at: '2026-07-20T00:00:00Z' },
+    ])
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    expect(wrapper.findAll('button').filter((button) => button.text() === '清理空白记录')).toHaveLength(1)
   })
 })

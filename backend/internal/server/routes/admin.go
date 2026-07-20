@@ -136,6 +136,7 @@ func registerYingzoReleaseRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		yingzo.POST("/releases/:id/publish", h.Agent.PublishYingzoRelease)
 		yingzo.POST("/releases/:id/promote", h.Agent.PromoteYingzoRelease)
 		yingzo.POST("/releases/:id/rollback", h.Agent.RollbackYingzoRelease)
+		yingzo.DELETE("/releases/:id/purge", h.Agent.PurgeYingzoRelease)
 		yingzo.DELETE("/releases/:id", h.Agent.DisableYingzoRelease)
 		yingzo.GET("/settings", h.Agent.GetYingzoSettings)
 		yingzo.PUT("/settings", h.Agent.UpdateYingzoSettings)

@@ -654,7 +654,28 @@ func TestYingzoV2PersistentVolumeMaintenance(t *testing.T) {
 		_, err = os.Stat(artifact)
 		require.NoError(t, err)
 	})
-	t.Run("abandoned draft artifacts are deleted atomically before file removal", func(t *testing.T) {
+	t.Run("orphaned release directories are reconciled after the row is gone", func(t *testing.T) {
+		t.Setenv(yingzoReleaseStorageEnv, t.TempDir())
+		h, mock := newAgentHandlerMock(t)
+		releaseID := uuid.New()
+		dir, err := h.yingzoReleaseDirectory(releaseID)
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(dir, 0700))
+		orphan := filepath.Join(dir, "artifact.zip")
+		require.NoError(t, os.WriteFile(orphan, []byte("orphan"), 0600))
+		old := time.Now().Add(-48 * time.Hour)
+		require.NoError(t, os.Chtimes(orphan, old, old))
+		mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM yingzo_releases WHERE id=\\$1\\)").
+			WithArgs(releaseID).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+		removed, err := h.CleanupYingzoReleaseTemporaryFiles(time.Now().Add(-24 * time.Hour))
+		require.NoError(t, err)
+		require.Equal(t, 1, removed)
+		_, err = os.Stat(dir)
+		require.True(t, os.IsNotExist(err))
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+	t.Run("abandoned disabled artifacts and row are deleted atomically", func(t *testing.T) {
 		h, mock := newAgentHandlerMock(t)
 		releaseID := uuid.New()
 		releaseDir, err := h.yingzoReleaseDirectory(releaseID)
@@ -664,14 +685,14 @@ func TestYingzoV2PersistentVolumeMaintenance(t *testing.T) {
 		require.NoError(t, os.WriteFile(artifactPath, []byte("artifact"), 0600))
 		olderThan := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 		updatedAt := olderThan.Add(-time.Hour)
-		mock.ExpectQuery("SELECT id FROM yingzo_releases WHERE status IN").
+		mock.ExpectQuery("SELECT id FROM yingzo_releases WHERE status='disabled' AND published_at IS NULL").
 			WithArgs(olderThan).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(releaseID.String()))
 		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT status,updated_at FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
-			WithArgs(releaseID).WillReturnRows(sqlmock.NewRows([]string{"status", "updated_at"}).AddRow("draft", updatedAt))
+		mock.ExpectQuery("SELECT status,published_at,updated_at FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
+			WithArgs(releaseID).WillReturnRows(sqlmock.NewRows([]string{"status", "published_at", "updated_at"}).AddRow("disabled", nil, updatedAt))
 		mock.ExpectQuery("DELETE FROM yingzo_release_artifacts WHERE release_id=\\$1 RETURNING storage_key").
 			WithArgs(releaseID).WillReturnRows(sqlmock.NewRows([]string{"storage_key"}).AddRow(artifactPath))
-		mock.ExpectExec("UPDATE yingzo_releases SET signature=NULL").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("DELETE FROM yingzo_releases WHERE id=\\$1").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
 
 		removed, err := h.CleanupYingzoAbandonedDraftArtifacts(context.Background(), olderThan)
@@ -679,6 +700,17 @@ func TestYingzoV2PersistentVolumeMaintenance(t *testing.T) {
 		require.Equal(t, 1, removed)
 		_, err = os.Stat(artifactPath)
 		require.True(t, os.IsNotExist(err))
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+	t.Run("published disabled releases are excluded from abandoned draft cleanup", func(t *testing.T) {
+		h, mock := newAgentHandlerMock(t)
+		olderThan := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		mock.ExpectQuery("SELECT id FROM yingzo_releases WHERE status='disabled' AND published_at IS NULL").
+			WithArgs(olderThan).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+		removed, err := h.CleanupYingzoAbandonedDraftArtifacts(context.Background(), olderThan)
+		require.NoError(t, err)
+		require.Zero(t, removed)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 }
@@ -735,6 +767,83 @@ func TestDisableYingzoDraftRemovesArtifactsButPreservesPublishedFiles(t *testing
 		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 		_, err = os.Stat(file)
 		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestPurgeYingzoReleaseFreesOnlyNeverPublishedVersions(t *testing.T) {
+	t.Run("draft row and files are permanently removed after commit", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		h, mock := newAgentHandlerMock(t)
+		releaseID := uuid.New()
+		releaseDir, err := h.yingzoReleaseDirectory(releaseID)
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(releaseDir, 0700))
+		artifactPath := filepath.Join(releaseDir, "artifact.zip")
+		require.NoError(t, os.WriteFile(artifactPath, []byte("artifact"), 0600))
+
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT status,published_at FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+			WillReturnRows(sqlmock.NewRows([]string{"status", "published_at"}).AddRow("draft", nil))
+		mock.ExpectQuery("DELETE FROM yingzo_release_artifacts WHERE release_id=\\$1 RETURNING storage_key").WithArgs(releaseID).
+			WillReturnRows(sqlmock.NewRows([]string{"storage_key"}).AddRow(artifactPath))
+		mock.ExpectExec("DELETE FROM yingzo_releases WHERE id=\\$1").WithArgs(releaseID).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		router := gin.New()
+		router.DELETE("/releases/:id/purge", h.PurgeYingzoRelease)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/releases/"+releaseID.String()+"/purge", nil))
+
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		require.Contains(t, response.Body.String(), `"deleted":true`)
+		_, err = os.Stat(releaseDir)
+		require.True(t, os.IsNotExist(err))
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("unpublished disabled row can be purged", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		h, mock := newAgentHandlerMock(t)
+		releaseID := uuid.New()
+
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT status,published_at FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+			WillReturnRows(sqlmock.NewRows([]string{"status", "published_at"}).AddRow("disabled", nil))
+		mock.ExpectQuery("DELETE FROM yingzo_release_artifacts WHERE release_id=\\$1 RETURNING storage_key").WithArgs(releaseID).
+			WillReturnRows(sqlmock.NewRows([]string{"storage_key"}))
+		mock.ExpectExec("DELETE FROM yingzo_releases WHERE id=\\$1").WithArgs(releaseID).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		router := gin.New()
+		router.DELETE("/releases/:id/purge", h.PurgeYingzoRelease)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/releases/"+releaseID.String()+"/purge", nil))
+
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("published history cannot be purged", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		h, mock := newAgentHandlerMock(t)
+		releaseID := uuid.New()
+		publishedAt := time.Now().UTC()
+
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT status,published_at FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+			WillReturnRows(sqlmock.NewRows([]string{"status", "published_at"}).AddRow("disabled", publishedAt))
+		mock.ExpectRollback()
+
+		router := gin.New()
+		router.DELETE("/releases/:id/purge", h.PurgeYingzoRelease)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/releases/"+releaseID.String()+"/purge", nil))
+
+		require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+		require.Contains(t, response.Body.String(), `"code":"release_purge_not_allowed"`)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 }

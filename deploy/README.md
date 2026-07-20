@@ -85,10 +85,10 @@ sub2api 是 Yingzo（影作）的公开产品入口、授权网关和私有安�
 
 1. 打开 `/admin/yingzo`。
 2. 将通信域名保存为 `https://api-key.cc`。该值保存在数据库设置中，不使用 `.env`。
-3. 先创建 `schema 2` 草稿，再逐项上传固定八项产物：五个宿主包和三个 Runtime 安装器。
+3. 先创建 `schema 3` 草稿，再逐项上传固定七项产物：五个宿主包、macOS arm64 Runtime 和 Windows x64 Runtime。旧 `schema 2` 八项记录只保留历史读取与回滚。
 4. 上传 CI 生成的单个 `yingzo-release-<version>.proof.json`（必须包含 `algorithm: Ed25519`、`key_id`、`manifest_base64` 和 `signature_base64`）；服务端重新计算每个文件的大小、SHA-256，并用 `YINGZO_RELEASE_PUBLIC_KEYS` 中的 Ed25519 公钥验证原始 manifest。
 5. 发布到 `prerelease` 或 `stable` 通道。默认产品页只读取 stable；测试用户必须显式选择 prerelease。系统保证每个通道最多一个当前发布版本。
-6. 验收通过后可将同一组已签名二进制提升为 stable，不重新构建；出现问题时可按通道回滚或停用。
+6. 验收通过后可将同一组已签名二进制提升为 stable，不重新构建；出现问题时可按通道回滚或停用。未发布的草稿和空白停用记录可永久删除并释放版本号，曾发布的记录只能停用，不能覆盖或永久删除。
 
 安装包默认保存在持久化目录 `/app/data/releases/`（可用 `YINGZO_RELEASE_STORAGE_DIR` 改为其他绝对路径），PostgreSQL 只保存路径、大小、哈希和发行元数据，不保存二进制内容。公开产品页位于 `/yingzo`。登录用户选择 ChatGPT Work、Codex、Claude Cowork、Claude Desktop 或 Claude Code 后，可复制包含短期 bearer 下载地址、Runtime 检测深链和对应宿主官方安装命令的提示词；下载票据支持 `HEAD`、`Range` 和短期内重试。安装过程必须保留 `~/.yingzo/auth.json`。
 

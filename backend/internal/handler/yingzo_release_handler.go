@@ -1461,6 +1461,80 @@ func (h *AgentHandler) DisableYingzoRelease(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"disabled": true})
 }
 
+// PurgeYingzoRelease permanently removes a release that has never been
+// published. This is intentionally separate from DisableYingzoRelease:
+// published history must remain available for audit and rollback, while an
+// empty or abandoned draft must not permanently reserve its version number.
+func (h *AgentHandler) PurgeYingzoRelease(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "yingzo_release_not_found"}})
+		return
+	}
+	tx, err := h.db.BeginTx(c, &sql.TxOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	var publishedAt sql.NullTime
+	if err := tx.QueryRowContext(c, `SELECT status,published_at FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &publishedAt); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "yingzo_release_not_found"}})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if publishedAt.Valid || (status != "draft" && status != "disabled") {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{
+			"code":    "release_purge_not_allowed",
+			"message": "only a draft or an unpublished disabled release can be permanently deleted",
+		}})
+		return
+	}
+
+	artifactRows, err := tx.QueryContext(c, `DELETE FROM yingzo_release_artifacts WHERE release_id=$1 RETURNING storage_key`, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	for artifactRows.Next() {
+		// The whole release directory is removed after commit. We still consume
+		// the RETURNING rows so PostgreSQL can finish the statement cleanly.
+		var ignoredStorageKey string
+		if scanErr := artifactRows.Scan(&ignoredStorageKey); scanErr != nil {
+			_ = artifactRows.Close()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+			return
+		}
+	}
+	if err := artifactRows.Err(); err != nil {
+		_ = artifactRows.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if err := artifactRows.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if _, err = tx.ExecContext(c, `DELETE FROM yingzo_releases WHERE id=$1`, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		// Do not remove files when the transaction outcome is ambiguous.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+
+	// A draft can contain failed uploads and orphaned temporary files, so
+	// remove the complete per-release directory after the DB commit.
+	h.removeYingzoReleaseDirectory(id)
+	c.JSON(http.StatusOK, gin.H{"deleted": true, "id": id})
+}
+
 func (h *AgentHandler) GetYingzoSettings(c *gin.Context) {
 	configured := ""
 	if h.settingRepo != nil {
@@ -1974,6 +2048,28 @@ func (h *AgentHandler) CleanupYingzoReleaseTemporaryFiles(olderThan time.Time) (
 		if readErr != nil {
 			continue
 		}
+		if h.db != nil {
+			var releaseExists bool
+			if queryErr := h.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM yingzo_releases WHERE id=$1)`, releaseID).Scan(&releaseExists); queryErr == nil && !releaseExists {
+				// A just-created directory can belong to a request whose DB
+				// transaction has not committed yet. Wait until every entry is
+				// older than the normal cleanup window before removing it wholesale.
+				allStale := true
+				for _, entry := range entries {
+					info, infoErr := entry.Info()
+					if infoErr != nil || !info.ModTime().Before(olderThan) {
+						allStale = false
+						break
+					}
+				}
+				if allStale {
+					if removeErr := os.RemoveAll(releaseDir); removeErr == nil {
+						removed++
+					}
+					continue
+				}
+			}
+		}
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -2004,7 +2100,10 @@ func (h *AgentHandler) CleanupYingzoAbandonedDraftArtifacts(ctx context.Context,
 	if h.db == nil {
 		return 0, nil
 	}
-	rows, err := h.db.QueryContext(ctx, `SELECT id FROM yingzo_releases WHERE status IN ('draft','disabled') AND updated_at < $1`, olderThan)
+	// Only an explicitly disabled, never-published release is considered
+	// abandoned by the background worker. Drafts may be intentionally paused;
+	// permanent deletion of a draft remains an explicit administrator action.
+	rows, err := h.db.QueryContext(ctx, `SELECT id FROM yingzo_releases WHERE status='disabled' AND published_at IS NULL AND updated_at < $1`, olderThan)
 	if err != nil {
 		return 0, err
 	}
@@ -2030,8 +2129,9 @@ func (h *AgentHandler) CleanupYingzoAbandonedDraftArtifacts(ctx context.Context,
 			return removed, beginErr
 		}
 		var status string
+		var publishedAt sql.NullTime
 		var updatedAt time.Time
-		if lockErr := tx.QueryRowContext(ctx, `SELECT status,updated_at FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &updatedAt); lockErr != nil || (status != "draft" && status != "disabled") || !updatedAt.Before(olderThan) {
+		if lockErr := tx.QueryRowContext(ctx, `SELECT status,published_at,updated_at FROM yingzo_releases WHERE id=$1 FOR UPDATE`, id).Scan(&status, &publishedAt, &updatedAt); lockErr != nil || publishedAt.Valid || status != "disabled" || !updatedAt.Before(olderThan) {
 			_ = tx.Rollback()
 			continue
 		}
@@ -2056,19 +2156,19 @@ func (h *AgentHandler) CleanupYingzoAbandonedDraftArtifacts(ctx context.Context,
 			_ = tx.Rollback()
 			return removed, rowsErr
 		}
-		if _, updateErr := tx.ExecContext(ctx, `UPDATE yingzo_releases SET signature=NULL,updated_at=NOW() WHERE id=$1`, id); updateErr != nil {
+		if _, deleteErr := tx.ExecContext(ctx, `DELETE FROM yingzo_releases WHERE id=$1`, id); deleteErr != nil {
 			_ = tx.Rollback()
-			return removed, updateErr
+			return removed, deleteErr
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
 			// Preserve files after an ambiguous commit; orphan reconciliation will
 			// remove them only after confirming that no DB row references them.
 			continue
 		}
-		for _, storageKey := range storageKeys {
-			h.removeYingzoStorageFile(id, storageKey)
-			removed++
-		}
+		// The row is gone and no published history can reference this directory.
+		// Remove failed uploads and temporary files along with registered artifacts.
+		h.removeYingzoReleaseDirectory(id)
+		removed += len(storageKeys)
 	}
 	return removed, nil
 }
