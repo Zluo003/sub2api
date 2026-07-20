@@ -145,6 +145,21 @@ export interface YingzoArtifactUploadInput {
   runtime_protocol: number
 }
 
+export interface YingzoBatchUploadDuplicate {
+  filename: string
+  reason: string
+}
+
+export interface YingzoBatchUploadResult {
+  uploaded: YingzoReleaseArtifact[]
+  skipped_duplicates: YingzoBatchUploadDuplicate[]
+  ignored_files: string[]
+  missing_artifacts: string[]
+  complete: boolean
+  expected_count: number
+  received_count: number
+}
+
 export interface YingzoReleaseProofInput {
   algorithm: 'Ed25519'
   key_id: string
@@ -184,6 +199,20 @@ export async function createYingzoReleaseDraft(input: YingzoReleaseDraftInput): 
 export async function uploadYingzoReleaseArtifact(releaseID: string, input: YingzoArtifactUploadInput): Promise<YingzoReleaseArtifact> {
   const form = artifactForm(input)
   const { data } = await apiClient.post<YingzoReleaseArtifact>(`/admin/yingzo/releases/${encodeURIComponent(releaseID)}/artifacts`, form, uploadConfig)
+  return data
+}
+
+/** Upload a complete release directory in one request. The server identifies
+ * packages from their canonical filenames and safely ignores checksums and
+ * other release metadata files. */
+export async function uploadYingzoReleaseArtifactsBatch(releaseID: string, files: File[]): Promise<YingzoBatchUploadResult> {
+  const form = new FormData()
+  for (const file of files) form.append('files', file, file.name)
+  const { data } = await apiClient.post<YingzoBatchUploadResult>(
+    `/admin/yingzo/releases/${encodeURIComponent(releaseID)}/artifacts/batch`,
+    form,
+    uploadConfig,
+  )
   return data
 }
 

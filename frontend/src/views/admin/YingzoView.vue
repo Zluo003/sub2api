@@ -4,7 +4,7 @@
       <header class="flex flex-col justify-between gap-4 border-b border-gray-200 pb-6 dark:border-dark-700 md:flex-row md:items-end">
         <div>
           <h1 class="text-2xl font-semibold text-gray-950 dark:text-white">Yingzo（影作）发行管理</h1>
-          <p class="mt-2 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">管理稳定版与预发布版。当前 schema 3 使用服务端声明的七项发行矩阵；旧 schema 2 版本保留历史八项显示。二进制保存在服务器持久卷，数据库只记录发行元数据。</p>
+          <p class="mt-2 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">管理稳定版与预发布版。选择整个版本文件夹即可批量上传，系统会自动识别、去重并忽略校验文件。二进制保存在服务器持久卷，数据库只记录发行元数据。</p>
         </div>
         <router-link to="/yingzo" class="btn btn-secondary btn-sm">查看产品页</router-link>
       </header>
@@ -25,17 +25,17 @@
 
         <form class="border-t-2 border-[#df5b48] pt-5" @submit.prevent="createDraft">
           <h2 class="text-base font-semibold text-gray-900 dark:text-white">创建发行草稿</h2>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">先保存版本，再按当前发行矩阵把本地安装包逐项上传到对应位置。</p>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">先保存版本，再一次选择本地版本文件夹中的全部安装包；稳定版可以直接发布测试。</p>
           <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <label class="field-label">版本<input v-model.trim="draftForm.version" required class="input mt-1 w-full" placeholder="0.3.0" /></label>
-            <label class="field-label">通道<select v-model="draftForm.channel" class="input mt-1 w-full"><option value="prerelease">预发布</option><option value="stable">稳定版</option></select></label>
+            <label class="field-label">通道<select v-model="draftForm.channel" class="input mt-1 w-full"><option value="stable">稳定版（直接测试）</option><option value="prerelease">预发布（特殊测试）</option></select></label>
             <label class="field-label">Runtime 协议<input v-model.number="draftForm.runtimeProtocol" required min="1" type="number" class="input mt-1 w-full" /></label>
             <label class="field-label">最低 Codex 版本<input v-model.trim="draftForm.minCodex" class="input mt-1 w-full" placeholder="0.143.0" /></label>
             <label class="field-label">最低 Claude Code 版本<input v-model.trim="draftForm.minClaude" class="input mt-1 w-full" placeholder="2.1.201" /></label>
             <label class="field-label sm:col-span-2 lg:col-span-3">更新说明<textarea v-model="draftForm.notes" class="input mt-1 min-h-20 w-full py-2" /></label>
           </div>
           <button type="submit" class="btn btn-primary mt-4 inline-flex items-center gap-2" :disabled="creatingDraft">
-            <Icon name="plus" size="sm" />{{ creatingDraft ? '创建中' : '创建七项发行草稿' }}
+            <Icon name="plus" size="sm" />{{ creatingDraft ? '创建中' : '创建发行草稿' }}
           </button>
         </form>
       </section>
@@ -61,7 +61,7 @@
                 <span class="text-xs text-gray-400">schema {{ release.distribution_schema_version || 1 }}</span>
               </div>
               <div class="flex flex-wrap gap-2">
-                <button v-if="release.status === 'draft'" type="button" class="btn btn-primary btn-xs" :disabled="!canPublish(release) || releaseBusy(release)" @click="publish(release)">发布</button>
+                <button v-if="release.status === 'draft'" type="button" class="btn btn-primary btn-xs" :disabled="!canPublish(release) || releaseBusy(release)" @click="publish(release)">{{ release.channel === 'stable' ? '发布稳定版' : '发布预发布版' }}</button>
                 <button v-if="release.status === 'published' && release.channel === 'prerelease'" type="button" class="btn btn-primary btn-xs" :disabled="releaseBusy(release)" @click="promote(release)">提升为稳定版</button>
                 <button v-if="release.status === 'superseded'" type="button" class="btn btn-secondary btn-xs" :disabled="releaseBusy(release)" @click="rollback(release)">回滚至此版本</button>
                 <button v-if="canPurge(release)" type="button" class="btn btn-danger btn-xs" :disabled="releaseBusy(release)" @click="purge(release)">{{ release.status === 'draft' ? '删除草稿' : '清理空白记录' }}</button>
@@ -70,6 +70,27 @@
             </header>
 
             <div v-if="(release.distribution_schema_version || 1) >= 2" class="mt-4 artifact-grid">
+              <section v-if="release.status === 'draft' && release.id" class="batch-upload-panel">
+                <div>
+                  <strong class="text-sm text-gray-800 dark:text-gray-100">批量上传安装包</strong>
+                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">一次选择整个 {{ release.version }} 文件夹即可。macOS 和 Windows 各有 4 个入口（OpenAI、Claude Code、Claude Desktop、Runtime），Claude Desktop 是同一个通用包，所以实际只需上传 7 个唯一文件（4 + 4 - 1）；重复包和 SHA256/manifest/SBOM 会自动处理。</p>
+                </div>
+                <input
+                  type="file"
+                  multiple
+                  webkitdirectory
+                  directory
+                  data-batch-upload="true"
+                  class="input mt-3 w-full py-1.5 text-xs"
+                  :disabled="releaseBusy(release)"
+                  @change="selectBatchFiles(release.id, $event)"
+                />
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                  <span v-if="batchFilesFor(release.id).length" class="text-xs text-gray-500">已选择 {{ batchFilesFor(release.id).length }} 个文件</span>
+                  <button type="button" class="btn btn-primary btn-xs" :disabled="releaseBusy(release) || !batchFilesFor(release.id).length" @click="uploadBatch(release)">{{ batchUploadingReleaseId === release.id ? '上传中' : '自动识别并上传' }}</button>
+                </div>
+                <p v-if="batchResultFor(release.id)" class="mt-2 text-xs leading-5 text-gray-600 dark:text-gray-300">已接收 {{ batchResultFor(release.id)?.uploaded.length || 0 }} 个<span v-if="batchResultFor(release.id)?.skipped_duplicates.length">，跳过重复 {{ batchResultFor(release.id)?.skipped_duplicates.length }} 个</span><span v-if="batchResultFor(release.id)?.ignored_files.length">，忽略辅助文件 {{ batchResultFor(release.id)?.ignored_files.length }} 个</span><span v-if="batchResultFor(release.id)?.missing_artifacts.length">，仍缺少 {{ batchResultFor(release.id)?.missing_artifacts.length }} 个</span><span v-else>，发行矩阵已完整</span>。</p>
+              </section>
               <section v-for="slot in artifactSlotsFor(release)" :key="slot.key" class="artifact-slot">
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
@@ -121,7 +142,8 @@ import {
   createYingzoReleaseDraft, deleteYingzoReleaseArtifact, disableYingzoRelease,
   getYingzoAdminSettings, listYingzoReleases, publishYingzoRelease,
   promoteYingzoRelease, purgeYingzoRelease, replaceYingzoReleaseArtifact, rollbackYingzoRelease, updateYingzoAdminSettings,
-  uploadYingzoReleaseArtifact, type YingzoAdminSettings, type YingzoArtifactUploadInput,
+  uploadYingzoReleaseArtifact, uploadYingzoReleaseArtifactsBatch, type YingzoAdminSettings, type YingzoArtifactUploadInput,
+  type YingzoBatchUploadResult,
   type YingzoArtifactRequirement, type YingzoReleaseArtifact, type YingzoReleaseSummary,
 } from '@/api/yingzo'
 
@@ -159,11 +181,14 @@ const loading = ref(false)
 const savingSettings = ref(false)
 const creatingDraft = ref(false)
 const uploadingSlot = ref<string | null>(null)
+const batchUploadingReleaseId = ref<string | null>(null)
 const purgingReleaseId = ref<string | null>(null)
 const selectedFiles = reactive<Record<string, File | undefined>>({})
+const batchFiles = reactive<Record<string, File[]>>({})
+const batchResults = reactive<Record<string, YingzoBatchUploadResult | undefined>>({})
 const message = ref('')
 const messageKind = ref<'success' | 'error'>('success')
-const draftForm = reactive({ version: '0.3.0', channel: 'prerelease' as 'prerelease' | 'stable', runtimeProtocol: 1, minCodex: '0.143.0', minClaude: '2.1.201', notes: '' })
+const draftForm = reactive({ version: '0.3.0', channel: 'stable' as 'prerelease' | 'stable', runtimeProtocol: 1, minCodex: '0.143.0', minClaude: '2.1.201', notes: '' })
 
 function showMessage(text: string, kind: 'success' | 'error' = 'success') { message.value = text; messageKind.value = kind }
 function apiErrorDetail(error: unknown, fallback: string) {
@@ -174,7 +199,7 @@ function statusLabel(status?: string) { return ({ draft: '草稿', published: '�
 function channelLabel(channel?: string) { return channel === 'prerelease' ? '预发布' : '稳定版' }
 function canPurge(release: YingzoReleaseSummary) { return (release.status === 'draft' || release.status === 'disabled') && !release.published_at }
 function releaseBusy(release: YingzoReleaseSummary) {
-  return Boolean(release.id && (purgingReleaseId.value === release.id || uploadingSlot.value?.startsWith(`${release.id}:`)))
+  return Boolean(release.id && (purgingReleaseId.value === release.id || batchUploadingReleaseId.value === release.id || uploadingSlot.value?.startsWith(`${release.id}:`)))
 }
 function artifactLabel(value: string) { return ({ openai: 'OpenAI', claude: 'Claude', combined: '旧版双宿主' } as Record<string, string>)[value] || value }
 function formatBytes(value: number) { return value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.ceil(value / 1024))} KB` }
@@ -183,6 +208,12 @@ function expectedFilename(slot: ArtifactSlot, version: string) { return slot.fil
 function selectionKey(releaseID: string, slotKey: string) { return `${releaseID}:${slotKey}` }
 function selectedArtifactFile(releaseID: string, slotKey: string) { return selectedFiles[selectionKey(releaseID, slotKey)] }
 function selectArtifactFile(releaseID: string, slotKey: string, event: Event) { selectedFiles[selectionKey(releaseID, slotKey)] = (event.target as HTMLInputElement).files?.[0] }
+function batchFilesFor(releaseID: string) { return batchFiles[releaseID] || [] }
+function batchResultFor(releaseID?: string) { return releaseID ? batchResults[releaseID] : undefined }
+function selectBatchFiles(releaseID: string, event: Event) {
+  batchFiles[releaseID] = Array.from((event.target as HTMLInputElement).files || [])
+  delete batchResults[releaseID]
+}
 
 function artifactRows(release: YingzoReleaseSummary): YingzoReleaseArtifact[] {
   if (Array.isArray(release.artifact_items)) return release.artifact_items
@@ -324,12 +355,12 @@ async function createDraft() {
       channel: draftForm.channel,
       distribution_schema_version: 3,
       runtime_protocol: draftForm.runtimeProtocol,
-      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7 },
+      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7, upload_mode: 'directory-batch' },
       min_codex_version: draftForm.minCodex,
       min_claude_version: draftForm.minClaude,
       release_notes: draftForm.notes,
     })
-    showMessage(`版本 ${created.version} 的 ${channelLabel(created.channel)}草稿已创建，请按当前矩阵上传七个产物。`)
+    showMessage(`版本 ${created.version} 的 ${channelLabel(created.channel)}草稿已创建。现在选择整个版本文件夹即可自动上传。`)
     draftForm.notes = ''
     await loadAll()
   } catch (error) {
@@ -341,6 +372,24 @@ async function createDraft() {
     console.error(error)
   }
   finally { creatingDraft.value = false }
+}
+
+async function uploadBatch(release: YingzoReleaseSummary) {
+  if (!release.id || releaseBusy(release)) return
+  const files = batchFilesFor(release.id)
+  if (!files.length) return
+  batchUploadingReleaseId.value = release.id
+  try {
+    const result = await uploadYingzoReleaseArtifactsBatch(release.id, files)
+    batchResults[release.id] = result
+    batchFiles[release.id] = []
+    const missing = result.missing_artifacts.length ? `，还缺少 ${result.missing_artifacts.length} 个` : '，发行矩阵已完整'
+    showMessage(`批量上传完成：已接收 ${result.uploaded.length} 个${result.skipped_duplicates.length ? `，跳过重复 ${result.skipped_duplicates.length} 个` : ''}${missing}。`)
+    await loadAll()
+  } catch (error) {
+    showMessage(`批量上传失败：${apiErrorDetail(error, '请确认选择的是本版本文件夹')}`, 'error')
+    console.error(error)
+  } finally { if (batchUploadingReleaseId.value === release.id) batchUploadingReleaseId.value = null }
 }
 
 async function uploadArtifact(release: YingzoReleaseSummary, slot: ArtifactSlot) {
@@ -375,7 +424,7 @@ async function publish(release: YingzoReleaseSummary) {
   if (!release.id) return
   try {
     await publishYingzoRelease(release.id)
-    showMessage(`版本 ${release.version} 已发布到${channelLabel(release.channel)}通道。`)
+    showMessage(`版本 ${release.version} 已直接发布到${channelLabel(release.channel)}通道。`)
     await loadAll()
   } catch (error) {
     const expected = artifactSlotsFor(release).length

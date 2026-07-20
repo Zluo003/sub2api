@@ -5,6 +5,7 @@ import YingzoView from '../YingzoView.vue'
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), settings: vi.fn(), createDraft: vi.fn(), uploadArtifact: vi.fn(),
+  uploadBatch: vi.fn(),
   replaceArtifact: vi.fn(), deleteArtifact: vi.fn(), updateSettings: vi.fn(),
   publish: vi.fn(), promote: vi.fn(), rollback: vi.fn(), disable: vi.fn(), purge: vi.fn(),
 }))
@@ -14,6 +15,7 @@ vi.mock('@/api/yingzo', () => ({
   getYingzoAdminSettings: mocks.settings,
   createYingzoReleaseDraft: mocks.createDraft,
   uploadYingzoReleaseArtifact: mocks.uploadArtifact,
+  uploadYingzoReleaseArtifactsBatch: mocks.uploadBatch,
   replaceYingzoReleaseArtifact: mocks.replaceArtifact,
   deleteYingzoReleaseArtifact: mocks.deleteArtifact,
   updateYingzoAdminSettings: mocks.updateSettings,
@@ -83,9 +85,9 @@ describe('Yingzo release administration', () => {
     await flushPromises()
 
     expect(mocks.createDraft).toHaveBeenCalledWith(expect.objectContaining({
-      version: '0.3.1', channel: 'prerelease', distribution_schema_version: 3,
+      version: '0.3.1', channel: 'stable', distribution_schema_version: 3,
       runtime_protocol: 1,
-      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7 },
+      compatibility: { platforms: ['macos-arm64', 'windows-x64'], artifact_count: 7, upload_mode: 'directory-batch' },
     }))
   })
 
@@ -105,9 +107,40 @@ describe('Yingzo release administration', () => {
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    expect(wrapper.findAll('input[type="file"]')).toHaveLength(7)
+    expect(wrapper.findAll('input[data-batch-upload="true"]')).toHaveLength(1)
+    expect(wrapper.findAll('.artifact-slot input[type="file"]')).toHaveLength(7)
     expect(wrapper.text()).toContain('Runtime · macOS arm64')
     expect(wrapper.text()).not.toContain('Runtime · macOS Intel')
+  })
+
+  it('uploads a selected release directory once and reports deduplication', async () => {
+    mocks.list.mockResolvedValue([schema3Draft()])
+    mocks.uploadBatch.mockResolvedValue({
+      uploaded: [{ id: 'artifact-1', package_filename: 'yingzo-openai-macos-0.3.0.tar.gz', size_bytes: 1024 }],
+      skipped_duplicates: [{ filename: 'yingzo-claude-desktop-0.3.0.mcpb', reason: 'duplicate_content' }],
+      ignored_files: ['SHA256SUMS.txt'],
+      missing_artifacts: ['yingzo-runtime-windows-x64-0.3.0-setup.exe'],
+      complete: false,
+      expected_count: 7,
+      received_count: 6,
+    })
+    const wrapper = mount(YingzoView, { global })
+    await flushPromises()
+
+    const directoryInput = wrapper.find('input[data-batch-upload="true"]')
+    const files = [
+      new File(['openai'], 'yingzo-openai-macos-0.3.0.tar.gz'),
+      new File(['claude'], 'yingzo-claude-desktop-0.3.0.mcpb'),
+      new File(['sum'], 'SHA256SUMS.txt'),
+    ]
+    Object.defineProperty(directoryInput.element, 'files', { configurable: true, value: files })
+    await directoryInput.trigger('change')
+    await wrapper.findAll('button').find((button) => button.text() === '自动识别并上传')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.uploadBatch).toHaveBeenCalledWith('release-3', files)
+    expect(wrapper.text()).toContain('跳过重复 1 个')
+    expect(wrapper.text()).toContain('仍缺少 1 个')
   })
 
   it('prefers server-declared schema 3 requirements over the default matrix', async () => {
@@ -121,7 +154,8 @@ describe('Yingzo release administration', () => {
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    expect(wrapper.findAll('input[type="file"]')).toHaveLength(1)
+    expect(wrapper.findAll('input[data-batch-upload="true"]')).toHaveLength(1)
+    expect(wrapper.findAll('.artifact-slot input[type="file"]')).toHaveLength(1)
     expect(wrapper.text()).toContain('Runtime · macOS arm64（自定义）')
     expect(wrapper.text()).toContain('custom-runtime-0.3.0.dmg')
   })
@@ -131,7 +165,7 @@ describe('Yingzo release administration', () => {
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    const files = wrapper.findAll('input[type="file"]')
+    const files = wrapper.findAll('.artifact-slot input[type="file"]')
     expect(files).toHaveLength(8)
     expect(wrapper.text()).toContain('OpenAI / Codex · macOS')
     expect(wrapper.text()).toContain('Runtime · Windows x64')
@@ -154,15 +188,15 @@ describe('Yingzo release administration', () => {
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    const publish = wrapper.findAll('button').find((button) => button.text() === '发布')
+    const publish = wrapper.findAll('button').find((button) => button.text() === '发布预发布版')
     expect(publish?.attributes('disabled')).toBeDefined()
 
     mocks.list.mockResolvedValue([{ ...schema2Draft(), artifact_matrix: artifactMatrix() }])
     await wrapper.findAll('button').find((button) => button.attributes('title') === '刷新')!.trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('button').find((button) => button.text() === '发布')?.attributes('disabled')).toBeUndefined()
-    await wrapper.findAll('button').find((button) => button.text() === '发布')!.trigger('click')
+    expect(wrapper.findAll('button').find((button) => button.text() === '发布预发布版')?.attributes('disabled')).toBeUndefined()
+    await wrapper.findAll('button').find((button) => button.text() === '发布预发布版')!.trigger('click')
     await flushPromises()
     expect(mocks.publish).toHaveBeenCalledWith('release-1')
   })
@@ -173,7 +207,7 @@ describe('Yingzo release administration', () => {
     const wrapper = mount(YingzoView, { global })
     await flushPromises()
 
-    const file = wrapper.find('input[type="file"]')
+    const file = wrapper.find('.artifact-slot input[type="file"]')
     Object.defineProperty(file.element, 'files', { configurable: true, value: [new File(['x'], 'bad.tar.gz')] })
     await file.trigger('change')
     await wrapper.findAll('button').find((button) => button.text() === '上传')!.trigger('click')

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -184,6 +185,242 @@ func TestUploadYingzoV2ArtifactStoresValidatedLocalFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.True(t, strings.HasSuffix(entries[0].Name(), ".tar.gz"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoV3ArtifactsBatchUsesFilenamesAndIgnoresMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(v3YingzoReleaseRowsForUpload(releaseID, "draft", "prerelease", now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ",")))
+	mock.ExpectExec("UPDATE yingzo_releases SET signature=NULL").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='unverified'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 0))
+	for range 2 {
+		mock.ExpectExec("INSERT INTO yingzo_release_artifacts").WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectCommit()
+
+	specs := yingzoV3ArtifactSpecs("0.3.0")
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	writeBatchMultipartBytes(t, writer, specs[0].Filename, []byte("openai-macos"))
+	writeBatchMultipartBytes(t, writer, specs[1].Filename, []byte("openai-windows"))
+	writeBatchMultipartBytes(t, writer, "SHA256SUMS.txt", []byte("checksum metadata"))
+	writeBatchMultipartBytes(t, writer, "yingzo-release-0.3.0.json", []byte(`{"version":"0.3.0"}`))
+	writeBatchMultipartBytes(t, writer, "packages.json", []byte(`{"artifacts":[]}`))
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases/:id/artifacts/batch", h.UploadYingzoReleaseArtifactsBatch)
+	request := httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/artifacts/batch", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var payload struct {
+		Uploaded      []json.RawMessage `json:"uploaded"`
+		Ignored       []string          `json:"ignored_files"`
+		Missing       []string          `json:"missing_artifacts"`
+		Complete      bool              `json:"complete"`
+		ExpectedCount int               `json:"expected_count"`
+		ReceivedCount int               `json:"received_count"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.Len(t, payload.Uploaded, 2)
+	require.Len(t, payload.Ignored, 3)
+	require.Len(t, payload.Missing, 5)
+	require.False(t, payload.Complete)
+	require.Equal(t, 7, payload.ExpectedCount)
+	require.Equal(t, 2, payload.ReceivedCount)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoV3ArtifactsBatchSkipsIdenticalDuplicate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(v3YingzoReleaseRowsForUpload(releaseID, "draft", "prerelease", now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ",")))
+	mock.ExpectExec("UPDATE yingzo_releases SET signature=NULL").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='unverified'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT INTO yingzo_release_artifacts").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	filename := yingzoV3ArtifactSpecs("0.3.0")[0].Filename
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	writeBatchMultipartBytes(t, writer, filename, []byte("same bytes"))
+	writeBatchMultipartBytes(t, writer, filename, []byte("same bytes"))
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases/:id/artifacts/batch", h.UploadYingzoReleaseArtifactsBatch)
+	request := httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/artifacts/batch", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var payload struct {
+		Uploaded []json.RawMessage `json:"uploaded"`
+		Skipped  []struct {
+			Filename string `json:"filename"`
+			Reason   string `json:"reason"`
+		} `json:"skipped_duplicates"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.Len(t, payload.Uploaded, 1)
+	require.Len(t, payload.Skipped, 1)
+	require.Equal(t, "duplicate_content", payload.Skipped[0].Reason)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoV3ArtifactsBatchAcceptsEightPhysicalFilesAsSevenUniqueSlots(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(v3YingzoReleaseRowsForUpload(releaseID, "draft", "stable", now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ",")))
+	mock.ExpectExec("UPDATE yingzo_releases SET signature=NULL").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='unverified'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 0))
+	for range 7 {
+		mock.ExpectExec("INSERT INTO yingzo_release_artifacts").WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectCommit()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	var desktop []byte
+	for index, spec := range yingzoV3ArtifactSpecs("0.3.0") {
+		contents := []byte(fmt.Sprintf("package-%d", index))
+		if spec.Target == "claude-desktop" {
+			desktop = contents
+		}
+		writeBatchMultipartBytes(t, writer, spec.Filename, contents)
+	}
+	writeBatchMultipartBytes(t, writer, "yingzo-claude-desktop-0.3.0.mcpb", desktop)
+	writeBatchMultipartBytes(t, writer, "SHA256SUMS.txt", []byte("checksums"))
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases/:id/artifacts/batch", h.UploadYingzoReleaseArtifactsBatch)
+	request := httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/artifacts/batch", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var payload struct {
+		Uploaded      []json.RawMessage `json:"uploaded"`
+		Skipped       []json.RawMessage `json:"skipped_duplicates"`
+		Complete      bool              `json:"complete"`
+		ExpectedCount int               `json:"expected_count"`
+		ReceivedCount int               `json:"received_count"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.Len(t, payload.Uploaded, 7)
+	require.Len(t, payload.Skipped, 1)
+	require.True(t, payload.Complete)
+	require.Equal(t, 7, payload.ExpectedCount)
+	require.Equal(t, 7, payload.ReceivedCount)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoV3ArtifactsBatchReplacesExistingSlot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	oldID := uuid.New()
+	now := time.Now().UTC()
+	releaseDir, err := h.yingzoReleaseDirectory(releaseID)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(releaseDir, 0700))
+	oldPath := filepath.Join(releaseDir, "old-package.tar.gz")
+	require.NoError(t, os.WriteFile(oldPath, []byte("old package"), 0600))
+	artifactRows := sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ",")).AddRow(
+		oldID, releaseID, nil, "host_package", "openai", "macos", "any", "tar.gz", "application/gzip", 1,
+		"validated", "unverified", now, "yingzo-openai-macos-0.3.0.tar.gz", "local", oldPath, int64(11), strings.Repeat("a", 64), now, now,
+	)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(v3YingzoReleaseRowsForUpload(releaseID, "draft", "stable", now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
+		WillReturnRows(artifactRows)
+	mock.ExpectExec("UPDATE yingzo_releases SET signature=NULL").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_release_artifacts SET signature_status='unverified'").WithArgs(releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE yingzo_release_artifacts SET package_filename=").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	writeBatchMultipartBytes(t, writer, "yingzo-openai-macos-0.3.0.tar.gz", bytes.Repeat([]byte("new package"), 256))
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases/:id/artifacts/batch", h.UploadYingzoReleaseArtifactsBatch)
+	request := httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/artifacts/batch", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), oldID.String())
+	_, err = os.Stat(oldPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUploadYingzoV3ArtifactsBatchAggregatesErrorsAndCleansFiles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	releaseID := uuid.New()
+	now := time.Now().UTC()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").WithArgs(releaseID).
+		WillReturnRows(v3YingzoReleaseRowsForUpload(releaseID, "draft", "prerelease", now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").WithArgs(releaseID).
+		WillReturnRows(sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ",")))
+	mock.ExpectRollback()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	writeBatchMultipartBytes(t, writer, "wrong-one.zip", []byte("wrong"))
+	writeBatchMultipartBytes(t, writer, "wrong-two.tar.gz", []byte("wrong"))
+	require.NoError(t, writer.Close())
+
+	router := gin.New()
+	router.POST("/releases/:id/artifacts/batch", h.UploadYingzoReleaseArtifactsBatch)
+	request := httptest.NewRequest(http.MethodPost, "/releases/"+releaseID.String()+"/artifacts/batch", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	var payload struct {
+		Errors []struct {
+			Filename string `json:"filename"`
+		} `json:"errors"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payload))
+	require.Len(t, payload.Errors, 2)
+	releaseDir, err := h.yingzoReleaseDirectory(releaseID)
+	require.NoError(t, err)
+	_, err = os.Stat(releaseDir)
+	require.True(t, os.IsNotExist(err), "a failed batch must not leave a release directory")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -926,6 +1163,19 @@ func v3YingzoPublishRows(t *testing.T, releaseID uuid.UUID, storageRoot, signatu
 		rows.AddRow(spec.ArtifactKind, spec.Target, spec.OS, spec.Arch, 1, "validated", signatureStatus, spec.Filename, storageKey, info.Size(), sha)
 	}
 	return rows
+}
+
+func v3YingzoReleaseRowsForUpload(id uuid.UUID, status, channel string, now time.Time) *sqlmock.Rows {
+	return sqlmock.NewRows(strings.Split(yingzoReleaseColumns, ",")).
+		AddRow(id, "0.3.0", status, 3, channel, true, 1, []byte(`{"project_schema":1}`), nil, "0.128.0", "0.0.0", "preview", now, nil, now)
+}
+
+func writeBatchMultipartBytes(t *testing.T, writer *multipart.Writer, filename string, contents []byte) {
+	t.Helper()
+	part, err := writer.CreateFormFile("files", filename)
+	require.NoError(t, err)
+	_, err = part.Write(contents)
+	require.NoError(t, err)
 }
 
 func TestYingzoV3PublishMatrixAcceptsSevenArtifacts(t *testing.T) {

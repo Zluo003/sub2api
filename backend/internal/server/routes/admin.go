@@ -130,6 +130,7 @@ func registerYingzoReleaseRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		yingzo.GET("/releases", h.Agent.ListYingzoReleases)
 		yingzo.POST("/releases", h.Agent.UploadYingzoRelease)
 		yingzo.POST("/releases/:id/artifacts", h.Agent.UploadYingzoReleaseArtifact)
+		yingzo.POST("/releases/:id/artifacts/batch", h.Agent.UploadYingzoReleaseArtifactsBatch)
 		yingzo.PUT("/releases/:id/artifacts/:artifact_id", h.Agent.ReplaceYingzoReleaseArtifact)
 		yingzo.DELETE("/releases/:id/artifacts/:artifact_id", h.Agent.DeleteYingzoReleaseArtifact)
 		yingzo.PUT("/releases/:id/proof", h.Agent.VerifyYingzoReleaseProof)

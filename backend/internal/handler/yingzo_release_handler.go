@@ -129,6 +129,32 @@ type yingzoReleaseListItem struct {
 	ArtifactCount     int                         `json:"artifact_count"`
 }
 
+// yingzoBatchArtifactError describes an individual file that could not be
+// accepted.  Batch uploads intentionally report every bad file in one
+// response so an administrator does not have to retry the upload one file at
+// a time.
+type yingzoBatchArtifactError struct {
+	Filename string `json:"filename"`
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+}
+
+type yingzoBatchSkippedArtifact struct {
+	Filename string `json:"filename"`
+	Reason   string `json:"reason"`
+}
+
+type yingzoBatchUploadResponse struct {
+	Uploaded      []*yingzoReleaseArtifact     `json:"uploaded"`
+	Skipped       []yingzoBatchSkippedArtifact `json:"skipped_duplicates"`
+	Ignored       []string                     `json:"ignored_files"`
+	Missing       []string                     `json:"missing_artifacts"`
+	Complete      bool                         `json:"complete"`
+	ExpectedCount int                          `json:"expected_count"`
+	ReceivedCount int                          `json:"received_count"`
+	Errors        []yingzoBatchArtifactError   `json:"errors,omitempty"`
+}
+
 type yingzoReleaseProofEnvelope struct {
 	Algorithm       string `json:"algorithm"`
 	KeyID           string `json:"key_id"`
@@ -743,6 +769,266 @@ func (h *AgentHandler) uploadLegacyYingzoRelease(c *gin.Context) {
 
 func (h *AgentHandler) UploadYingzoReleaseArtifact(c *gin.Context) {
 	h.saveYingzoReleaseArtifact(c, false)
+}
+
+// UploadYingzoReleaseArtifactsBatch accepts all installable files for a
+// release in one multipart request. The package filename is the artifact
+// contract, so callers do not have to duplicate target/platform form fields.
+func (h *AgentHandler) UploadYingzoReleaseArtifactsBatch(c *gin.Context) {
+	releaseID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "yingzo_release_not_found"}})
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "multipart_form_required"}})
+		return
+	}
+
+	tx, err := h.db.BeginTx(c, &sql.TxOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	release, err := getYingzoReleaseFrom(c, tx, releaseID, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "yingzo_release_not_found"}})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
+		return
+	}
+	if release.Status != "draft" || !yingzoDistributionSchemaSupported(release.DistributionSchemaVersion) {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "release_state_invalid"}})
+		return
+	}
+
+	// Keep the request finite while allowing every package in the current
+	// matrix to be uploaded together. The body is streamed; it is never held in
+	// memory by this handler.
+	specs := yingzoArtifactSpecsForSchema(release.DistributionSchemaVersion, release.Version)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(len(specs))*yingzoReleaseMaxBytes+(16<<20))
+	multipartReader, err := c.Request.MultipartReader()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_multipart"}})
+		return
+	}
+	specByFilename := make(map[string]yingzoArtifactSpec, len(specs))
+	for _, spec := range specs {
+		spec.RuntimeProtocol = release.RuntimeProtocol
+		specByFilename[spec.Filename] = spec
+	}
+
+	result := yingzoBatchUploadResponse{
+		Uploaded: make([]*yingzoReleaseArtifact, 0, len(specs)),
+		Skipped:  make([]yingzoBatchSkippedArtifact, 0),
+		Ignored:  make([]string, 0),
+		Errors:   make([]yingzoBatchArtifactError, 0),
+	}
+	staged := make([]*yingzoReleaseArtifact, 0, len(specs))
+	// A batch retry may contain a newer build for a slot that already exists in
+	// the draft. Keep the old row/file until the new row is committed, then
+	// remove the old file. This makes retrying a whole folder safe and avoids
+	// forcing the operator back into per-slot replacement controls.
+	replacements := make(map[string]*yingzoReleaseArtifact, len(specs))
+	oldStorageKeys := make([]string, 0, len(specs))
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		for _, artifact := range staged {
+			h.removeYingzoStorageFile(releaseID, artifact.StorageKey)
+		}
+	}()
+
+	seen := make(map[string]*yingzoReleaseArtifact, len(specs))
+	for {
+		part, nextErr := multipartReader.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			result.Errors = append(result.Errors, yingzoBatchArtifactError{Code: "invalid_multipart", Message: "could not read multipart upload"})
+			break
+		}
+		// Browsers normally send only File.name, but a hand-crafted multipart
+		// request may contain either slash style. Normalize both before applying
+		// the exact filename contract; storage never uses the client path.
+		filename := filepath.Base(strings.ReplaceAll(strings.TrimSpace(part.FileName()), `\`, "/"))
+		if filename == "." || filename == "" {
+			_, _ = io.Copy(io.Discard, part)
+			continue
+		}
+		if isYingzoReleaseMetadataFilename(filename) {
+			if _, discardErr := io.Copy(io.Discard, part); discardErr != nil {
+				result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: filename, Code: "package_upload_failed", Message: "could not read metadata file"})
+			} else {
+				result.Ignored = append(result.Ignored, filename)
+			}
+			continue
+		}
+		spec, ok := specByFilename[filename]
+		if !ok {
+			_, _ = io.Copy(io.Discard, part)
+			result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: filename, Code: "invalid_package_filename", Message: "package filename is not part of this release matrix"})
+			continue
+		}
+
+		artifact, storeErr := h.storeYingzoV2Artifact(part, filename, release, spec)
+		if storeErr != nil {
+			var uploadErr *yingzoUploadError
+			if errors.As(storeErr, &uploadErr) {
+				result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: filename, Code: uploadErr.code, Message: uploadErr.message})
+			} else {
+				result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: filename, Code: "storage_error", Message: "could not store package"})
+			}
+			continue
+		}
+		staged = append(staged, artifact)
+
+		if previous, exists := seen[spec.key()]; exists {
+			if previous.SHA256 == artifact.SHA256 && previous.SizeBytes == artifact.SizeBytes {
+				h.removeYingzoStorageFile(releaseID, artifact.StorageKey)
+				staged = staged[:len(staged)-1]
+				result.Skipped = append(result.Skipped, yingzoBatchSkippedArtifact{Filename: filename, Reason: "duplicate_content"})
+			} else {
+				result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: filename, Code: "duplicate_artifact_conflict", Message: "the same artifact slot was uploaded with different content"})
+			}
+			continue
+		}
+		seen[spec.key()] = artifact
+
+		existing := yingzoArtifactForTuple(release, spec.Target, spec.OS, spec.Arch)
+		if existing != nil {
+			if existing.PackageFilename == filename && existing.SHA256 == artifact.SHA256 && existing.SizeBytes == artifact.SizeBytes {
+				h.removeYingzoStorageFile(releaseID, artifact.StorageKey)
+				staged = staged[:len(staged)-1]
+				delete(seen, spec.key())
+				result.Skipped = append(result.Skipped, yingzoBatchSkippedArtifact{Filename: filename, Reason: "already_uploaded"})
+			} else {
+				replacements[spec.key()] = existing
+			}
+		}
+	}
+
+	if len(staged) == 0 && len(result.Errors) == 0 {
+		result.Errors = append(result.Errors, yingzoBatchArtifactError{Code: "artifact_file_required", Message: "at least one Yingzo package file is required"})
+	}
+	if len(result.Errors) > 0 {
+		c.JSON(http.StatusBadRequest, yingzoBatchResponsePayload(result, release, specs, staged))
+		return
+	}
+
+	if len(staged) > 0 {
+		if _, err = tx.ExecContext(c, `UPDATE yingzo_releases SET signature=NULL,updated_at=NOW() WHERE id=$1`, release.ID); err == nil {
+			_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET signature_status='unverified',updated_at=NOW() WHERE release_id=$1 AND NOT (os='windows' OR target='claude-desktop')`, release.ID)
+		}
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}, "batch": yingzoBatchResponsePayload(result, release, specs, staged)})
+		return
+	}
+	for _, artifact := range staged {
+		existing := replacements[artifact.key()]
+		if existing != nil {
+			_, err = tx.ExecContext(c, `UPDATE yingzo_release_artifacts SET package_filename=$2,storage_backend=$3,storage_key=$4,size_bytes=$5,sha256=$6,content_type=$7,format=$8,runtime_protocol=$9,validation_status='validated',signature_status=$10,validated_at=NOW(),updated_at=NOW() WHERE id=$1 AND release_id=$11`, existing.ID, artifact.PackageFilename, artifact.StorageBackend, artifact.StorageKey, artifact.SizeBytes, artifact.SHA256, artifact.ContentType, artifact.Format, artifact.RuntimeProtocol, artifact.SignatureStatus, artifact.ReleaseID)
+			if err == nil {
+				artifact.ID = existing.ID
+				oldStorageKeys = append(oldStorageKeys, existing.StorageKey)
+			}
+		} else {
+			_, err = tx.ExecContext(c, `INSERT INTO yingzo_release_artifacts(id,release_id,artifact_kind,target,os,arch,format,content_type,runtime_protocol,validation_status,signature_status,validated_at,package_filename,storage_backend,storage_key,size_bytes,sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'validated',$10,NOW(),$11,$12,$13,$14,$15)`, artifact.ID, artifact.ReleaseID, artifact.ArtifactKind, artifact.Target, artifact.OS, artifact.Arch, artifact.Format, artifact.ContentType, artifact.RuntimeProtocol, artifact.SignatureStatus, artifact.PackageFilename, artifact.StorageBackend, artifact.StorageKey, artifact.SizeBytes, artifact.SHA256)
+		}
+		if err != nil {
+			var pqErr *pq.Error
+			if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+				result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: artifact.PackageFilename, Code: "release_artifact_exists", Message: "this artifact slot already exists"})
+			} else {
+				result.Errors = append(result.Errors, yingzoBatchArtifactError{Filename: artifact.PackageFilename, Code: "database_error", Message: "could not register package"})
+			}
+			c.JSON(http.StatusConflict, yingzoBatchResponsePayload(result, release, specs, staged))
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		// Commit errors are ambiguous. Keep files so a committed row can never
+		// point at a path that this request already deleted.
+		committed = true
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}, "batch": yingzoBatchResponsePayload(result, release, specs, staged)})
+		return
+	}
+	committed = true
+	for _, storageKey := range oldStorageKeys {
+		h.removeYingzoStorageFile(releaseID, storageKey)
+	}
+	result.Uploaded = append(result.Uploaded, staged...)
+	c.JSON(http.StatusOK, yingzoBatchResponsePayload(result, release, specs, staged))
+}
+
+// isYingzoReleaseMetadataFilename identifies release-sidecar files that are
+// not installable artifacts. The check is intentionally conservative: an
+// unknown package-like filename is an error, never silently dropped.
+func isYingzoReleaseMetadataFilename(filename string) bool {
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(filename)))
+	if name == "" {
+		return false
+	}
+	for _, marker := range []string{"checksum", "sha256", "sha512", "sha1", "sbom", "signature", "manifest", "signing-proof"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	if strings.HasPrefix(name, "yingzo-release-") && strings.HasSuffix(name, ".json") {
+		return true
+	}
+	if name == ".ds_store" || name == "packages.json" || name == "release.json" || name == "license" || name == "notice" {
+		return true
+	}
+	// Release folders often contain human-readable notes and machine-readable
+	// build metadata. None of these can be an installable package in the
+	// schema-2/3 matrix, so they are safe to ignore when a whole directory is
+	// selected in the admin UI.
+	for _, suffix := range []string{".json", ".txt", ".md", ".yaml", ".yml", ".toml", ".xml", ".plist"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	for _, suffix := range []string{".sig", ".asc", ".sha256", ".sha512", ".sha1", ".md5", ".pem"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	if name == "checksums.txt" || name == "sha256sums.txt" || name == "sha512sums.txt" || name == "packages.json" {
+		return true
+	}
+	// Release manifests and signing proofs are useful evidence, but they are
+	// not installable artifacts and may be selected when a whole release folder
+	// is chosen in the browser.
+	return strings.HasPrefix(name, "yingzo-release-") || strings.HasPrefix(name, "signing-proof-") || strings.HasPrefix(name, "host-package-proof-") || strings.HasPrefix(name, "yingzo-sbom-")
+}
+
+func yingzoBatchResponsePayload(result yingzoBatchUploadResponse, release *yingzoRelease, specs []yingzoArtifactSpec, staged []*yingzoReleaseArtifact) yingzoBatchUploadResponse {
+	payload := result
+	payload.ExpectedCount = len(specs)
+	present := make(map[string]struct{}, len(release.Artifacts)+len(staged))
+	for key := range release.Artifacts {
+		present[key] = struct{}{}
+	}
+	for _, artifact := range staged {
+		present[artifact.key()] = struct{}{}
+	}
+	payload.ReceivedCount = len(present)
+	payload.Missing = make([]string, 0)
+	for _, spec := range specs {
+		if _, ok := present[spec.key()]; !ok {
+			payload.Missing = append(payload.Missing, spec.Filename)
+		}
+	}
+	payload.Complete = len(payload.Missing) == 0
+	return payload
 }
 
 func (h *AgentHandler) ReplaceYingzoReleaseArtifact(c *gin.Context) {
