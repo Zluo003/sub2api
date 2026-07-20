@@ -36,7 +36,7 @@ func (s *memoryYingzoTicketStore) Store(_ context.Context, ticket string, payloa
 	return nil
 }
 
-func (s *memoryYingzoTicketStore) Consume(_ context.Context, ticket string) ([]byte, error) {
+func (s *memoryYingzoTicketStore) Get(_ context.Context, ticket string) ([]byte, error) {
 	payload, ok := s.payloads[ticket]
 	if !ok {
 		return nil, context.Canceled
@@ -232,14 +232,14 @@ func TestCreateYingzoInstallInstructionsMapsFourHostsToTwoArtifacts(t *testing.T
 			openAIID := uuid.New()
 			claudeID := uuid.New()
 			now := time.Now().UTC()
-			mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases WHERE status='published'").
-				WillReturnRows(sqlmock.NewRows([]string{"id", "version", "status", "signature", "min_codex_version", "min_claude_version", "release_notes", "created_at", "published_at", "updated_at"}).
-					AddRow(releaseID, "0.2.0", "published", nil, nil, nil, nil, now, now, now))
-			mock.ExpectQuery("SELECT id,release_id,host_family,package_filename,storage_backend,storage_key,size_bytes,sha256,created_at,updated_at FROM yingzo_release_artifacts WHERE release_id=\\$1").
+			mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE status='published' AND channel=\\$1").
+				WithArgs("stable").
+				WillReturnRows(legacyYingzoReleaseRows(releaseID, "0.2.0", "published", now, now))
+			mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").
 				WithArgs(releaseID).
-				WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "host_family", "package_filename", "storage_backend", "storage_key", "size_bytes", "sha256", "created_at", "updated_at"}).
-					AddRow(openAIID, releaseID, "openai", "yingzo-openai-0.2.0.tar.gz", "local", "/tmp/openai.tar.gz", 100, strings.Repeat("a", 64), now, now).
-					AddRow(claudeID, releaseID, "claude", "yingzo-claude-0.2.0.tar.gz", "local", "/tmp/claude.tar.gz", 110, strings.Repeat("b", 64), now, now))
+				WillReturnRows(legacyYingzoArtifactRows(releaseID, now,
+					yingzoLegacyArtifactRow{id: openAIID, family: "openai", filename: "yingzo-openai-0.2.0.tar.gz", storageKey: "/tmp/openai.tar.gz", size: 100},
+					yingzoLegacyArtifactRow{id: claudeID, family: "claude", filename: "yingzo-claude-0.2.0.tar.gz", storageKey: "/tmp/claude.tar.gz", size: 110}))
 
 			router := gin.New()
 			router.POST("/install", func(c *gin.Context) {
@@ -275,6 +275,37 @@ func TestCreateYingzoInstallInstructionsMapsFourHostsToTwoArtifacts(t *testing.T
 	}
 }
 
+func TestCreateYingzoInstallInstructionsRejectsClaudeDesktopForLegacyRelease(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, mock := newAgentHandlerMock(t)
+	tickets := newMemoryYingzoTicketStore()
+	h.yingzoTicketStore = tickets
+	releaseID := uuid.New()
+	now := time.Now().UTC()
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE status='published' AND channel=\\$1").
+		WithArgs("stable").
+		WillReturnRows(legacyYingzoReleaseRows(releaseID, "0.2.4", "published", now, now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").
+		WithArgs(releaseID).
+		WillReturnRows(legacyYingzoArtifactRows(releaseID, now,
+			yingzoLegacyArtifactRow{id: uuid.New(), family: "claude", filename: "yingzo-claude-0.2.4.tar.gz", storageKey: "/tmp/claude.tar.gz", size: 110}))
+
+	router := gin.New()
+	router.POST("/install", func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
+		h.CreateYingzoInstallInstructions(c)
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "https://api-key.cc/install", strings.NewReader(`{"host":"claude-chat"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "host_not_supported_by_release")
+	require.Empty(t, tickets.payloads)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestDownloadYingzoReleaseTicketIsBoundToArtifactAndHostFamily(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
@@ -286,18 +317,17 @@ func TestDownloadYingzoReleaseTicketIsBoundToArtifactAndHostFamily(t *testing.T)
 	now := time.Now().UTC()
 	openAIFile := filepath.Join(t.TempDir(), "openai.tar.gz")
 	require.NoError(t, os.WriteFile(openAIFile, []byte("openai-package"), 0600))
-	payload, err := json.Marshal(yingzoInstallTicket{ReleaseID: releaseID, ArtifactID: openAIID, UserID: 42, Host: "codex", HostFamily: "openai"})
+	payload, err := json.Marshal(yingzoInstallTicket{ReleaseID: releaseID, ArtifactID: openAIID, Host: "codex", HostFamily: "openai"})
 	require.NoError(t, err)
 	tickets.payloads["ticket"] = payload
-	mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases WHERE id=\\$1").
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1").
 		WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "version", "status", "signature", "min_codex_version", "min_claude_version", "release_notes", "created_at", "published_at", "updated_at"}).
-			AddRow(releaseID, "0.2.0", "published", nil, nil, nil, nil, now, now, now))
-	mock.ExpectQuery("SELECT id,release_id,host_family,package_filename,storage_backend,storage_key,size_bytes,sha256,created_at,updated_at FROM yingzo_release_artifacts WHERE release_id=\\$1").
+		WillReturnRows(legacyYingzoReleaseRows(releaseID, "0.2.0", "published", now, now))
+	mock.ExpectQuery("SELECT .* FROM yingzo_release_artifacts WHERE release_id=\\$1").
 		WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "host_family", "package_filename", "storage_backend", "storage_key", "size_bytes", "sha256", "created_at", "updated_at"}).
-			AddRow(openAIID, releaseID, "openai", "yingzo-openai-0.2.0.tar.gz", "local", openAIFile, 14, strings.Repeat("a", 64), now, now).
-			AddRow(claudeID, releaseID, "claude", "yingzo-claude-0.2.0.tar.gz", "local", "/tmp/claude.tar.gz", 15, strings.Repeat("b", 64), now, now))
+		WillReturnRows(legacyYingzoArtifactRows(releaseID, now,
+			yingzoLegacyArtifactRow{id: openAIID, family: "openai", filename: "yingzo-openai-0.2.0.tar.gz", storageKey: openAIFile, size: 14},
+			yingzoLegacyArtifactRow{id: claudeID, family: "claude", filename: "yingzo-claude-0.2.0.tar.gz", storageKey: "/tmp/claude.tar.gz", size: 15}))
 
 	router := gin.New()
 	router.GET("/download/:ticket/:filename", h.DownloadYingzoRelease)
@@ -315,11 +345,11 @@ func TestDownloadYingzoReleaseReturnsNotFoundWhenReleaseLookupFails(t *testing.T
 	h.yingzoTicketStore = tickets
 	releaseID := uuid.New()
 	payload, err := json.Marshal(yingzoInstallTicket{
-		ReleaseID: releaseID, ArtifactID: uuid.New(), UserID: 42, Host: "codex", HostFamily: "openai",
+		ReleaseID: releaseID, ArtifactID: uuid.New(), Host: "codex", HostFamily: "openai",
 	})
 	require.NoError(t, err)
 	tickets.payloads["ticket"] = payload
-	mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases WHERE id=\\$1").
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases WHERE id=\\$1").
 		WithArgs(releaseID).
 		WillReturnError(context.Canceled)
 
@@ -335,10 +365,10 @@ func TestDownloadYingzoReleaseReturnsNotFoundWhenReleaseLookupFails(t *testing.T
 func TestListYingzoReleasesReturnsDatabaseErrorAfterIterationFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
-	rows := sqlmock.NewRows([]string{"id", "version", "status", "signature", "min_codex_version", "min_claude_version", "release_notes", "created_at", "published_at", "updated_at"}).
-		AddRow(uuid.New(), "0.2.0", "draft", nil, nil, nil, nil, time.Now(), nil, time.Now()).
+	now := time.Now()
+	rows := legacyYingzoReleaseRows(uuid.New(), "0.2.0", "draft", now, time.Time{}).
 		RowError(0, context.Canceled)
-	mock.ExpectQuery("SELECT id,version,status,signature,min_codex_version,min_claude_version,release_notes,created_at,published_at,updated_at FROM yingzo_releases ORDER BY created_at DESC").
+	mock.ExpectQuery("SELECT .* FROM yingzo_releases ORDER BY created_at DESC").
 		WillReturnRows(rows)
 
 	router := gin.New()
@@ -425,13 +455,18 @@ func TestPublishYingzoReleaseRejectsIncompleteDualArtifacts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
 	releaseID := uuid.New()
+	storage := t.TempDir()
+	openAIFile := filepath.Join(storage, "openai.tar.gz")
+	require.NoError(t, os.WriteFile(openAIFile, []byte("openai"), 0600))
+	openAISHA, err := yingzoFileSHA256(openAIFile)
+	require.NoError(t, err)
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT status FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
+	mock.ExpectQuery("SELECT status,channel,distribution_schema_version,runtime_protocol,version,signature FROM yingzo_releases WHERE id=\\$1 FOR UPDATE").
 		WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("draft"))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FILTER").
+		WillReturnRows(sqlmock.NewRows([]string{"status", "channel", "distribution_schema_version", "runtime_protocol", "version", "signature"}).AddRow("draft", "stable", 1, 0, "0.2.0", nil))
+	mock.ExpectQuery("SELECT host_family,storage_key,size_bytes,sha256 FROM yingzo_release_artifacts WHERE release_id=\\$1").
 		WithArgs(releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"combined", "openai", "claude"}).AddRow(0, 1, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"host_family", "storage_key", "size_bytes", "sha256"}).AddRow("openai", openAIFile, int64(6), openAISHA))
 	mock.ExpectRollback()
 
 	router := gin.New()
@@ -444,6 +479,30 @@ func TestPublishYingzoReleaseRejectsIncompleteDualArtifacts(t *testing.T) {
 	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 	require.Equal(t, "release_artifacts_incomplete", responseCode(response))
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+type yingzoLegacyArtifactRow struct {
+	id         uuid.UUID
+	family     string
+	filename   string
+	storageKey string
+	size       int64
+}
+
+func legacyYingzoReleaseRows(id uuid.UUID, version, status string, now time.Time, publishedAt any) *sqlmock.Rows {
+	return sqlmock.NewRows(strings.Split(yingzoReleaseColumns, ",")).
+		AddRow(id, version, status, 1, "stable", 0, []byte(`{}`), nil, nil, nil, nil, now, publishedAt, now)
+}
+
+func legacyYingzoArtifactRows(releaseID uuid.UUID, now time.Time, artifacts ...yingzoLegacyArtifactRow) *sqlmock.Rows {
+	rows := sqlmock.NewRows(strings.Split(yingzoArtifactColumns, ","))
+	for _, artifact := range artifacts {
+		rows.AddRow(
+			artifact.id, releaseID, artifact.family, "host_package", artifact.family, "any", "any", "tar.gz", "application/gzip", 0,
+			"validated", "unverified", now, artifact.filename, "local", artifact.storageKey, artifact.size, strings.Repeat("a", 64), now, now,
+		)
+	}
+	return rows
 }
 
 func mustYingzoOrigin(t *testing.T, raw string) string {

@@ -14,6 +14,7 @@ func RegisterAgentRoutes(r *gin.Engine, v1 *gin.RouterGroup, h *handler.Handlers
 	v1.POST("/agent/device/token", h.Agent.PollDeviceAuthorization)
 	v1.GET("/agent/plugin/releases/latest", h.Agent.GetLatestYingzoRelease)
 	v1.GET("/agent/plugin/download/:ticket/:filename", h.Agent.DownloadYingzoRelease)
+	v1.HEAD("/agent/plugin/download/:ticket/:filename", h.Agent.DownloadYingzoRelease)
 	user := v1.Group("/agent")
 	user.Use(gin.HandlerFunc(jwtAuth))
 	user.GET("/device/authorizations/:user_code", h.Agent.GetDeviceAuthorization)

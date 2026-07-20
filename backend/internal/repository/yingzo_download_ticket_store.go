@@ -23,8 +23,8 @@ func (s *YingzoDownloadTicketStore) Store(ctx context.Context, ticket string, pa
 	return s.client.Set(ctx, yingzoDownloadTicketPrefix+ticket, payload, ttl).Err()
 }
 
-func (s *YingzoDownloadTicketStore) Consume(ctx context.Context, ticket string) ([]byte, error) {
-	payload, err := s.client.GetDel(ctx, yingzoDownloadTicketPrefix+ticket).Bytes()
+func (s *YingzoDownloadTicketStore) Get(ctx context.Context, ticket string) ([]byte, error) {
+	payload, err := s.client.Get(ctx, yingzoDownloadTicketPrefix+ticket).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, service.ErrYingzoDownloadTicketNotFound
 	}

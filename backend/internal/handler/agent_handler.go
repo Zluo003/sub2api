@@ -110,6 +110,8 @@ func (h *AgentHandler) StartCleanupWorker(interval time.Duration) {
 				return
 			case <-ticker.C:
 				_, _ = h.CleanupExpired(ctx)
+				_, _ = h.CleanupYingzoReleaseTemporaryFiles(time.Now().Add(-24 * time.Hour))
+				_, _ = h.CleanupYingzoAbandonedDraftArtifacts(ctx, time.Now().Add(-30*24*time.Hour))
 			}
 		}
 	}()

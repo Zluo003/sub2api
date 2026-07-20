@@ -18,6 +18,7 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		"167_yingzo_agent_model_pricing.sql",
 		"169_require_agent_image_generation.sql",
 		"170_yingzo_release_artifacts.sql",
+		"171_yingzo_distribution_v2.sql",
 	} {
 		content, err := FS.ReadFile(name)
 		require.NoError(t, err)
@@ -25,4 +26,22 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 		require.NotContains(t, sql, "+goose down", "%s must use the repository's forward-only migration format", name)
 		require.NotContains(t, sql, "drop table", "%s must not contain rollback DDL", name)
 	}
+}
+
+func TestYingzoDistributionV2MigrationPreservesLegacyAndAddsChannelMatrix(t *testing.T) {
+	content, err := FS.ReadFile("171_yingzo_distribution_v2.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(content))
+
+	require.Contains(t, sql, "distribution_schema_version")
+	require.Contains(t, sql, "channel in ('stable', 'prerelease')")
+	require.Contains(t, sql, "runtime_protocol")
+	require.Contains(t, sql, "compatibility jsonb")
+	require.Contains(t, sql, "drop index if exists idx_yingzo_releases_single_published")
+	require.Contains(t, sql, "where status = 'published'")
+	require.Contains(t, sql, "unique (release_id, target, os, arch)")
+	require.Contains(t, sql, "set artifact_kind = coalesce(artifact_kind, 'host_package')")
+	require.Contains(t, sql, "target = coalesce(target, host_family)")
+	require.Contains(t, sql, "signature_status")
+	require.NotContains(t, sql, "bytea", "release binaries must remain on the local persistent volume, not in PostgreSQL")
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestYingzoDownloadTicketStoreConsumesTicketOnce(t *testing.T) {
+func TestYingzoDownloadTicketStoreSupportsHeadRangeAndRetryUntilExpiry(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
@@ -21,10 +21,15 @@ func TestYingzoDownloadTicketStoreConsumesTicketOnce(t *testing.T) {
 	payload := []byte(`{"release_id":"release-1"}`)
 	require.NoError(t, store.Store(context.Background(), "ticket-1", payload, time.Minute))
 
-	consumed, err := store.Consume(context.Background(), "ticket-1")
+	consumed, err := store.Get(context.Background(), "ticket-1")
 	require.NoError(t, err)
 	require.Equal(t, payload, consumed)
 
-	_, err = store.Consume(context.Background(), "ticket-1")
+	retried, err := store.Get(context.Background(), "ticket-1")
+	require.NoError(t, err)
+	require.Equal(t, payload, retried)
+
+	server.FastForward(time.Minute)
+	_, err = store.Get(context.Background(), "ticket-1")
 	require.True(t, errors.Is(err, service.ErrYingzoDownloadTicketNotFound))
 }

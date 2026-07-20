@@ -125,11 +125,30 @@
 
         <div class="yingzo-install-controls">
           <div class="yingzo-release-meta" v-if="release">
-            <span>当前版本 {{ release.version }}</span>
+            <span>{{ release.channel === 'prerelease' ? '预发布版' : '稳定版' }} {{ release.version }}</span>
             <span>{{ compatibilityText }}</span>
           </div>
           <div class="yingzo-release-meta" v-else>
             <span>{{ releaseLoading ? '正在读取发行信息' : '管理员尚未发布安装包' }}</span>
+          </div>
+
+          <div class="yingzo-platform-controls" aria-label="安装平台">
+            <label>系统
+              <select v-model="selectedOS">
+                <option value="macos">macOS</option>
+                <option value="windows">Windows</option>
+              </select>
+            </label>
+            <label>架构
+              <select v-model="selectedArch">
+                <option v-if="selectedOS === 'macos'" value="arm64">Apple Silicon</option>
+                <option value="x64">{{ selectedOS === 'macos' ? 'Intel' : 'x64' }}</option>
+              </select>
+            </label>
+            <label class="yingzo-channel-toggle">
+              <input v-model="usePrerelease" type="checkbox" />
+              <span>体验预发布版</span>
+            </label>
           </div>
 
           <div v-if="authStore.isAuthenticated" class="yingzo-host-actions" aria-label="复制安装提示词">
@@ -149,6 +168,10 @@
             登录后生成安装提示词
           </router-link>
           <p v-if="installError" class="yingzo-error" role="alert">{{ installError }}</p>
+          <div v-if="lastInstructions?.runtime_resolution === 'probe' && lastInstructions.runtime_helper_uri" class="yingzo-runtime-fallback">
+            <a :href="lastInstructions.runtime_helper_uri" class="yingzo-runtime-link">检测已安装 Runtime</a>
+            <a v-if="lastInstructions.runtime_installer?.download_url" :href="lastInstructions.runtime_installer.download_url" class="yingzo-runtime-link" download>直接下载安装器</a>
+          </div>
         </div>
       </section>
     </main>
@@ -169,24 +192,36 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Icon } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
-import { createYingzoInstallInstructions, getLatestYingzoRelease, type YingzoHost, type YingzoReleaseSummary } from '@/api/yingzo'
+import {
+  createYingzoInstallInstructions, getLatestYingzoRelease, type YingzoArchitecture,
+  type YingzoHost, type YingzoOperatingSystem, type YingzoReleaseChannel, type YingzoReleaseSummary,
+} from '@/api/yingzo'
 
 const authStore = useAuthStore()
 const copiedHost = ref<YingzoHost | null>(null)
 const copyingHost = ref<YingzoHost | null>(null)
 const installError = ref('')
 const release = ref<YingzoReleaseSummary | null>(null)
+const lastInstructions = ref<Awaited<ReturnType<typeof createYingzoInstallInstructions>> | null>(null)
 const releaseLoading = ref(true)
+const selectedOS = ref<Exclude<YingzoOperatingSystem, 'any'>>('macos')
+const selectedArch = ref<Exclude<YingzoArchitecture, 'any'>>('arm64')
+const usePrerelease = ref(false)
 
-const hosts: Array<{ id: YingzoHost; label: string }> = [
+const allHosts: Array<{ id: YingzoHost; label: string }> = [
   { id: 'chatgpt-work', label: 'ChatGPT Work' },
   { id: 'codex', label: 'Codex' },
+  { id: 'claude-chat', label: 'Claude Desktop' },
   { id: 'claude-cowork', label: 'Claude Cowork' },
   { id: 'claude-code', label: 'Claude Code' },
 ]
+
+const hosts = computed(() => allHosts.filter((host) => (
+  host.id !== 'claude-chat' || (release.value?.distribution_schema_version || 1) >= 2
+)))
 
 const advantages = [
   { title: '完整创作链，而不是单点工具', description: '故事、剧本、导演、分镜、图片、视频与审查共享同一份项目状态。' },
@@ -225,10 +260,18 @@ async function copyInstallPrompt(host: YingzoHost) {
   copyingHost.value = host
   installError.value = ''
   copiedHost.value = null
+  lastInstructions.value = null
   try {
-    const instructions = await createYingzoInstallInstructions(host)
+    const instructions = await createYingzoInstallInstructions({
+      host,
+      os: selectedOS.value,
+      arch: selectedOS.value === 'windows' ? 'x64' : selectedArch.value,
+      channel: releaseChannel(),
+      runtime_capability: 'unknown',
+    })
     if (instructions.host !== host) throw new Error(`Install host mismatch: expected ${host}, received ${instructions.host}`)
     await navigator.clipboard.writeText(instructions.prompt)
+    lastInstructions.value = instructions
     copiedHost.value = host
     window.setTimeout(() => {
       if (copiedHost.value === host) copiedHost.value = null
@@ -241,15 +284,37 @@ async function copyInstallPrompt(host: YingzoHost) {
   }
 }
 
-onMounted(async () => {
+function releaseChannel(): YingzoReleaseChannel { return usePrerelease.value ? 'prerelease' : 'stable' }
+
+async function loadRelease() {
+  releaseLoading.value = true
+  installError.value = ''
   try {
-    release.value = await getLatestYingzoRelease()
+    release.value = await getLatestYingzoRelease(releaseChannel())
   } catch {
     release.value = null
+    if (usePrerelease.value) installError.value = '当前没有可用的预发布版本。'
   } finally {
     releaseLoading.value = false
   }
-})
+}
+
+async function detectPlatform() {
+  const userAgent = navigator.userAgent.toLowerCase()
+  selectedOS.value = userAgent.includes('windows') ? 'windows' : 'macos'
+  if (selectedOS.value === 'windows') { selectedArch.value = 'x64'; return }
+  const userAgentData = (navigator as Navigator & {
+    userAgentData?: { getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string }> }
+  }).userAgentData
+  try {
+    const architecture = await userAgentData?.getHighEntropyValues?.(['architecture'])
+    selectedArch.value = architecture?.architecture?.toLowerCase().includes('x86') ? 'x64' : 'arm64'
+  } catch { selectedArch.value = 'arm64' }
+}
+
+watch(selectedOS, (os) => { if (os === 'windows') selectedArch.value = 'x64' })
+watch(usePrerelease, () => { void loadRelease() })
+onMounted(async () => { await detectPlatform(); await loadRelease() })
 </script>
 
 <style scoped>
@@ -739,6 +804,48 @@ onMounted(async () => {
   font-size: 12px;
 }
 
+.yingzo-platform-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.yingzo-platform-controls label {
+  display: grid;
+  gap: 7px;
+  color: #bdbdbd;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.yingzo-platform-controls select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #565656;
+  border-radius: 4px;
+  background: #1c1c1c;
+  color: #ffffff;
+  font: inherit;
+}
+
+.yingzo-platform-controls .yingzo-channel-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  cursor: pointer;
+}
+
+.yingzo-channel-toggle input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--yz-red);
+}
+
 .yingzo-host-actions {
   width: 100%;
   display: grid;
@@ -785,6 +892,21 @@ onMounted(async () => {
   margin: 12px 0 0;
   color: #ff9688;
   font-size: 13px;
+}
+
+.yingzo-runtime-fallback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.yingzo-runtime-link {
+  color: #ffb1a8;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .yingzo-footer {

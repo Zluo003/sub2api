@@ -10,5 +10,5 @@ var ErrYingzoDownloadTicketNotFound = errors.New("yingzo download ticket not fou
 
 type YingzoDownloadTicketStore interface {
 	Store(ctx context.Context, ticket string, payload []byte, ttl time.Duration) error
-	Consume(ctx context.Context, ticket string) ([]byte, error)
+	Get(ctx context.Context, ticket string) ([]byte, error)
 }
