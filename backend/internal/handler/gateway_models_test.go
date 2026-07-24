@@ -373,7 +373,8 @@ func TestRequestETagMatches(t *testing.T) {
 }
 
 func TestAgentCapabilitiesUseTheConfiguredTextCategoryForEmbeddings(t *testing.T) {
-	capabilities := agentCapabilitiesForMediaTypes(
+	capabilities := agentCapabilitiesForModel(
+		"text-embedding-3-small",
 		[]string{service.AgentMediaTypeText},
 		[]string{service.PlatformOpenAI},
 		[]string{service.AgentInterfaceOpenAIEmbeddings},
@@ -398,11 +399,41 @@ func TestAgentCapabilitiesAdvertiseReferenceMediaInputs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			capabilities := agentCapabilitiesForMediaTypes([]string{tt.mediaType}, nil, nil)
+			capabilities := agentCapabilitiesForModel("unknown", []string{tt.mediaType}, nil, nil)
 
 			require.Equal(t, tt.modalities, capabilities.InputModalities)
 		})
 	}
+}
+
+func TestAgentCapabilitiesAdvertisePerModelMediaOptions(t *testing.T) {
+	image := agentCapabilitiesForModel(
+		"gpt-image-2",
+		[]string{service.AgentMediaTypeImage},
+		[]string{service.PlatformOpenAI},
+		[]string{service.AgentInterfaceOpenAIImages},
+	)
+	require.Equal(t, []string{"1K", "2K", "4K"}, image.SupportedImageSizes)
+	require.Contains(t, image.SupportedAspectRatios, "16:9")
+	require.Equal(t, 16, image.MaxInputImages)
+
+	standard := agentCapabilitiesForModel(
+		service.VideoModelSeedance20,
+		[]string{service.AgentMediaTypeVideo},
+		[]string{service.PlatformSeedance},
+		[]string{service.AgentInterfaceSeedanceVideos},
+	)
+	fast := agentCapabilitiesForModel(
+		service.VideoModelSeedance20Fast,
+		[]string{service.AgentMediaTypeVideo},
+		[]string{service.PlatformSeedance},
+		[]string{service.AgentInterfaceSeedanceVideos},
+	)
+	require.Equal(t, []string{"480p", "720p", "1080p", "4K"}, standard.SupportedVideoResolutions)
+	require.Equal(t, []string{"480p", "720p"}, fast.SupportedVideoResolutions)
+	require.Equal(t, []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, standard.SupportedVideoDurationsSec)
+	require.NotNil(t, standard.SupportsVideoAudio)
+	require.True(t, *standard.SupportsVideoAudio)
 }
 
 func TestGatewayModels_AgentGroupFailsClosedWhenCatalogUnavailable(t *testing.T) {

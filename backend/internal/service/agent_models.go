@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	AgentAPIContractVersion        = "2026-07-24.1"
+	AgentAPIContractVersion        = "2026-07-24.2"
 	AgentModelCatalogSchemaVersion = 3
 	AgentModelCatalogSource        = "configured_account_synced_catalog"
 )

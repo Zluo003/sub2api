@@ -1078,14 +1078,21 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 }
 
 type agentModelCapabilities struct {
-	MediaTypes       []string `json:"media_types"`
-	Platforms        []string `json:"platforms"`
-	Interfaces       []string `json:"interfaces"`
-	InputModalities  []string `json:"input_modalities"`
-	OutputModalities []string `json:"output_modalities"`
-	Operations       []string `json:"operations"`
-	Streaming        bool     `json:"streaming"`
-	Asynchronous     bool     `json:"asynchronous"`
+	MediaTypes                 []string `json:"media_types"`
+	Platforms                  []string `json:"platforms"`
+	Interfaces                 []string `json:"interfaces"`
+	InputModalities            []string `json:"input_modalities"`
+	OutputModalities           []string `json:"output_modalities"`
+	Operations                 []string `json:"operations"`
+	Streaming                  bool     `json:"streaming"`
+	Asynchronous               bool     `json:"asynchronous"`
+	MaxInputImages             int      `json:"max_input_images,omitempty"`
+	SupportedAspectRatios      []string `json:"supported_aspect_ratios,omitempty"`
+	SupportedImageSizes        []string `json:"supported_image_sizes,omitempty"`
+	SupportedVideoResolutions  []string `json:"supported_video_resolutions,omitempty"`
+	SupportedVideoDurationsSec []int    `json:"supported_video_durations_sec,omitempty"`
+	SupportsVideoAudio         *bool    `json:"supports_video_audio,omitempty"`
+	Cancellation               []string `json:"cancellation,omitempty"`
 }
 
 type agentModelView struct {
@@ -1115,7 +1122,7 @@ type agentModelsListView struct {
 func writeAgentModelsList(c *gin.Context, catalog []service.AgentModelCatalogEntry) {
 	models := make([]agentModelView, 0, len(catalog))
 	for _, entry := range catalog {
-		capabilities := agentCapabilitiesForMediaTypes(entry.MediaTypes, entry.Platforms, entry.Interfaces)
+		capabilities := agentCapabilitiesForModel(entry.ID, entry.MediaTypes, entry.Platforms, entry.Interfaces)
 		models = append(models, agentModelView{
 			ID:               entry.ID,
 			Object:           "model",
@@ -1160,7 +1167,7 @@ func writeAgentModelsList(c *gin.Context, catalog []service.AgentModelCatalogEnt
 	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
-func agentCapabilitiesForMediaTypes(mediaTypes, platforms, interfaces []string) agentModelCapabilities {
+func agentCapabilitiesForModel(modelID string, mediaTypes, platforms, interfaces []string) agentModelCapabilities {
 	capabilities := agentModelCapabilities{
 		MediaTypes:       append([]string(nil), mediaTypes...),
 		Platforms:        append([]string(nil), platforms...),
@@ -1199,7 +1206,34 @@ func agentCapabilitiesForMediaTypes(mediaTypes, platforms, interfaces []string) 
 			capabilities.Asynchronous = true
 		}
 	}
+	configureAgentMediaOptions(&capabilities, modelID)
 	return capabilities
+}
+
+func configureAgentMediaOptions(capabilities *agentModelCapabilities, modelID string) {
+	if capabilities == nil {
+		return
+	}
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	imageRatios := []string{"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
+	switch modelID {
+	case "gpt-image-2", "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview":
+		capabilities.MaxInputImages = 16
+		capabilities.SupportedAspectRatios = imageRatios
+		capabilities.SupportedImageSizes = []string{"1K", "2K", "4K"}
+	case service.VideoModelSeedance20, service.VideoModelSeedance20Fast:
+		capabilities.MaxInputImages = 12
+		capabilities.SupportedAspectRatios = []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}
+		capabilities.SupportedVideoDurationsSec = []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+		supportsAudio := true
+		capabilities.SupportsVideoAudio = &supportsAudio
+		capabilities.Cancellation = []string{"remoteJob"}
+		if modelID == service.VideoModelSeedance20Fast {
+			capabilities.SupportedVideoResolutions = []string{service.VideoResolution480P, service.VideoResolution720P}
+		} else {
+			capabilities.SupportedVideoResolutions = []string{service.VideoResolution480P, service.VideoResolution720P, service.VideoResolution1080P, service.VideoResolution4K}
+		}
+	}
 }
 
 func requestETagMatches(ifNoneMatch, current string) bool {

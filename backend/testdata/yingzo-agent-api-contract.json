@@ -1,10 +1,26 @@
 {
   "schema_version": "3.0.0",
-  "agent_api_contract_version": "2026-07-24.1",
+  "agent_api_contract_version": "2026-07-24.2",
   "model_catalog": {
     "schema_version": 3,
     "source": "configured_account_synced_catalog",
-    "capability_fields": ["media_types", "platforms", "interfaces", "input_modalities", "output_modalities", "operations", "streaming", "asynchronous"],
+    "capability_fields": [
+      "media_types",
+      "platforms",
+      "interfaces",
+      "input_modalities",
+      "output_modalities",
+      "operations",
+      "streaming",
+      "asynchronous",
+      "max_input_images",
+      "supported_aspect_ratios",
+      "supported_image_sizes",
+      "supported_video_resolutions",
+      "supported_video_durations_sec",
+      "supports_video_audio",
+      "cancellation"
+    ],
     "cache_headers": ["ETag", "X-Model-Catalog-Schema-Version", "X-Gateway-Contract-Version"]
   },
   "image_response_format_url": "temporary_http_url_no_data_url_or_b64_json",
