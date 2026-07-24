@@ -54,7 +54,6 @@ func safeRequestLogPath(c *gin.Context) string {
 	path := c.Request.URL.Path
 	for _, prefix := range []string{
 		"/temporary-assets/",
-		"/api/v1/agent/device/authorizations/",
 	} {
 		if strings.HasPrefix(path, prefix) {
 			return prefix + ":redacted"

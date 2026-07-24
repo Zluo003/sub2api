@@ -35,6 +35,7 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService  *service.ErrorPassthroughService
 	contentModerationService *service.ContentModerationService
 	opsService               *service.OpsService
+	imageResultPublisher     service.OpenAIImageResultPublisher
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
 	maxAccountSwitches       int
@@ -114,6 +115,7 @@ func NewOpenAIGatewayHandler(
 	errorPassthroughService *service.ErrorPassthroughService,
 	contentModerationService *service.ContentModerationService,
 	opsService *service.OpsService,
+	imageResultPublisher service.OpenAIImageResultPublisher,
 	cfg *config.Config,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
@@ -132,6 +134,7 @@ func NewOpenAIGatewayHandler(
 		errorPassthroughService:  errorPassthroughService,
 		contentModerationService: contentModerationService,
 		opsService:               opsService,
+		imageResultPublisher:     imageResultPublisher,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
 		maxAccountSwitches:       maxAccountSwitches,
@@ -260,6 +263,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
+	}
+	if imageIntent {
+		imageTier, tierErr := service.OpenAIResponsesImageBillingTier(body, reqModel)
+		if tierErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", tierErr.Error())
+			return
+		}
+		if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformOpenAI, reqModel, imageTier, 1); err != nil {
+			reqLog.Warn("openai.responses.agent_image_pricing_unavailable", zap.Error(err))
+			writeOpenAIAgentPricingError(c, err)
+			return
+		}
 	}
 	var imageReleaseFunc func()
 	if imageIntent {
@@ -391,6 +406,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if !imageIntent {
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				c.Request.Context(), apiKey.Group, account, reqModel, channelMapping.MappedModel,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("openai.responses.agent_language_pricing_unavailable", zap.Error(err))
+				writeOpenAIAgentPricingError(c, err)
+				return
+			}
+		}
 
 		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
@@ -1270,9 +1297,22 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage)
+	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
+	}
+	if imageIntent {
+		imageTier, tierErr := service.OpenAIResponsesImageBillingTier(firstMessage, reqModel)
+		if tierErr != nil {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, tierErr.Error())
+			return
+		}
+		if err := h.gatewayService.ValidateAgentImagePricing(ctx, apiKey.Group, service.PlatformOpenAI, reqModel, imageTier, 1); err != nil {
+			reqLog.Warn("openai.websocket.agent_image_pricing_unavailable", zap.Error(err))
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, agentPricingUnavailableCode+": "+agentPricingPublicMessage(err))
+			return
+		}
 	}
 
 	// F5a: 握手层会话屏蔽检查。WS 握手无 body，显式标识仅来自握手 header
@@ -1390,6 +1430,18 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
+		if !imageIntent {
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				ctx, apiKey.Group, account, reqModel, channelMappingWS.MappedModel,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("openai.websocket.agent_language_pricing_unavailable", zap.Error(err))
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, agentPricingUnavailableCode+": "+agentPricingPublicMessage(err))
+				return
+			}
+		}
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 			accountMaxConcurrency = selection.WaitPlan.MaxConcurrency

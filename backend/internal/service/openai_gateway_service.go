@@ -2249,6 +2249,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
+	if isAgentGroupContext(ctx, groupID) {
+		return s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+	}
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
 		return accounts, err
@@ -6199,19 +6202,34 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageOutputTokens:   result.Usage.ImageOutputTokens,
 	}
 
-	// Get rate multiplier
+	// Agent language billing is always source channel price × Agent group
+	// multiplier. Ordinary groups retain the optional per-user override.
 	multiplier := 1.0
 	if s.cfg != nil {
 		multiplier = s.cfg.Default.RateMultiplier
 	}
 	if apiKey.GroupID != nil && apiKey.Group != nil {
-		resolver := s.userGroupRateResolver
-		if resolver == nil {
-			resolver = newUserGroupRateResolver(nil, nil, resolveUserGroupRateCacheTTL(s.cfg), nil, "service.openai_gateway")
+		if apiKey.Group.IsAgent() {
+			if s.resolver == nil {
+				return ErrAgentPlatformRateUnavailable
+			}
+			resolvedMultiplier, err := s.resolver.ResolveAgentPlatformRate(ctx, apiKey.Group.ID, account.Platform)
+			if err != nil {
+				return fmt.Errorf("resolve Agent platform multiplier: %w", err)
+			}
+			multiplier = resolvedMultiplier
+		} else {
+			resolver := s.userGroupRateResolver
+			if resolver == nil {
+				resolver = newUserGroupRateResolver(nil, nil, resolveUserGroupRateCacheTTL(s.cfg), nil, "service.openai_gateway")
+			}
+			multiplier = resolver.Resolve(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
 		}
-		multiplier = resolver.Resolve(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
 	}
 	imageMultiplier := resolveImageRateMultiplier(apiKey, multiplier)
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		imageMultiplier = 1
+	}
 
 	var cost *CostBreakdown
 	var err error
@@ -6237,8 +6255,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
-	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, billingModels, multiplier, imageMultiplier, tokens, serviceTier)
+	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, account, billingModels, multiplier, imageMultiplier, tokens, serviceTier)
 	if err != nil {
+		if apiKey.Group != nil && apiKey.Group.IsAgent() {
+			return fmt.Errorf("calculate Agent OpenAI usage cost: %w", err)
+		}
 		if !isUsagePricingUnavailableError(err) {
 			return err
 		}
@@ -6406,6 +6427,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	ctx context.Context,
 	result *OpenAIForwardResult,
 	apiKey *APIKey,
+	account *Account,
 	billingModels []string,
 	multiplier float64,
 	imageMultiplier float64,
@@ -6415,12 +6437,50 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	billingModel := firstUsageBillingModel(billingModels)
 	if result != nil && result.ImageCount > 0 {
 		// 渠道定价为 token 计费时走 token 路径，否则走图片计费
+		if apiKey.Group != nil && apiKey.Group.IsAgent() {
+			if s.resolver == nil {
+				return nil, ErrAgentImagePricingUnavailable
+			}
+			unitPrice, _, err := s.resolver.ResolveAgentMediaUnitPrice(
+				ctx,
+				apiKey.Group.ID,
+				account.Platform,
+				AgentMediaTypeImage,
+				result.ImageSize,
+				billingModels...,
+			)
+			if err != nil {
+				return nil, err
+			}
+			return s.billingService.CalculateConfiguredAgentImageCost(unitPrice, result.ImageCount)
+		}
 		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
 			return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier), nil
 		}
 	}
 	if len(billingModels) == 0 || billingModel == "" {
 		return nil, errors.New("openai usage billing model is empty")
+	}
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		if s.resolver == nil {
+			return nil, ErrAgentChannelPricingUnavailable
+		}
+		resolved, resolvedModel, err := s.resolver.ResolveAgentAccountCandidates(
+			ctx, apiKey.Group.ID, account, billingModels...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return s.billingService.CalculateCostUnified(CostInput{
+			Ctx:            ctx,
+			Model:          resolvedModel,
+			Tokens:         tokens,
+			RequestCount:   1,
+			RateMultiplier: multiplier,
+			ServiceTier:    serviceTier,
+			Resolver:       s.resolver,
+			Resolved:       resolved,
+		})
 	}
 	var lastErr error
 	for _, candidate := range billingModels {
@@ -6483,23 +6543,25 @@ func (s *OpenAIGatewayService) calculateOpenAIImageCost(
 	multiplier float64,
 ) *CostBreakdown {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
-	if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved != nil &&
-		(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
-		gid := apiKey.Group.ID
-		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			RequestCount:   result.ImageCount,
-			SizeTier:       sizeTier,
-			RateMultiplier: multiplier,
-			Resolver:       s.resolver,
-			Resolved:       resolved,
-		})
-		if err == nil {
-			return cost
+	if apiKey.Group == nil || !apiKey.Group.IsAgent() {
+		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved != nil &&
+			(resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage) {
+			gid := apiKey.Group.ID
+			cost, err := s.billingService.CalculateCostUnified(CostInput{
+				Ctx:            ctx,
+				Model:          billingModel,
+				GroupID:        &gid,
+				RequestCount:   result.ImageCount,
+				SizeTier:       sizeTier,
+				RateMultiplier: multiplier,
+				Resolver:       s.resolver,
+				Resolved:       resolved,
+			})
+			if err == nil {
+				return cost
+			}
+			logger.LegacyPrintf("service.openai_gateway", "Calculate image channel cost failed: %v", err)
 		}
-		logger.LegacyPrintf("service.openai_gateway", "Calculate image channel cost failed: %v", err)
 	}
 
 	var groupConfig *ImagePriceConfig

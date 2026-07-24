@@ -31,13 +31,11 @@ describe('AppSidebar header styles', () => {
   })
 })
 
-describe('AppSidebar Yingzo navigation', () => {
-  it('shows Yingzo after the user dashboard and exposes admin release management', () => {
-    const dashboardIndex = componentSource.indexOf("items.push({ path: '/dashboard'")
-    const yingzoIndex = componentSource.indexOf("items.push({ path: '/yingzo'")
-    expect(dashboardIndex).toBeGreaterThan(-1)
-    expect(yingzoIndex).toBeGreaterThan(dashboardIndex)
-    expect(componentSource).toContain("{ path: '/admin/yingzo', label: t('nav.yingzoManagement')")
+describe('AppSidebar product navigation', () => {
+  it('keeps generic model infrastructure and removes retired release entries', () => {
+    expect(componentSource).toContain("items.push({ path: '/model-plaza'")
+    expect(componentSource).not.toContain("path: '/yingzo'")
+    expect(componentSource).not.toContain("path: '/admin/yingzo'")
     expect(componentSource).toContain("{ path: '/admin/file-service', label: t('nav.fileService')")
   })
 })

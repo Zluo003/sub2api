@@ -40,7 +40,7 @@ Cleanup options:
   -h, --help                       Show this help
 
 The script never deletes video task rows, usage/billing records, users, API keys,
-groups, accounts, pricing rules, or Yingzo release records. Passwords are not
+groups, accounts, or pricing rules. Passwords are not
 accepted as arguments; direct connections use normal psql authentication.
 EOF
 }

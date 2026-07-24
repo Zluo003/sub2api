@@ -263,15 +263,6 @@ const DashboardIcon = {
     )
 }
 
-const YingzoIcon = {
-  render: () =>
-    h(
-      'svg',
-      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
-      [h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', d: 'M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Zm8.446-7.189L18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z' })]
-    )
-}
-
 const KeyIcon = {
   render: () =>
     h(
@@ -673,7 +664,6 @@ function buildSelfNavItems(withDashboard: boolean, includeApiDocs = true): NavIt
   if (withDashboard) {
     items.push({ path: '/dashboard', label: t('nav.dashboard'), icon: DashboardIcon })
   }
-  items.push({ path: '/yingzo', label: t('nav.yingzo'), icon: YingzoIcon })
   items.push({ path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon })
   items.push({ path: '/model-plaza', label: t('nav.modelPlaza'), icon: DashboardIcon })
   if (includeApiDocs) {
@@ -732,7 +722,6 @@ const adminNavItems = computed((): NavItem[] => {
   const baseItems: NavItem[] = [
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
     { path: '/admin/file-service', label: t('nav.fileService'), icon: ServerIcon },
-    { path: '/admin/yingzo', label: t('nav.yingzoManagement'), icon: YingzoIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },

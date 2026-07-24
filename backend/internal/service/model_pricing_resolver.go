@@ -32,6 +32,11 @@ type ResolvedPricing struct {
 	// 来源标识
 	Source string // "channel", "litellm", "fallback"
 
+	// PricingGroupID and ChannelID identify the concrete source used for Agent
+	// account pricing. They remain zero for ordinary pricing resolution.
+	PricingGroupID int64
+	ChannelID      int64
+
 	// 是否支持缓存细分
 	SupportsCacheBreakdown bool
 
@@ -42,8 +47,36 @@ type ResolvedPricing struct {
 // ModelPricingResolver 统一模型定价解析器。
 // 解析链：Channel → LiteLLM → Fallback。
 type ModelPricingResolver struct {
-	channelService *ChannelService
-	billingService *BillingService
+	channelService    *ChannelService
+	billingService    *BillingService
+	agentModelCatalog *AgentModelCatalogService
+}
+
+func (r *ModelPricingResolver) SetAgentModelCatalog(catalog *AgentModelCatalogService) {
+	if r != nil {
+		r.agentModelCatalog = catalog
+	}
+}
+
+func (r *ModelPricingResolver) ResolveAgentPlatformRate(ctx context.Context, groupID int64, platform string) (float64, error) {
+	if r == nil || r.agentModelCatalog == nil {
+		return 0, ErrAgentPlatformRateUnavailable
+	}
+	return r.agentModelCatalog.ResolvePlatformRate(ctx, groupID, platform)
+}
+
+func (r *ModelPricingResolver) ResolveAgentMediaUnitPrice(
+	ctx context.Context,
+	groupID int64,
+	platform string,
+	mediaType string,
+	resolution string,
+	models ...string,
+) (float64, string, error) {
+	if r == nil || r.agentModelCatalog == nil {
+		return 0, "", ErrAgentModelCatalogUnavailable
+	}
+	return r.agentModelCatalog.ResolveMediaUnitPrice(ctx, groupID, platform, mediaType, resolution, models...)
 }
 
 // NewModelPricingResolver 创建定价解析器实例
@@ -104,6 +137,49 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 	}
 
 	return resolved
+}
+
+// ResolveAgentAccount resolves pricing only from the concrete account's
+// same-platform source channel. It never falls back to LiteLLM or defaults.
+func (r *ModelPricingResolver) ResolveAgentAccount(
+	ctx context.Context,
+	agentGroupID int64,
+	account *Account,
+	model string,
+) (*ResolvedPricing, error) {
+	if r == nil || r.channelService == nil {
+		return nil, ErrAgentChannelPricingUnavailable
+	}
+	match, err := r.channelService.ResolveAgentAccountChannelPricing(ctx, agentGroupID, account, model)
+	if err != nil {
+		return nil, err
+	}
+
+	pricing := match.Pricing
+	mode := pricing.BillingMode
+	if mode == "" {
+		mode = BillingModeToken
+	}
+	resolved := &ResolvedPricing{
+		Mode:                   mode,
+		Source:                 PricingSourceChannel,
+		PricingGroupID:         match.GroupID,
+		ChannelID:              match.ChannelID,
+		SupportsCacheBreakdown: pricing.CacheWritePrice != nil || pricing.CacheReadPrice != nil,
+		channelPricing:         pricing,
+	}
+
+	switch mode {
+	case BillingModePerRequest, BillingModeImage:
+		r.applyRequestTierOverrides(pricing, resolved)
+	default:
+		// Agent channel pricing is authoritative. Starting from an empty pricing
+		// object makes omitted fields zero instead of inheriting LiteLLM values.
+		resolved.Mode = BillingModeToken
+		resolved.BasePricing = &ModelPricing{}
+		r.applyTokenOverrides(pricing, resolved)
+	}
+	return resolved, nil
 }
 
 // resolveBasePricing 从 LiteLLM 或 Fallback 获取基础定价

@@ -13,8 +13,10 @@ func TestDefaultModels_ContainsFallbackCatalogModels(t *testing.T) {
 
 	required := []string{
 		"models/gemini-2.5-flash-image",
+		"models/gemini-3-pro-image-preview",
 		"models/gemini-3.1-pro-preview-customtools",
 		"models/gemini-3.1-flash-image",
+		"models/gemini-3.1-flash-image-preview",
 	}
 
 	for _, name := range required {

@@ -2150,13 +2150,16 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		if input.Platform != "" && input.Platform != group.Platform {
 			return nil, errors.New("system Agent group platform cannot be changed")
 		}
-		if input.IsExclusive != nil && !*input.IsExclusive {
-			return nil, errors.New("system Agent group must remain exclusive")
+		if input.IsExclusive != nil && *input.IsExclusive {
+			return nil, errors.New("system Agent group must remain public")
 		}
 		if input.AllowImageGeneration != nil && !*input.AllowImageGeneration {
 			return nil, errors.New("system Agent group must allow image generation")
 		}
 		group.AllowImageGeneration = true
+		group.IsExclusive = false
+		group.ImageRateIndependent = true
+		group.ImageRateMultiplier = 1
 	}
 
 	if input.Name != "" {
@@ -2218,6 +2221,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.ImagePrice4K != nil {
 		group.ImagePrice4K = normalizePrice(input.ImagePrice4K)
+	}
+	if group.IsAgent() {
+		group.AllowImageGeneration = true
+		group.IsExclusive = false
+		group.ImageRateIndependent = true
+		group.ImageRateMultiplier = 1
 	}
 
 	// Claude Code 客户端限制
@@ -2339,6 +2348,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			}
 			if srcGroup.IsAgent() {
 				return nil, fmt.Errorf("source group %d cannot be another Agent group", srcGroupID)
+			}
+			if group.IsAgent() && !isAgentPlatformSupported(srcGroup.Platform) {
+				return nil, fmt.Errorf("source group %d platform %s is not supported by the Agent group", srcGroupID, srcGroup.Platform)
 			}
 			if !group.IsAgent() && srcGroup.Platform != group.Platform {
 				return nil, fmt.Errorf("source group %d platform mismatch: expected %s, got %s", srcGroupID, group.Platform, srcGroup.Platform)
@@ -2753,6 +2765,14 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 			}
 		}
 	}
+	if len(groupIDs) > 0 {
+		if err := s.validateGroupIDsExist(ctx, groupIDs); err != nil {
+			return nil, err
+		}
+		if err := s.validateAgentAccountGroupBindings(ctx, input.Platform, groupIDs); err != nil {
+			return nil, err
+		}
+	}
 
 	// 检查混合渠道风险（除非用户已确认）
 	if len(groupIDs) > 0 && !input.SkipMixedChannelCheck {
@@ -2943,6 +2963,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
 			return nil, err
 		}
+		if err := s.validateAgentAccountGroupBindings(ctx, account.Platform, *input.GroupIDs); err != nil {
+			return nil, err
+		}
 
 		// 检查混合渠道风险（除非用户已确认）
 		if !input.SkipMixedChannelCheck {
@@ -3006,11 +3029,21 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
+	hasTargetGroups := input.GroupIDs != nil && len(*input.GroupIDs) > 0
+	hasAgentTarget := false
+	if hasTargetGroups {
+		var err error
+		hasAgentTarget, err = s.hasAgentGroup(ctx, *input.GroupIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	needMixedChannelCheck := hasTargetGroups && !input.SkipMixedChannelCheck
+	needAccountPlatforms := hasAgentTarget || needMixedChannelCheck
 
-	// 预加载账号平台信息（混合渠道检查需要）。
+	// 预加载账号平台信息。Agent 平台白名单是硬约束，不能被跳过混合渠道检查绕过。
 	platformByID := map[int64]string{}
-	if needMixedChannelCheck {
+	if needAccountPlatforms {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -3018,6 +3051,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		for _, account := range accounts {
 			if account != nil {
 				platformByID[account.ID] = account.Platform
+			}
+		}
+		for _, accountID := range input.AccountIDs {
+			platform := platformByID[accountID]
+			if platform == "" {
+				return nil, fmt.Errorf("account %d platform is unavailable", accountID)
+			}
+			if hasAgentTarget && !isAgentPlatformSupported(platform) {
+				return nil, fmt.Errorf("platform %s cannot be bound to the Agent group", platform)
 			}
 		}
 	}
@@ -3900,6 +3942,44 @@ func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs [
 		}
 	}
 	return nil
+}
+
+func (s *adminServiceImpl) validateAgentAccountGroupBindings(ctx context.Context, platform string, groupIDs []int64) error {
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	if s.groupRepo == nil {
+		return errors.New("group repository not configured")
+	}
+	for _, groupID := range groupIDs {
+		group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+		if err != nil {
+			return fmt.Errorf("get group: %w", err)
+		}
+		if group != nil && group.IsAgent() && !isAgentPlatformSupported(platform) {
+			return fmt.Errorf("platform %s cannot be bound to the Agent group", platform)
+		}
+	}
+	return nil
+}
+
+func (s *adminServiceImpl) hasAgentGroup(ctx context.Context, groupIDs []int64) (bool, error) {
+	if len(groupIDs) == 0 {
+		return false, nil
+	}
+	if s.groupRepo == nil {
+		return false, errors.New("group repository not configured")
+	}
+	for _, groupID := range groupIDs {
+		group, err := s.groupRepo.GetByIDLite(ctx, groupID)
+		if err != nil {
+			return false, fmt.Errorf("get group: %w", err)
+		}
+		if group != nil && group.IsAgent() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // CheckMixedChannelRisk checks whether target groups contain mixed channels for the current account platform.

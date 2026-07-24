@@ -74,6 +74,35 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		return
 	}
 	requestModel := parsed.Model
+	if shouldPublishOpenAIImageURLs(apiKey) {
+		if h.imageResultPublisher == nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Temporary image URL storage is unavailable")
+			return
+		}
+		publicOrigin, originErr := requestPublicOrigin(c)
+		if originErr != nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Temporary image public URL is unavailable")
+			return
+		}
+		groupID := apiKey.Group.ID
+		if apiKey.GroupID != nil {
+			groupID = *apiKey.GroupID
+		}
+		if groupID <= 0 {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Agent group context is invalid")
+			return
+		}
+		requestContext := service.WithOpenAIImageURLPublication(
+			c.Request.Context(),
+			h.imageResultPublisher,
+			service.TemporaryAssetOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID, GroupID: groupID},
+			publicOrigin,
+		)
+		c.Request = c.Request.WithContext(requestContext)
+		// Public Agent clients always receive managed HTTP(S) assets. Upstreams may
+		// still return base64 internally, but the public response contract never does.
+		parsed.ResponseFormat = "url"
+	}
 
 	reqLog = reqLog.With(
 		zap.String("model", requestModel),
@@ -84,6 +113,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 	if !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
+		return
+	}
+	if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformOpenAI, requestModel, parsed.SizeTier, parsed.N); err != nil {
+		reqLog.Warn("openai.images.agent_pricing_unavailable", zap.Error(err))
+		writeOpenAIAgentPricingError(c, err)
 		return
 	}
 	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, parsed.ModerationBody()); decision != nil && decision.Blocked {
@@ -232,9 +266,18 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
+				publicationErrorCommunicated := parsed.Stream &&
+					errors.Is(err, service.ErrOpenAIImagePublication) &&
+					c.Writer.Size() != writerSizeBeforeForward
+				publicationFallbackWritten := false
+				if errors.Is(err, service.ErrOpenAIImagePublication) && !publicationErrorCommunicated {
+					publicationFallbackWritten = h.ensureForwardErrorResponse(c, parsed.Stream)
+				}
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
 					zap.Int("image_count", result.ImageCount),
+					zap.Bool("publication_error_communicated", publicationErrorCommunicated),
+					zap.Bool("publication_fallback_written", publicationFallbackWritten),
 					zap.Error(err),
 				)
 			} else {
@@ -380,6 +423,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func shouldPublishOpenAIImageURLs(apiKey *service.APIKey) bool {
+	return apiKey != nil &&
+		apiKey.Group != nil &&
+		apiKey.Group.IsAgent() &&
+		!apiKey.Group.IsExclusive
 }
 
 func isMultipartImagesContentType(contentType string) bool {

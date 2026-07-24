@@ -9,10 +9,6 @@ const groupsViewSource = readFileSync(
   resolve(currentDir, "../GroupsView.vue"),
   "utf8",
 );
-const agentPricingSource = readFileSync(
-  resolve(currentDir, "../../../components/admin/group/AgentModelPricingEditor.vue"),
-  "utf8",
-);
 
 describe("groups models list layout", () => {
   it("keeps the toolbar outside of the scrolling list content", () => {
@@ -29,18 +25,32 @@ describe("system Agent pricing layout", () => {
     );
   });
 
-  it("keeps newly added pricing rules disabled until an admin opts in", () => {
-    expect(agentPricingSource).toContain("enabled: false");
-    expect(agentPricingSource).not.toContain("enabled: true");
+  it("mounts the synchronized model catalogue and keeps legacy pricing outside Agent forms", () => {
+    expect(groupsViewSource).toContain(
+      '<AgentModelCatalogEditor',
+    );
+    expect(groupsViewSource).toContain(
+      "v-if=\"editingGroup.kind === 'agent'\"",
+    );
+    expect(groupsViewSource).toContain("payload.rate_multiplier = undefined");
+    expect(groupsViewSource).toContain("payload.image_price_1k = undefined");
+    expect(groupsViewSource).toContain("payload.video_pricing_rules = undefined");
+    expect(groupsViewSource).not.toContain('data-testid="agent-image-generation-required"');
   });
 
-  it("shows the required Agent image-generation permission as locked on", () => {
+  it("labels Agent pricing and visibility according to the model catalogue contract", () => {
     expect(groupsViewSource).toContain(
-      'data-testid="agent-image-generation-required"',
+      '{{ t("admin.groups.agent.catalogPricing") }}',
     );
-    expect(groupsViewSource).toContain('group.kind === "agent" ? true');
+    expect(groupsViewSource).toContain('{{ t("admin.groups.public") }}');
     expect(groupsViewSource).toContain(
-      't("admin.groups.agent.imageGenerationLocked")',
+      'v-if="row.kind !== \'agent\'"\n                @click="handleRateMultipliers(row)"',
+    );
+    expect(groupsViewSource).not.toContain(
+      't("admin.groups.agent.systemExclusive")',
+    );
+    expect(groupsViewSource).toContain(
+      'data-testid="agent-platform-summary"',
     );
   });
 });

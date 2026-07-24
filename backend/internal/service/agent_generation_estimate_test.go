@@ -3,84 +3,139 @@ package service
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
-type agentEstimateRateRepo struct {
-	UserGroupRateRepository
-	rate *float64
-	err  error
+func TestCalculateConfiguredAgentImageCostUsesFinalModelPrice(t *testing.T) {
+	svc := NewBillingService(&config.Config{}, nil)
+	cost, err := svc.CalculateConfiguredAgentImageCost(0.4, 2)
+	require.NoError(t, err)
+	require.InDelta(t, 0.8, cost.TotalCost, 1e-12)
+	require.InDelta(t, 0.8, cost.ActualCost, 1e-12)
+	require.Equal(t, string(BillingModeImage), cost.BillingMode)
+
+	cost, err = svc.CalculateConfiguredAgentImageCost(0, 2)
+	require.NoError(t, err)
+	require.Zero(t, cost.TotalCost)
+	require.Zero(t, cost.ActualCost)
 }
 
-func (r *agentEstimateRateRepo) GetByUserAndGroup(context.Context, int64, int64) (*float64, error) {
-	return r.rate, r.err
-}
-
-func TestEstimateImageGenerationCostUsesUserAndGroupPricing(t *testing.T) {
+func TestLegacyGroupImageEstimateRejectsAgentPricing(t *testing.T) {
 	groupID := int64(9)
-	price := 0.4
-	userRate := 1.5
-	apiKey := &APIKey{
-		UserID:  42,
-		GroupID: &groupID,
-		Group: &Group{
-			ID:             groupID,
-			RateMultiplier: 1.2,
-			ImagePrice2K:   &price,
-		},
-	}
 	svc := NewBillingService(&config.Config{}, nil)
 	cost, tier, err := svc.EstimateImageGenerationCost(
-		context.Background(), apiKey, &agentEstimateRateRepo{rate: &userRate}, "gpt-image-2", "2048x1152", 2,
+		context.Background(),
+		&APIKey{UserID: 42, GroupID: &groupID, Group: &Group{ID: groupID, Kind: "agent", SystemCode: "yingzo"}},
+		nil,
+		"gpt-image-2",
+		"2K",
+		1,
 	)
-	require.NoError(t, err)
+	require.Nil(t, cost)
 	require.Equal(t, ImageBillingSize2K, tier)
-	require.InDelta(t, 0.8, cost.TotalCost, 1e-12)
-	require.InDelta(t, 1.2, cost.ActualCost, 1e-12)
-
-	apiKey.Group.ImageRateIndependent = true
-	apiKey.Group.ImageRateMultiplier = 0.5
-	cost, _, err = svc.EstimateImageGenerationCost(
-		context.Background(), apiKey, &agentEstimateRateRepo{rate: &userRate}, "gpt-image-2", "2K", 2,
-	)
-	require.NoError(t, err)
-	require.InDelta(t, 0.4, cost.ActualCost, 1e-12)
+	require.ErrorIs(t, err, ErrAgentImagePricingUnavailable)
 }
 
-func TestEstimateVideoGenerationCostSharesCreateTaskFormula(t *testing.T) {
+func configuredAgentCatalogForEstimateTest(
+	t *testing.T,
+	groupID int64,
+	platform string,
+	modelCode string,
+	mediaType string,
+	resolution string,
+	unitPrice float64,
+) (*AgentModelCatalogService, *agentCatalogAccountRepoStub) {
+	t.Helper()
+	accounts := &agentCatalogAccountRepoStub{accounts: []Account{{
+		ID: 1, Platform: platform,
+		Credentials: map[string]any{"model_mapping": map[string]any{modelCode: modelCode}},
+	}}}
+	groups := &agentCatalogGroupRepoStub{group: &Group{ID: groupID, Kind: "agent", SystemCode: "yingzo"}}
+	models := newAgentModelMemoryRepo()
+	catalog := NewAgentModelCatalogService(accounts, groups, models)
+	config, err := catalog.Sync(context.Background(), groupID)
+	require.NoError(t, err)
+	require.Len(t, config.Models, 1)
+	_, err = catalog.UpdateModel(context.Background(), groupID, config.Models[0].ID, AgentModelConfigInput{
+		MediaType: mediaType,
+		Enabled:   true,
+		Prices:    []AgentModelPrice{{Resolution: resolution, UnitPrice: unitPrice}},
+	})
+	require.NoError(t, err)
+	return catalog, accounts
+}
+
+func TestEstimateAgentVideoUsesDynamicCatalogPriceAndGeneratedSecondsOnly(t *testing.T) {
 	groupID := int64(9)
-	pricing := &videoPricingMemoryRepo{rule: &VideoGroupPricingRule{
-		GroupID:                  groupID,
-		ModelCode:                VideoModelSeedance20,
-		Resolution:               VideoResolution720P,
-		CreditsPerSecond:         0.2,
-		ReferenceVideoMultiplier: 2,
-		Enabled:                  true,
-		UpdatedAt:                time.Unix(1783900000, 0),
-	}}
-	svc := NewVideoService(nil, nil, pricing, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	catalog, _ := configuredAgentCatalogForEstimateTest(
+		t, groupID, PlatformSeedance, "video-custom", AgentMediaTypeVideo, VideoResolution720P, 0.2,
+	)
+	svc := NewVideoService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc.SetAgentModelCatalog(catalog)
 	referenceDuration := 3.0
 	request := &VideoCreateRequest{
-		Model:       VideoModelSeedance20,
+		Model:       "video-custom",
 		Prompt:      "continue the shot",
 		Duration:    5,
 		Resolution:  VideoResolution720P,
 		AbilityCode: videoAbilityReferenceToVideo,
 		Content: []VideoContent{{
-			Type:            "video_url",
-			Role:            "reference_video",
-			VideoURL:        &VideoContentURL{URL: "https://example.invalid/reference.mp4"},
-			DurationSeconds: &referenceDuration,
+			Type: "video_url", Role: "reference_video",
+			VideoURL: &VideoContentURL{URL: "https://example.invalid/reference.mp4"}, DurationSeconds: &referenceDuration,
 		}},
 	}
 	estimate, err := svc.EstimateGenerationCost(context.Background(), &APIKey{Group: &Group{
-		ID: groupID, Kind: "agent", SystemCode: "yingzo", RateMultiplier: 1.5,
+		ID: groupID, Kind: "agent", SystemCode: "yingzo", RateMultiplier: 9,
 	}}, request, 2)
 	require.NoError(t, err)
-	require.Equal(t, 16, estimate.BillableSeconds)
-	require.InDelta(t, 4.4, estimate.TotalCost, 1e-12)
-	require.InDelta(t, 6.6, estimate.ActualCost, 1e-12)
+	require.Equal(t, 10, estimate.BillableSeconds)
+	require.Zero(t, estimate.ReferenceVideoMultiplier)
+	require.InDelta(t, 1, estimate.RateMultiplier, 1e-12)
+	require.InDelta(t, 2, estimate.TotalCost, 1e-12)
+	require.InDelta(t, 2, estimate.ActualCost, 1e-12)
+}
+
+func TestAgentImageBillingUsesPerModelPriceForGatewayPaths(t *testing.T) {
+	groupID := int64(91)
+	catalog, _ := configuredAgentCatalogForEstimateTest(
+		t, groupID, PlatformOpenAI, "shared-image", AgentMediaTypeImage, ImageBillingSize1K, 0.4,
+	)
+	billingService := NewBillingService(&config.Config{}, nil)
+	resolver := NewModelPricingResolver(nil, billingService)
+	resolver.SetAgentModelCatalog(catalog)
+	group := &Group{ID: groupID, Kind: "agent", SystemCode: "yingzo", RateMultiplier: 99}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Credentials: map[string]any{
+		"model_mapping": map[string]any{"shared-image": "shared-image"},
+	}}
+
+	geminiGateway := &GatewayService{billingService: billingService, resolver: resolver}
+	geminiCost, err := geminiGateway.calculateAgentRecordUsageCost(
+		context.Background(),
+		&ForwardResult{Model: "shared-image", ImageCount: 2, ImageSize: ImageBillingSize1K},
+		group,
+		account,
+		[]string{"shared-image"},
+		99,
+	)
+	require.NoError(t, err)
+	require.InDelta(t, 0.8, geminiCost.TotalCost, 1e-12)
+	require.InDelta(t, 0.8, geminiCost.ActualCost, 1e-12)
+
+	openAIGateway := &OpenAIGatewayService{billingService: billingService, resolver: resolver}
+	openAICost, err := openAIGateway.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{Model: "shared-image", ImageCount: 2, ImageSize: ImageBillingSize1K},
+		&APIKey{GroupID: &groupID, Group: group},
+		account,
+		[]string{"shared-image"},
+		99,
+		99,
+		UsageTokens{},
+		"",
+	)
+	require.NoError(t, err)
+	require.InDelta(t, 0.8, openAICost.TotalCost, 1e-12)
+	require.InDelta(t, 0.8, openAICost.ActualCost, 1e-12)
 }

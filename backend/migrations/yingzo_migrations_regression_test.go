@@ -7,21 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
+func TestAgentGatewayMigrationsAreForwardOnly(t *testing.T) {
 	for _, name := range []string{
 		"161_yingzo_agent_foundations.sql",
 		"162_yingzo_agent_generation_quotes.sql",
 		"163_yingzo_temporary_asset_metadata.sql",
 		"164_yingzo_agent_group_visibility.sql",
 		"165_yingzo_agent_group_private.sql",
-		"166_yingzo_plugin_releases.sql",
 		"167_yingzo_agent_model_pricing.sql",
 		"169_require_agent_image_generation.sql",
-		"170_yingzo_release_artifacts.sql",
-		"171_yingzo_distribution_v2.sql",
-		"172_yingzo_prerelease_native_signing.sql",
-		"173_yingzo_distribution_schema_3.sql",
-		"174_yingzo_release_upload_sessions.sql",
 	} {
 		content, err := FS.ReadFile(name)
 		require.NoError(t, err)
@@ -31,57 +25,55 @@ func TestYingzoMigrationsAreForwardOnly(t *testing.T) {
 	}
 }
 
-func TestYingzoReleaseUploadSessionsKeepBytesOutOfPostgres(t *testing.T) {
-	content, err := FS.ReadFile("174_yingzo_release_upload_sessions.sql")
+func TestYingzoDistributionRemovalKeepsModelGatewayTables(t *testing.T) {
+	content, err := FS.ReadFile("175_remove_yingzo_distribution.sql")
 	require.NoError(t, err)
 	sql := strings.ToLower(string(content))
 
-	require.Contains(t, sql, "temp_storage_key text not null")
-	require.Contains(t, sql, "received_bytes bigint")
-	require.Contains(t, sql, "unique (release_id, target, os, arch)")
-	require.Contains(t, sql, "completed_artifact_id uuid references yingzo_release_artifacts(id) on delete set null")
-	require.Contains(t, sql, "'completed'")
-	require.NotContains(t, sql, "bytea")
+	for _, table := range []string{
+		"yingzo_release_upload_sessions",
+		"yingzo_release_artifacts",
+		"yingzo_releases",
+		"agent_device_authorizations",
+		"agent_installations",
+	} {
+		require.Contains(t, sql, "drop table if exists "+table)
+	}
+	require.Contains(t, sql, "update api_keys")
+	require.Contains(t, sql, "system_code = 'yingzo'")
+	require.Contains(t, sql, "set is_exclusive = false")
+	require.NotContains(t, sql, "drop table if exists agent_model_pricing")
+	require.NotContains(t, sql, "drop table if exists temporary_assets")
+	require.NotContains(t, sql, "delete from groups")
+}
+
+func TestYingzoAgentPricingSimplificationRemovesOnlyGeneratedPricingState(t *testing.T) {
+	content, err := FS.ReadFile("176_simplify_yingzo_agent_pricing.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(content))
+
+	require.Contains(t, sql, "drop table if exists agent_model_pricing")
+	require.Contains(t, sql, "system agent pricing #[0-9]+")
+	require.Contains(t, sql, "system-managed agent model pricing")
+	require.Contains(t, sql, "yingzo agent pricing #[0-9]+")
+	require.Contains(t, sql, "system-managed yingzo agent model pricing")
+	require.Contains(t, sql, "image_rate_multiplier = 1")
+	require.NotContains(t, sql, "delete from groups")
+	require.NotContains(t, sql, "drop table if exists video_group_pricing_rules")
+}
+
+func TestAgentModelCatalogMigrationKeepsPricingExplicit(t *testing.T) {
+	content, err := FS.ReadFile("177_agent_model_catalog_and_pricing.sql")
+	require.NoError(t, err)
+	sql := strings.ToLower(string(content))
+
+	for _, table := range []string{"agent_platform_rates", "agent_group_models", "agent_model_prices"} {
+		require.Contains(t, sql, "create table if not exists "+table)
+	}
+	require.Contains(t, sql, "platform in ('openai', 'anthropic', 'gemini')")
+	require.Contains(t, sql, "media_type in ('text', 'image', 'video')")
+	require.Contains(t, sql, "billing_unit in ('image', 'second')")
+	require.NotContains(t, sql, "insert into agent_platform_rates")
+	require.NotContains(t, sql, "insert into agent_model_prices")
 	require.NotContains(t, sql, "drop table")
-}
-
-func TestYingzoDistributionSchema3MigrationKeepsSchema2AndAddsSchema3(t *testing.T) {
-	content, err := FS.ReadFile("173_yingzo_distribution_schema_3.sql")
-	require.NoError(t, err)
-	sql := strings.ToLower(string(content))
-	require.Contains(t, sql, "drop constraint if exists yingzo_releases_distribution_schema_version_check")
-	require.Contains(t, sql, "distribution_schema_version in (1, 2, 3)")
-	require.Contains(t, sql, "distribution_schema_version in (2, 3) and runtime_protocol > 0")
-	require.NotContains(t, sql, "drop table")
-	require.NotContains(t, sql, "bytea")
-}
-
-func TestYingzoPrereleaseNativeSigningMigrationKeepsStableStrict(t *testing.T) {
-	content, err := FS.ReadFile("172_yingzo_prerelease_native_signing.sql")
-	require.NoError(t, err)
-	sql := strings.ToLower(string(content))
-
-	require.Contains(t, sql, "stable_eligible boolean not null default true")
-	require.Contains(t, sql, "where distribution_schema_version = 2")
-	require.Contains(t, sql, "and status = 'draft'")
-	require.Contains(t, sql, "status <> 'published' or channel <> 'stable' or stable_eligible")
-	require.NotContains(t, sql, "bytea")
-}
-
-func TestYingzoDistributionV2MigrationPreservesLegacyAndAddsChannelMatrix(t *testing.T) {
-	content, err := FS.ReadFile("171_yingzo_distribution_v2.sql")
-	require.NoError(t, err)
-	sql := strings.ToLower(string(content))
-
-	require.Contains(t, sql, "distribution_schema_version")
-	require.Contains(t, sql, "channel in ('stable', 'prerelease')")
-	require.Contains(t, sql, "runtime_protocol")
-	require.Contains(t, sql, "compatibility jsonb")
-	require.Contains(t, sql, "drop index if exists idx_yingzo_releases_single_published")
-	require.Contains(t, sql, "where status = 'published'")
-	require.Contains(t, sql, "unique (release_id, target, os, arch)")
-	require.Contains(t, sql, "set artifact_kind = coalesce(artifact_kind, 'host_package')")
-	require.Contains(t, sql, "target = coalesce(target, host_family)")
-	require.Contains(t, sql, "signature_status")
-	require.NotContains(t, sql, "bytea", "release binaries must remain on the local persistent volume, not in PostgreSQL")
 }

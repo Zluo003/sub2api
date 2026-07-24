@@ -118,17 +118,23 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		return account, nil
 	}
 
-	// 3. 查询可调度账户（强制平台模式：优先按分组查找，找不到再查全部）
-	// Query schedulable accounts (force platform mode: try group first, fallback to all)
+	// 3. 查询可调度账户
 	accounts, err := s.listSchedulableAccountsOnce(ctx, groupID, platform, hasForcePlatform)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
-	// 强制平台模式下，分组中找不到账户时回退查询全部
 	if len(accounts) == 0 && groupID != nil && hasForcePlatform {
-		accounts, err = s.listSchedulableAccountsOnce(ctx, nil, platform, hasForcePlatform)
-		if err != nil {
-			return nil, fmt.Errorf("query accounts failed: %w", err)
+		// System Agent groups are strict account pools: never leave the assigned
+		// group when a native provider interface is forced by the route.
+		strictAgentGroup, strictErr := s.isStrictAgentGroup(ctx, groupID)
+		if strictErr != nil {
+			return nil, strictErr
+		}
+		if !strictAgentGroup {
+			accounts, err = s.listSchedulableAccountsOnce(ctx, nil, platform, hasForcePlatform)
+			if err != nil {
+				return nil, fmt.Errorf("query accounts failed: %w", err)
+			}
 		}
 	}
 
@@ -150,6 +156,23 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 	}
 
 	return s.hydrateSelectedAccount(ctx, selected)
+}
+
+func (s *GeminiMessagesCompatService) isStrictAgentGroup(ctx context.Context, groupID *int64) (bool, error) {
+	if groupID == nil {
+		return false, nil
+	}
+	if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && group != nil && group.ID == *groupID {
+		return group.IsAgent(), nil
+	}
+	if s.groupRepo == nil {
+		return false, nil
+	}
+	group, err := s.groupRepo.GetByIDLite(ctx, *groupID)
+	if err != nil {
+		return false, fmt.Errorf("get group failed: %w", err)
+	}
+	return group.IsAgent(), nil
 }
 
 // resolvePlatformAndSchedulingMode 解析目标平台和调度模式。
@@ -443,6 +466,9 @@ func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context
 }
 
 func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, error) {
+	if isAgentGroupContext(ctx, groupID) {
+		return s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, []string{platform})
+	}
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		return accounts, err

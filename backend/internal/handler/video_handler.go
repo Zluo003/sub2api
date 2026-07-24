@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -60,21 +61,26 @@ func (h *VideoHandler) Create(c *gin.Context) {
 	upstreamEndpoint := GetUpstreamEndpoint(c, service.PlatformSeedance)
 
 	requestID, _ := c.Request.Context().Value(ctxkey.RequestID).(string)
-	resp, err := h.videoService.CreateTask(c.Request.Context(), &service.VideoCreateInput{
+	createInput := &service.VideoCreateInput{
 		APIKey:             apiKey,
 		Subscription:       subscription,
 		Request:            &req,
 		RawBody:            body,
+		IdempotencyKey:     c.GetHeader("Idempotency-Key"),
 		RequestID:          requestID,
 		RequestPayloadHash: service.HashUsageRequestPayload(body),
 		UserAgent:          c.GetHeader("User-Agent"),
 		IPAddress:          ip.GetClientIP(c),
 		InboundEndpoint:    inboundEndpoint,
 		UpstreamEndpoint:   upstreamEndpoint,
-	})
+	}
+	resp, err := h.videoService.CreateTask(c.Request.Context(), createInput)
 	if err != nil {
 		h.errorFrom(c, err)
 		return
+	}
+	if createInput.IdempotencyReplayed {
+		c.Header("X-Idempotency-Replayed", "true")
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -97,6 +103,9 @@ func (h *VideoHandler) Get(c *gin.Context) {
 }
 
 func (h *VideoHandler) errorFrom(c *gin.Context, err error) {
+	if retryAfter := service.RetryAfterSecondsFromError(err); retryAfter > 0 {
+		c.Header("Retry-After", strconv.Itoa(retryAfter))
+	}
 	status, body := infraerrors.ToHTTP(err)
 	code := strings.TrimSpace(body.Reason)
 	if code == "" {

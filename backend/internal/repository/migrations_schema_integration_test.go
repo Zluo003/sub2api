@@ -135,10 +135,31 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	var videoPricingRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.video_group_pricing_rules')").Scan(&videoPricingRegclass))
 	require.True(t, videoPricingRegclass.Valid, "expected video_group_pricing_rules table to exist")
+	var retiredAgentPricingRegclass sql.NullString
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.agent_model_pricing')").Scan(&retiredAgentPricingRegclass))
+	require.False(t, retiredAgentPricingRegclass.Valid, "expected retired agent_model_pricing table to be absent")
+	for _, table := range []string{"agent_platform_rates", "agent_group_models", "agent_model_prices"} {
+		var regclass sql.NullString
+		require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public."+table+"')").Scan(&regclass))
+		require.True(t, regclass.Valid, "expected %s table to exist", table)
+	}
+	requireIndex(t, tx, "agent_group_models", "idx_agent_group_models_public_catalog")
+	requireIndex(t, tx, "agent_model_prices", "idx_agent_model_prices_lookup")
 
 	var temporaryAssetsRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.temporary_assets')").Scan(&temporaryAssetsRegclass))
 	require.True(t, temporaryAssetsRegclass.Valid, "expected temporary_assets table to exist")
+	for _, retiredTable := range []string{
+		"yingzo_release_upload_sessions",
+		"yingzo_release_artifacts",
+		"yingzo_releases",
+		"agent_device_authorizations",
+		"agent_installations",
+	} {
+		var regclass sql.NullString
+		require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public."+retiredTable+"')").Scan(&regclass))
+		require.False(t, regclass.Valid, "expected retired table %s to be absent", retiredTable)
+	}
 	requireColumn(t, tx, "temporary_assets", "metadata", "jsonb", 0, false)
 
 	var generationQuotesRegclass sql.NullString
@@ -147,16 +168,27 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireIndex(t, tx, "agent_generation_quotes", "idx_agent_generation_quotes_owner_expiry")
 
 	var agentKind, agentSystemCode string
-	var agentExclusive, agentAllowImageGeneration bool
+	var agentExclusive, agentAllowImageGeneration, agentImageRateIndependent bool
+	var agentImageRateMultiplier float64
 	require.NoError(t, tx.QueryRowContext(context.Background(), `
-SELECT kind, system_code, is_exclusive, allow_image_generation
+SELECT kind, system_code, is_exclusive, allow_image_generation,
+       image_rate_independent, image_rate_multiplier
 FROM groups
 WHERE system_code = 'yingzo' AND deleted_at IS NULL
-`).Scan(&agentKind, &agentSystemCode, &agentExclusive, &agentAllowImageGeneration))
+`).Scan(
+		&agentKind,
+		&agentSystemCode,
+		&agentExclusive,
+		&agentAllowImageGeneration,
+		&agentImageRateIndependent,
+		&agentImageRateMultiplier,
+	))
 	require.Equal(t, "agent", agentKind)
 	require.Equal(t, "yingzo", agentSystemCode)
-	require.True(t, agentExclusive, "the system Agent group must stay hidden from ordinary API Key selectors")
+	require.False(t, agentExclusive, "the system Agent group must be selectable by ordinary API Key users")
 	require.True(t, agentAllowImageGeneration, "the system Agent group must always allow image generation")
+	require.True(t, agentImageRateIndependent, "Agent image prices must not use the language multiplier")
+	require.Equal(t, 1.0, agentImageRateMultiplier)
 	requireConstraintDefinitionContains(
 		t,
 		tx,

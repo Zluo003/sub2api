@@ -2444,6 +2444,10 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 }
 
 func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	if isAgentGroupContext(ctx, groupID) {
+		accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+		return accounts, false, err
+	}
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
@@ -9443,16 +9447,31 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
 	}
 
-	// 获取费率倍数（优先级：用户专属 > 分组默认 > 系统默认）
+	// Agent language billing is always source channel price × Agent group
+	// multiplier. Ordinary groups retain the optional per-user override.
 	multiplier := 1.0
 	if s.cfg != nil {
 		multiplier = s.cfg.Default.RateMultiplier
 	}
 	if apiKey.GroupID != nil && apiKey.Group != nil {
-		groupDefault := apiKey.Group.RateMultiplier
-		multiplier = s.getUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
+		if apiKey.Group.IsAgent() {
+			if s.resolver == nil {
+				return ErrAgentPlatformRateUnavailable
+			}
+			resolvedMultiplier, err := s.resolver.ResolveAgentPlatformRate(ctx, apiKey.Group.ID, account.Platform)
+			if err != nil {
+				return fmt.Errorf("resolve Agent platform multiplier: %w", err)
+			}
+			multiplier = resolvedMultiplier
+		} else {
+			groupDefault := apiKey.Group.RateMultiplier
+			multiplier = s.getUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
+		}
 	}
 	imageMultiplier := resolveImageRateMultiplier(apiKey, multiplier)
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		imageMultiplier = 1
+	}
 
 	// 确定计费模型
 	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
@@ -9469,8 +9488,24 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		requestedModel = input.OriginalModel
 	}
 
-	// 计算费用
-	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, opts)
+	// 计算费用。Agent 使用实际选中账号的来源渠道价格，且缺价时不得记零费用。
+	var cost *CostBreakdown
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		billingModels := usageBillingModelCandidates(
+			billingModel,
+			input.ChannelMappedModel,
+			requestedModel,
+			result.UpstreamModel,
+			result.Model,
+		)
+		var err error
+		cost, err = s.calculateAgentRecordUsageCost(ctx, result, apiKey.Group, account, billingModels, multiplier)
+		if err != nil {
+			return fmt.Errorf("calculate Agent usage cost: %w", err)
+		}
+	} else {
+		cost = s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, opts)
+	}
 
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -9537,6 +9572,57 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	return nil
 }
 
+func (s *GatewayService) calculateAgentRecordUsageCost(
+	ctx context.Context,
+	result *ForwardResult,
+	group *Group,
+	account *Account,
+	billingModels []string,
+	multiplier float64,
+) (*CostBreakdown, error) {
+	if result.ImageCount > 0 {
+		if s.resolver == nil {
+			return nil, ErrAgentImagePricingUnavailable
+		}
+		unitPrice, _, err := s.resolver.ResolveAgentMediaUnitPrice(
+			ctx,
+			group.ID,
+			account.Platform,
+			AgentMediaTypeImage,
+			result.ImageSize,
+			billingModels...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return s.billingService.CalculateConfiguredAgentImageCost(unitPrice, result.ImageCount)
+	}
+	if s.resolver == nil {
+		return nil, ErrAgentChannelPricingUnavailable
+	}
+	resolved, billingModel, err := s.resolver.ResolveAgentAccountCandidates(ctx, group.ID, account, billingModels...)
+	if err != nil {
+		return nil, err
+	}
+	return s.billingService.CalculateCostUnified(CostInput{
+		Ctx:   ctx,
+		Model: billingModel,
+		Tokens: UsageTokens{
+			InputTokens:           result.Usage.InputTokens,
+			OutputTokens:          result.Usage.OutputTokens,
+			CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+			CacheReadTokens:       result.Usage.CacheReadInputTokens,
+			CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+			CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+			ImageOutputTokens:     result.Usage.ImageOutputTokens,
+		},
+		RequestCount:   1,
+		RateMultiplier: multiplier,
+		Resolver:       s.resolver,
+		Resolved:       resolved,
+	})
+}
+
 // calculateRecordUsageCost 根据请求类型和选项计算费用。
 func (s *GatewayService) calculateRecordUsageCost(
 	ctx context.Context,
@@ -9549,8 +9635,10 @@ func (s *GatewayService) calculateRecordUsageCost(
 ) *CostBreakdown {
 	// 图片生成：渠道定价为 token 计费时走 token 路径，否则走图片计费
 	if result.ImageCount > 0 {
-		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
-			return s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+		if apiKey.Group == nil || !apiKey.Group.IsAgent() {
+			if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil && resolved.Mode == BillingModeToken {
+				return s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+			}
 		}
 		return s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier)
 	}
@@ -9582,29 +9670,31 @@ func (s *GatewayService) calculateImageCost(
 	multiplier float64,
 ) *CostBreakdown {
 	sizeTier := NormalizeImageBillingTierOrDefault(result.ImageSize)
-	if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil {
-		tokens := UsageTokens{
-			InputTokens:       result.Usage.InputTokens,
-			OutputTokens:      result.Usage.OutputTokens,
-			ImageOutputTokens: result.Usage.ImageOutputTokens,
+	if apiKey.Group == nil || !apiKey.Group.IsAgent() {
+		if resolved := s.resolveChannelPricing(ctx, billingModel, apiKey); resolved != nil {
+			tokens := UsageTokens{
+				InputTokens:       result.Usage.InputTokens,
+				OutputTokens:      result.Usage.OutputTokens,
+				ImageOutputTokens: result.Usage.ImageOutputTokens,
+			}
+			gid := apiKey.Group.ID
+			cost, err := s.billingService.CalculateCostUnified(CostInput{
+				Ctx:            ctx,
+				Model:          billingModel,
+				GroupID:        &gid,
+				Tokens:         tokens,
+				RequestCount:   result.ImageCount,
+				SizeTier:       sizeTier,
+				RateMultiplier: multiplier,
+				Resolver:       s.resolver,
+				Resolved:       resolved,
+			})
+			if err != nil {
+				logger.LegacyPrintf("service.gateway", "Calculate image token cost failed: %v", err)
+				return &CostBreakdown{ActualCost: 0}
+			}
+			return cost
 		}
-		gid := apiKey.Group.ID
-		cost, err := s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			Tokens:         tokens,
-			RequestCount:   result.ImageCount,
-			SizeTier:       sizeTier,
-			RateMultiplier: multiplier,
-			Resolver:       s.resolver,
-			Resolved:       resolved,
-		})
-		if err != nil {
-			logger.LegacyPrintf("service.gateway", "Calculate image token cost failed: %v", err)
-			return &CostBreakdown{ActualCost: 0}
-		}
-		return cost
 	}
 
 	var groupConfig *ImagePriceConfig

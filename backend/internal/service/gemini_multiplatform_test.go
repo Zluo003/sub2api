@@ -638,7 +638,9 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_ForcePl
 	}
 
 	cache := &mockGatewayCacheForGemini{}
-	groupRepo := &mockGroupRepoForGemini{groups: map[int64]*Group{}}
+	groupRepo := &mockGroupRepoForGemini{groups: map[int64]*Group{
+		groupID: {ID: groupID, Kind: "standard"},
+	}}
 
 	svc := &GeminiMessagesCompatService{
 		accountRepo: repo,
@@ -650,6 +652,31 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_ForcePl
 	require.NoError(t, err)
 	require.NotNil(t, acc)
 	require.Equal(t, int64(1), acc.ID)
+}
+
+func TestGeminiMessagesCompatService_AgentForcedPlatformNeverLeavesAssignedGroup(t *testing.T) {
+	groupID := int64(10)
+	globalLookupCalls := 0
+	ctx := context.WithValue(context.Background(), ctxkey.ForcePlatform, PlatformGemini)
+	ctx = context.WithValue(ctx, ctxkey.Group, &Group{ID: groupID, Kind: "agent", SystemCode: "yingzo"})
+	repo := &mockAccountRepoForGemini{
+		listByGroupFunc: func(context.Context, int64, []string) ([]Account, error) {
+			return nil, nil
+		},
+		listByPlatformFunc: func(context.Context, []string) ([]Account, error) {
+			globalLookupCalls++
+			return []Account{{ID: 99, Platform: PlatformGemini, Status: StatusActive, Schedulable: true}}, nil
+		},
+	}
+	svc := &GeminiMessagesCompatService{
+		accountRepo: repo,
+		groupRepo:   &mockGroupRepoForGemini{groups: map[int64]*Group{}},
+		cache:       &mockGatewayCacheForGemini{},
+	}
+
+	_, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "gemini-2.5-flash", nil)
+	require.ErrorContains(t, err, "no available Gemini accounts")
+	require.Zero(t, globalLookupCalls)
 }
 
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NoModelSupport(t *testing.T) {

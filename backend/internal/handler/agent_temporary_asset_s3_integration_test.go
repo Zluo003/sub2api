@@ -89,7 +89,7 @@ func TestTemporaryAssetMinIOUploadRangeAndCleanup(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed.Contents, 1)
 	storageKey := aws.ToString(listed.Contents[0].Key)
-	require.True(t, strings.HasPrefix(storageKey, "yingzo-agent-assets/"))
+	require.True(t, strings.HasPrefix(storageKey, "agent-assets/"))
 	assetID, publicURL := temporaryAssetIdentityFromResponse(t, upload)
 	require.Equal(t, "https://api-key.cc/media/"+assetID.String()+"/asset.png", publicURL)
 	require.NotContains(t, publicURL, "?")

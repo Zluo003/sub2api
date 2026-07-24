@@ -40,15 +40,6 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/yingzo',
-    name: 'Yingzo',
-    component: () => import('@/views/yingzo/YingzoProductView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Yingzo（影作）'
-    }
-  },
-  {
     path: '/login',
     name: 'Login',
     component: () => import('@/views/auth/LoginView.vue'),
@@ -75,15 +66,6 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: false,
       title: 'Verify Email'
-    }
-  },
-  {
-    path: '/agent/authorize',
-    name: 'AgentAuthorize',
-    component: () => import('@/views/auth/AgentAuthorizeView.vue'),
-    meta: {
-      requiresAuth: true,
-      title: 'Authorize Yingzo'
     }
   },
   {
@@ -430,16 +412,6 @@ const routes: RouteRecordRaw[] = [
       title: 'Admin Dashboard',
       titleKey: 'admin.dashboard.title',
       descriptionKey: 'admin.dashboard.description'
-    }
-  },
-  {
-    path: '/admin/yingzo',
-    name: 'AdminYingzo',
-    component: () => import('@/views/admin/YingzoView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Yingzo Release Management'
     }
   },
   {

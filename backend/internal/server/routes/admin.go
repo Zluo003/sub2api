@@ -62,9 +62,6 @@ func RegisterAdminRoutes(
 		// 系统设置
 		registerSettingsRoutes(admin, h)
 
-		// Yingzo 私有发行
-		registerYingzoReleaseRoutes(admin, h)
-
 		// 公共文件服务
 		registerFileStorageRoutes(admin, h)
 
@@ -121,33 +118,6 @@ func registerFileStorageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		files.GET("/settings", h.Admin.FileStorage.GetSettings)
 		files.PUT("/settings", h.Admin.FileStorage.UpdateSettings)
 		files.POST("/test", h.Admin.FileStorage.TestSettings)
-	}
-}
-
-func registerYingzoReleaseRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
-	yingzo := admin.Group("/yingzo")
-	{
-		yingzo.GET("/releases", h.Agent.ListYingzoReleases)
-		yingzo.POST("/releases", h.Agent.UploadYingzoRelease)
-		yingzo.POST("/releases/:id/artifacts", h.Agent.UploadYingzoReleaseArtifact)
-		yingzo.POST("/releases/:id/artifacts/batch", h.Agent.UploadYingzoReleaseArtifactsBatch)
-		yingzo.PUT("/releases/:id/artifacts/:artifact_id", h.Agent.ReplaceYingzoReleaseArtifact)
-		yingzo.DELETE("/releases/:id/artifacts/:artifact_id", h.Agent.DeleteYingzoReleaseArtifact)
-		yingzo.POST("/releases/:id/artifact-uploads", h.Agent.InitYingzoReleaseArtifactUpload)
-		yingzo.GET("/releases/:id/artifact-uploads/:upload_id", h.Agent.GetYingzoReleaseArtifactUpload)
-		yingzo.PUT("/releases/:id/artifact-uploads/:upload_id", h.Agent.PutYingzoReleaseArtifactUploadChunk)
-		yingzo.POST("/releases/:id/artifact-uploads/:upload_id/complete", h.Agent.CompleteYingzoReleaseArtifactUpload)
-		yingzo.DELETE("/releases/:id/artifact-uploads/:upload_id", h.Agent.AbortYingzoReleaseArtifactUpload)
-		yingzo.PUT("/releases/:id/proof", h.Agent.VerifyYingzoReleaseProof)
-		yingzo.POST("/releases/:id/publish", h.Agent.PublishYingzoRelease)
-		yingzo.POST("/releases/:id/promote", h.Agent.PromoteYingzoRelease)
-		yingzo.POST("/releases/:id/rollback", h.Agent.RollbackYingzoRelease)
-		yingzo.DELETE("/releases/:id/purge", h.Agent.PurgeYingzoRelease)
-		yingzo.DELETE("/releases/:id", h.Agent.DisableYingzoRelease)
-		yingzo.GET("/settings", h.Agent.GetYingzoSettings)
-		yingzo.PUT("/settings", h.Agent.UpdateYingzoSettings)
-		yingzo.GET("/agent-groups/:id/pricing", h.Agent.ListAgentGroupPricing)
-		yingzo.PUT("/agent-groups/:id/pricing", h.Agent.UpdateAgentGroupPricing)
 	}
 }
 
@@ -319,6 +289,11 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.GET("/capacity-summary", h.Admin.Group.GetCapacitySummary)
 		groups.PUT("/sort-order", h.Admin.Group.UpdateSortOrder)
 		groups.GET("/:id/models-list-candidates", h.Admin.Group.GetModelsListCandidates)
+		groups.GET("/:id/agent-models", h.Admin.Group.GetAgentModels)
+		groups.POST("/:id/agent-models/sync", h.Admin.Group.SyncAgentModels)
+		groups.PUT("/:id/agent-models/:model_id", h.Admin.Group.UpdateAgentModel)
+		groups.DELETE("/:id/agent-models/:model_id", h.Admin.Group.DeleteAgentModel)
+		groups.PUT("/:id/agent-platform-rates/:platform", h.Admin.Group.SetAgentPlatformRate)
 		groups.GET("/:id", h.Admin.Group.GetByID)
 		groups.POST("", h.Admin.Group.Create)
 		groups.PUT("/:id", h.Admin.Group.Update)

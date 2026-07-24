@@ -51,6 +51,15 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		c.JSON(http.StatusOK, antigravity.FallbackGeminiModelsList())
 		return
 	}
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		models, err := h.agentGeminiModels(c.Request.Context(), apiKey.Group.ID)
+		if err != nil {
+			googleError(c, http.StatusServiceUnavailable, "Agent model catalogue is unavailable")
+			return
+		}
+		c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: models})
+		return
+	}
 
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
@@ -104,6 +113,22 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		c.JSON(http.StatusOK, antigravity.FallbackGeminiModel(modelName))
 		return
 	}
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		models, err := h.agentGeminiModels(c.Request.Context(), apiKey.Group.ID)
+		if err != nil {
+			googleError(c, http.StatusServiceUnavailable, "Agent model catalogue is unavailable")
+			return
+		}
+		requested := strings.TrimPrefix(modelName, "models/")
+		for _, model := range models {
+			if strings.TrimPrefix(model.Name, "models/") == requested {
+				c.JSON(http.StatusOK, model)
+				return
+			}
+		}
+		googleError(c, http.StatusNotFound, "Model is not assigned to this Agent group")
+		return
+	}
 
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
@@ -129,6 +154,39 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		return
 	}
 	writeUpstreamResponse(c, res)
+}
+
+func (h *GatewayHandler) agentGeminiModels(ctx context.Context, groupID int64) ([]gemini.Model, error) {
+	if h == nil || h.agentModelCatalog == nil {
+		return nil, errors.New("agent model catalogue is unavailable")
+	}
+	catalog, err := h.agentModelCatalog.ListAvailable(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	methods := []string{"generateContent", "streamGenerateContent"}
+	models := make([]gemini.Model, 0)
+	for _, entry := range catalog {
+		if !containsAgentModelValue(entry.Platforms, service.PlatformGemini) ||
+			!containsAgentModelValue(entry.Interfaces, service.AgentInterfaceGeminiGenerateContent) {
+			continue
+		}
+		models = append(models, gemini.Model{
+			Name:                       "models/" + strings.TrimPrefix(entry.ID, "models/"),
+			DisplayName:                entry.ID,
+			SupportedGenerationMethods: methods,
+		})
+	}
+	return models, nil
+}
+
+func containsAgentModelValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // GeminiV1BetaModels proxies Gemini native REST endpoints like:
@@ -197,6 +255,16 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	reqModel := modelName // 保存映射前的原始模型名
 	if channelMapping.Mapped {
 		modelName = channelMapping.MappedModel
+	}
+	imageGeneration := action != "countTokens" &&
+		(service.IsGeminiImageGenerationModel(reqModel) || service.IsGeminiImageGenerationModel(modelName))
+	if imageGeneration {
+		imageTier := service.GeminiImageBillingTier(body)
+		if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformGemini, reqModel, imageTier, 1); err != nil {
+			reqLog.Warn("gemini.agent_image_pricing_unavailable", zap.Error(err))
+			writeGoogleAgentPricingError(c, err)
+			return
+		}
 	}
 
 	// Get subscription (may be nil)
@@ -376,6 +444,18 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if !imageGeneration {
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				c.Request.Context(), apiKey.Group, account, reqModel, modelName,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("gemini.agent_language_pricing_unavailable", zap.Error(err))
+				writeGoogleAgentPricingError(c, err)
+				return
+			}
+		}
 
 		// 检测账号切换：如果粘性会话绑定的账号与当前选择的账号不同，清除 thoughtSignature
 		// 注意：Gemini 原生 API 的 thoughtSignature 与具体上游账号强相关；跨账号透传会导致 400。

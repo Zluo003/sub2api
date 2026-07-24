@@ -104,6 +104,89 @@ export async function getModelsListCandidates(
   return data.models || []
 }
 
+export type AgentModelPlatform = 'openai' | 'anthropic' | 'gemini' | 'seedance'
+export type AgentLanguagePlatform = Exclude<AgentModelPlatform, 'seedance'>
+export type AgentMediaType = 'text' | 'image' | 'video'
+export type AgentBillingUnit = 'image' | 'second'
+
+export interface AgentPlatformRate {
+  group_id: number
+  platform: AgentLanguagePlatform
+  rate_multiplier: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentModelPrice {
+  id?: number
+  agent_model_id?: number
+  resolution: string
+  billing_unit?: AgentBillingUnit
+  unit_price: number
+  created_at?: string
+  updated_at?: string
+}
+
+export interface AgentGroupModel {
+  id: number
+  group_id: number
+  platform: AgentModelPlatform
+  model_code: string
+  media_type: AgentMediaType
+  enabled: boolean
+  available: boolean
+  excluded: boolean
+  discovered_at: string
+  last_seen_at: string
+  prices: AgentModelPrice[]
+}
+
+export interface AgentModelConfig {
+  platform_rates: AgentPlatformRate[]
+  models: AgentGroupModel[]
+}
+
+export async function getAgentModels(id: number): Promise<AgentModelConfig> {
+  const { data } = await apiClient.get<AgentModelConfig>(`/admin/groups/${id}/agent-models`)
+  return data
+}
+
+export async function syncAgentModels(id: number): Promise<AgentModelConfig> {
+  const { data } = await apiClient.post<AgentModelConfig>(`/admin/groups/${id}/agent-models/sync`)
+  return data
+}
+
+export async function setAgentPlatformRate(
+  id: number,
+  platform: AgentLanguagePlatform,
+  rateMultiplier: number
+): Promise<AgentModelConfig> {
+  const { data } = await apiClient.put<AgentModelConfig>(
+    `/admin/groups/${id}/agent-platform-rates/${platform}`,
+    { rate_multiplier: rateMultiplier }
+  )
+  return data
+}
+
+export async function updateAgentModel(
+  groupId: number,
+  modelId: number,
+  input: { media_type: AgentMediaType; enabled: boolean; prices: AgentModelPrice[] }
+): Promise<AgentModelConfig> {
+  const { data } = await apiClient.put<AgentModelConfig>(
+    `/admin/groups/${groupId}/agent-models/${modelId}`,
+    input
+  )
+  return data
+}
+
+export async function deleteAgentModel(groupId: number, modelId: number): Promise<AgentModelConfig> {
+  const { data } = await apiClient.delete<AgentModelConfig>(
+    `/admin/groups/${groupId}/agent-models/${modelId}`
+  )
+  return data
+}
+
 /**
  * Create new group
  * @param groupData - Group data
@@ -336,6 +419,11 @@ export const groupsAPI = {
   getAllIncludingInactive,
   getById,
   getModelsListCandidates,
+  getAgentModels,
+  syncAgentModels,
+  setAgentPlatformRate,
+  updateAgentModel,
+  deleteAgentModel,
   create,
   update,
   delete: deleteGroup,

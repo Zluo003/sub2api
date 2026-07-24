@@ -550,6 +550,49 @@ func ProvideVideoAccountRepository(repo AccountRepository) VideoAccountRepositor
 	return repo
 }
 
+func ProvideModelPricingResolver(channelService *ChannelService, billingService *BillingService, agentModels *AgentModelCatalogService) *ModelPricingResolver {
+	resolver := NewModelPricingResolver(channelService, billingService)
+	resolver.SetAgentModelCatalog(agentModels)
+	return resolver
+}
+
+func ProvideVideoService(
+	accountRepo VideoAccountRepository,
+	taskRepo VideoTaskRepository,
+	pricingRepo VideoGroupPricingRuleRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	apiKeyService *APIKeyService,
+	billingCache *BillingCacheService,
+	deferredService *DeferredService,
+	balanceNotify *BalanceNotifyService,
+	quotaRepo UserPlatformQuotaRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+	agentModels *AgentModelCatalogService,
+) *VideoService {
+	videoService := NewVideoService(
+		accountRepo,
+		taskRepo,
+		pricingRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		apiKeyService,
+		billingCache,
+		deferredService,
+		balanceNotify,
+		quotaRepo,
+		httpUpstream,
+		cfg,
+	)
+	videoService.SetAgentModelCatalog(agentModels)
+	return videoService
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -572,7 +615,7 @@ var ProviderSet = wire.NewSet(
 	NewGatewayService,
 	NewOpenAIGatewayService,
 	ProvideVideoAccountRepository,
-	NewVideoService,
+	ProvideVideoService,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
 	ProvideOpenAIOAuthService,
@@ -598,6 +641,8 @@ var ProviderSet = wire.NewSet(
 	ProvideSettingService,
 	NewDataManagementService,
 	NewFileStorageService,
+	NewTemporaryAssetPublisher,
+	wire.Bind(new(OpenAIImageResultPublisher), new(*TemporaryAssetPublisher)),
 	ProvideBackupService,
 	ProvideOpsSystemLogSink,
 	ProvideOpsService,
@@ -641,8 +686,9 @@ var ProviderSet = wire.NewSet(
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
 	NewGroupCapacityService,
+	NewAgentModelCatalogService,
 	NewChannelService,
-	NewModelPricingResolver,
+	ProvideModelPricingResolver,
 	NewContentModerationService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,

@@ -20,6 +20,7 @@ type GroupHandler struct {
 	adminService         service.AdminService
 	dashboardService     *service.DashboardService
 	groupCapacityService *service.GroupCapacityService
+	agentModels          *service.AgentModelCatalogService
 }
 
 type optionalLimitField struct {
@@ -72,11 +73,17 @@ func (f optionalLimitField) ToServiceInput() *float64 {
 }
 
 // NewGroupHandler creates a new admin group handler
-func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
+func NewGroupHandler(
+	adminService service.AdminService,
+	dashboardService *service.DashboardService,
+	groupCapacityService *service.GroupCapacityService,
+	agentModels *service.AgentModelCatalogService,
+) *GroupHandler {
 	return &GroupHandler{
 		adminService:         adminService,
 		dashboardService:     dashboardService,
 		groupCapacityService: groupCapacityService,
+		agentModels:          agentModels,
 	}
 }
 
@@ -268,6 +275,147 @@ func (h *GroupHandler) GetModelsListCandidates(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"models": models})
+}
+
+// GetAgentModels returns the synchronized Agent model configuration.
+// GET /api/v1/admin/groups/:id/agent-models
+func (h *GroupHandler) GetAgentModels(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok {
+		return
+	}
+	if !h.requireAgentModels(c) {
+		return
+	}
+	config, err := h.agentModels.GetConfig(c.Request.Context(), groupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, config)
+}
+
+// SyncAgentModels refreshes the catalogue from currently assigned accounts.
+// POST /api/v1/admin/groups/:id/agent-models/sync
+func (h *GroupHandler) SyncAgentModels(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok {
+		return
+	}
+	if !h.requireAgentModels(c) {
+		return
+	}
+	config, err := h.agentModels.Sync(c.Request.Context(), groupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, config)
+}
+
+type setAgentPlatformRateRequest struct {
+	RateMultiplier *float64 `json:"rate_multiplier" binding:"required"`
+}
+
+// SetAgentPlatformRate updates one language provider multiplier.
+// PUT /api/v1/admin/groups/:id/agent-platform-rates/:platform
+func (h *GroupHandler) SetAgentPlatformRate(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok {
+		return
+	}
+	var req setAgentPlatformRateRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.RateMultiplier == nil || *req.RateMultiplier < 0 {
+		response.BadRequest(c, "rate_multiplier must be a non-negative number")
+		return
+	}
+	if !h.requireAgentModels(c) {
+		return
+	}
+	config, err := h.agentModels.SetPlatformRate(c.Request.Context(), groupID, c.Param("platform"), *req.RateMultiplier)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, config)
+}
+
+type updateAgentModelRequest struct {
+	MediaType string                    `json:"media_type" binding:"required"`
+	Enabled   *bool                     `json:"enabled" binding:"required"`
+	Prices    []service.AgentModelPrice `json:"prices"`
+}
+
+// UpdateAgentModel updates classification, visibility, and replacement prices.
+// PUT /api/v1/admin/groups/:id/agent-models/:model_id
+func (h *GroupHandler) UpdateAgentModel(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok {
+		return
+	}
+	modelID, err := strconv.ParseInt(c.Param("model_id"), 10, 64)
+	if err != nil || modelID <= 0 {
+		response.BadRequest(c, "Invalid Agent model ID")
+		return
+	}
+	var req updateAgentModelRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+		response.BadRequest(c, "media_type and enabled are required")
+		return
+	}
+	if !h.requireAgentModels(c) {
+		return
+	}
+	config, err := h.agentModels.UpdateModel(c.Request.Context(), groupID, modelID, service.AgentModelConfigInput{
+		MediaType: req.MediaType,
+		Enabled:   *req.Enabled,
+		Prices:    req.Prices,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, config)
+}
+
+// DeleteAgentModel excludes a model from all future synchronization runs.
+// DELETE /api/v1/admin/groups/:id/agent-models/:model_id
+func (h *GroupHandler) DeleteAgentModel(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok {
+		return
+	}
+	modelID, err := strconv.ParseInt(c.Param("model_id"), 10, 64)
+	if err != nil || modelID <= 0 {
+		response.BadRequest(c, "Invalid Agent model ID")
+		return
+	}
+	if !h.requireAgentModels(c) {
+		return
+	}
+	config, err := h.agentModels.ExcludeModel(c.Request.Context(), groupID, modelID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, config)
+}
+
+func parseAdminGroupID(c *gin.Context) (int64, bool) {
+	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || groupID <= 0 {
+		response.BadRequest(c, "Invalid group ID")
+		return 0, false
+	}
+	return groupID, true
+}
+
+func (h *GroupHandler) requireAgentModels(c *gin.Context) bool {
+	if h != nil && h.agentModels != nil {
+		return true
+	}
+	response.Error(c, 503, "Agent model catalogue is unavailable")
+	return false
 }
 
 // Create handles creating a new group

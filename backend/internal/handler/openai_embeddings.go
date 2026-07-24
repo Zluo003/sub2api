@@ -148,6 +148,16 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if err := h.gatewayService.ValidateAgentLanguagePricing(
+			c.Request.Context(), apiKey.Group, account, reqModel, channelMapping.MappedModel,
+		); err != nil {
+			if selection.Acquired && selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			reqLog.Warn("openai_embeddings.agent_language_pricing_unavailable", zap.Error(err))
+			writeOpenAIAgentPricingError(c, err)
+			return
+		}
 
 		accountReleaseFunc, accountAcquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &streamStarted, reqLog)
 		if !accountAcquired {

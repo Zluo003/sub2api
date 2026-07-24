@@ -24,7 +24,6 @@
 
 SELECT to_regclass('public.video_tasks') IS NOT NULL AS has_video_tasks \gset
 SELECT to_regclass('public.agent_generation_quotes') IS NOT NULL AS has_agent_generation_quotes \gset
-SELECT to_regclass('public.agent_device_authorizations') IS NOT NULL AS has_agent_device_authorizations \gset
 SELECT to_regclass('public.temporary_assets') IS NOT NULL AS has_temporary_assets \gset
 SELECT to_regclass('public.idempotency_records') IS NOT NULL AS has_idempotency_records \gset
 SELECT to_regclass('public.ops_system_logs') IS NOT NULL AS has_ops_system_logs \gset
@@ -42,7 +41,6 @@ WITH target_tables(table_name) AS (
     VALUES
         ('video_tasks'),
         ('agent_generation_quotes'),
-        ('agent_device_authorizations'),
         ('temporary_assets'),
         ('idempotency_records'),
         ('ops_system_logs'),
@@ -82,11 +80,6 @@ FROM video_tasks;
 SELECT 'agent_generation_quotes' AS table_name, count(*) AS eligible_rows
 FROM agent_generation_quotes
 WHERE expires_at < NOW();
-\endif
-\if :has_agent_device_authorizations
-SELECT 'agent_device_authorizations' AS table_name, count(*) AS eligible_rows
-FROM agent_device_authorizations
-WHERE expires_at < NOW() - make_interval(days => :metadata_retention_days);
 \endif
 \if :has_temporary_assets
 SELECT 'temporary_assets' AS table_name, count(*) AS eligible_rows
@@ -148,16 +141,6 @@ SELECT count(*) AS deleted_generation_quotes FROM deleted \gset
 \echo 'expired generation quotes deleted:' :deleted_generation_quotes
 \endif
 
-\if :has_agent_device_authorizations
-WITH deleted AS (
-    DELETE FROM agent_device_authorizations
-    WHERE expires_at < NOW() - make_interval(days => :metadata_retention_days)
-    RETURNING 1
-)
-SELECT count(*) AS deleted_device_authorizations FROM deleted \gset
-\echo 'expired device authorizations deleted:' :deleted_device_authorizations
-\endif
-
 \if :has_temporary_assets
 WITH deleted AS (
     DELETE FROM temporary_assets
@@ -217,9 +200,6 @@ VACUUM (ANALYZE) video_tasks;
 \endif
 \if :has_agent_generation_quotes
 VACUUM (ANALYZE) agent_generation_quotes;
-\endif
-\if :has_agent_device_authorizations
-VACUUM (ANALYZE) agent_device_authorizations;
 \endif
 \if :has_temporary_assets
 VACUUM (ANALYZE) temporary_assets;

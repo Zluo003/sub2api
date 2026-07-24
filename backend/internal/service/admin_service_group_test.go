@@ -151,6 +151,33 @@ func (s *groupRepoStubForAdmin) UpdateSortOrders(_ context.Context, _ []GroupSor
 	return nil
 }
 
+type accountRepoStubForAgentBinding struct {
+	accountRepoStub
+	account     *Account
+	createCalls int
+	updateCalls int
+	bindCalls   int
+}
+
+func (s *accountRepoStubForAgentBinding) Create(_ context.Context, _ *Account) error {
+	s.createCalls++
+	return nil
+}
+
+func (s *accountRepoStubForAgentBinding) GetByID(_ context.Context, _ int64) (*Account, error) {
+	return s.account, nil
+}
+
+func (s *accountRepoStubForAgentBinding) Update(_ context.Context, _ *Account) error {
+	s.updateCalls++
+	return nil
+}
+
+func (s *accountRepoStubForAgentBinding) BindGroups(_ context.Context, _ int64, _ []int64) error {
+	s.bindCalls++
+	return nil
+}
+
 func TestAdminService_ListGroups_PassesSortParams(t *testing.T) {
 	repo := &groupRepoStubForAdmin{
 		listWithFiltersGroups: []Group{{ID: 1, Name: "g1"}},
@@ -165,6 +192,37 @@ func TestAdminService_ListGroups_PassesSortParams(t *testing.T) {
 		SortBy:    "account_count",
 		SortOrder: "ASC",
 	}, repo.listWithFiltersParams)
+}
+
+func TestAdminServiceCreateAccountRejectsUnsupportedAgentPlatformBeforeWrite(t *testing.T) {
+	agentGroup := &Group{ID: 91, Kind: "agent", SystemCode: "yingzo"}
+	groupRepo := &groupRepoStubForAdmin{getByID: agentGroup}
+	accountRepo := &accountRepoStubForAgentBinding{}
+	svc := &adminServiceImpl{groupRepo: groupRepo, accountRepo: accountRepo}
+
+	_, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name: "unsupported", Platform: PlatformGrok, Type: AccountTypeAPIKey, GroupIDs: []int64{agentGroup.ID},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot be bound to the Agent group")
+	require.Zero(t, accountRepo.createCalls)
+	require.Zero(t, accountRepo.bindCalls)
+}
+
+func TestAdminServiceUpdateAccountRejectsUnsupportedAgentPlatformBeforeWrite(t *testing.T) {
+	agentGroup := &Group{ID: 92, Kind: "agent", SystemCode: "yingzo"}
+	groupRepo := &groupRepoStubForAdmin{getByID: agentGroup}
+	accountRepo := &accountRepoStubForAgentBinding{account: &Account{ID: 7, Platform: PlatformAntigravity}}
+	svc := &adminServiceImpl{groupRepo: groupRepo, accountRepo: accountRepo}
+	groupIDs := []int64{agentGroup.ID}
+
+	_, err := svc.UpdateAccount(context.Background(), 7, &UpdateAccountInput{
+		GroupIDs: &groupIDs, SkipMixedChannelCheck: true,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot be bound to the Agent group")
+	require.Zero(t, accountRepo.updateCalls)
+	require.Zero(t, accountRepo.bindCalls)
 }
 
 // TestAdminService_CreateGroup_WithImagePricing 测试创建分组时 ImagePrice 字段正确传递
@@ -514,7 +572,7 @@ func TestAdminService_UpdateGroup_ClearsMessagesDispatchFieldsWhenPlatformChange
 func TestAdminService_UpdateGroup_AgentCopiesAccountsAcrossPlatforms(t *testing.T) {
 	agentGroup := &Group{
 		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
-		Kind: "agent", SystemCode: "yingzo", IsExclusive: true, Status: StatusActive,
+		Kind: "agent", SystemCode: "yingzo", IsExclusive: false, Status: StatusActive,
 	}
 	repo := &groupRepoStubForAdmin{
 		getByID: agentGroup,
@@ -541,22 +599,68 @@ func TestAdminService_UpdateGroup_AgentAlwaysEnablesImageGeneration(t *testing.T
 	agentGroup := &Group{
 		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
 		Kind: "agent", SystemCode: "yingzo", IsExclusive: true, Status: StatusActive,
-		AllowImageGeneration: false,
+		AllowImageGeneration: false, ImageRateIndependent: false, ImageRateMultiplier: 9,
 	}
 	repo := &groupRepoStubForAdmin{getByID: agentGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
+	independent := false
+	multiplier := 7.0
 
-	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{})
+	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{
+		ImageRateIndependent: &independent,
+		ImageRateMultiplier:  &multiplier,
+	})
 	require.NoError(t, err)
 	require.NotNil(t, group)
 	require.NotNil(t, repo.updated)
 	require.True(t, repo.updated.AllowImageGeneration)
+	require.False(t, repo.updated.IsExclusive)
+	require.True(t, repo.updated.ImageRateIndependent)
+	require.Equal(t, 1.0, repo.updated.ImageRateMultiplier)
+}
+
+func TestAdminService_UpdateGroup_AgentRejectsUnsupportedAccountPlatform(t *testing.T) {
+	agentGroup := &Group{
+		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
+		Kind: "agent", SystemCode: "yingzo", Status: StatusActive,
+	}
+	repo := &groupRepoStubForAdmin{
+		getByID: agentGroup,
+		groupsByID: map[int64]*Group{
+			7: {ID: 7, Name: "Grok", Platform: PlatformGrok, Kind: "standard"},
+		},
+	}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{
+		CopyAccountsFromGroupIDs: []int64{7},
+	})
+	require.EqualError(t, err, "source group 7 platform grok is not supported by the Agent group")
+	require.Nil(t, group)
+	require.Zero(t, repo.clearedAccountGroupID)
+	require.Empty(t, repo.boundAccountIDs)
+}
+
+func TestAdminService_UpdateGroup_RejectsMakingAgentExclusive(t *testing.T) {
+	agentGroup := &Group{
+		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
+		Kind: "agent", SystemCode: "yingzo", IsExclusive: false, Status: StatusActive,
+		AllowImageGeneration: true,
+	}
+	repo := &groupRepoStubForAdmin{getByID: agentGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+	exclusive := true
+
+	group, err := svc.UpdateGroup(context.Background(), agentGroup.ID, &UpdateGroupInput{IsExclusive: &exclusive})
+	require.EqualError(t, err, "system Agent group must remain public")
+	require.Nil(t, group)
+	require.Nil(t, repo.updated)
 }
 
 func TestAdminService_UpdateGroup_RejectsDisablingAgentImageGeneration(t *testing.T) {
 	agentGroup := &Group{
 		ID: 5, Name: "Yingzo Agent", Platform: PlatformOpenAI,
-		Kind: "agent", SystemCode: "yingzo", IsExclusive: true, Status: StatusActive,
+		Kind: "agent", SystemCode: "yingzo", IsExclusive: false, Status: StatusActive,
 		AllowImageGeneration: true,
 	}
 	repo := &groupRepoStubForAdmin{getByID: agentGroup}

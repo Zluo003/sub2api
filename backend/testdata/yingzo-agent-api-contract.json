@@ -1,22 +1,44 @@
 {
-  "schema_version": "1.0.0",
-  "agent_api_contract_version": "2026-07-15.1",
-  "models": [
-    "gpt-image-2",
-    "seedance-2.0"
-  ],
+  "schema_version": "3.0.0",
+  "agent_api_contract_version": "2026-07-24.1",
+  "model_catalog": {
+    "schema_version": 3,
+    "source": "configured_account_synced_catalog",
+    "capability_fields": ["media_types", "platforms", "interfaces", "input_modalities", "output_modalities", "operations", "streaming", "asynchronous"],
+    "cache_headers": ["ETag", "X-Model-Catalog-Schema-Version", "X-Gateway-Contract-Version"]
+  },
+  "image_response_format_url": "temporary_http_url_no_data_url_or_b64_json",
   "endpoints": [
     "GET /v1/models",
+    "POST /v1/responses",
+    "POST /v1/chat/completions",
+    "POST /v1/embeddings",
+    "POST /v1/messages",
+    "POST /v1/messages/count_tokens",
+    "GET /v1beta/models",
+    "GET /v1beta/models/:model",
+    "POST /v1beta/models/:model:generateContent",
+    "POST /v1beta/models/:model:streamGenerateContent",
     "GET /api/v1/agent/pricing",
     "POST /api/v1/agent/generation/estimates",
     "POST /api/v1/agent/assets",
     "GET /api/v1/agent/assets/:id",
-    "DELETE /api/v1/agent/installation",
+    "HEAD /media/:id/:filename",
+    "GET /media/:id/:filename",
     "POST /v1/images/generations",
     "POST /v1/images/edits",
     "POST /v1/videos",
     "GET /v1/videos/:id"
   ],
+  "temporary_asset_response_required_fields": [
+    "id",
+    "url",
+    "content_type",
+    "size",
+    "sha256",
+    "expires_at"
+  ],
+  "temporary_asset_public_url_contract": "https_no_credentials_no_query_readable_by_head_and_get_until_expiry",
   "video_response_required_fields": [
     "id",
     "object",

@@ -92,6 +92,23 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatChat) {
 		return
 	}
+	imageIntent := service.IsImageGenerationIntent("/v1/chat/completions", reqModel, body)
+	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
+		return
+	}
+	if imageIntent {
+		imageTier, tierErr := service.OpenAIResponsesImageBillingTier(body, reqModel)
+		if tierErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", tierErr.Error())
+			return
+		}
+		if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformOpenAI, reqModel, imageTier, 1); err != nil {
+			reqLog.Warn("openai.chat_completions.agent_image_pricing_unavailable", zap.Error(err))
+			writeOpenAIAgentPricingError(c, err)
+			return
+		}
+	}
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
@@ -181,6 +198,18 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if !imageIntent {
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				c.Request.Context(), apiKey.Group, account, reqModel, channelMapping.MappedModel,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("openai.chat_completions.agent_language_pricing_unavailable", zap.Error(err))
+				writeOpenAIAgentPricingError(c, err)
+				return
+			}
+		}
 
 		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {

@@ -4192,6 +4192,17 @@ func isImageGenerationModel(model string) bool {
 		strings.HasPrefix(modelLower, "gemini-2.5-flash-image-")
 }
 
+// IsGeminiImageGenerationModel reports whether a native Gemini request uses an
+// image-generation model.
+func IsGeminiImageGenerationModel(model string) bool {
+	return isImageGenerationModel(model)
+}
+
+// GeminiImageBillingTier extracts and normalizes the requested image tier.
+func GeminiImageBillingTier(body []byte) string {
+	return NormalizeImageBillingTierOrDefault(gjson.GetBytes(body, "generationConfig.imageConfig.imageSize").String())
+}
+
 // cleanGeminiRequest 清理 Gemini 请求体中的 Schema
 func cleanGeminiRequest(body []byte) ([]byte, error) {
 	var payload map[string]any

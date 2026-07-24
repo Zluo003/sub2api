@@ -47,6 +47,30 @@ func TestForceAgentPlatformOnlyAffectsAgentGroups(t *testing.T) {
 	}
 }
 
+func TestSetAgentRequestPlatformUsesNativeEndpointPlatform(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, platform := range []string{
+		service.PlatformOpenAI,
+		service.PlatformAnthropic,
+		service.PlatformGemini,
+		service.PlatformSeedance,
+	} {
+		t.Run(platform, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/test", nil)
+			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{
+				Kind: "agent", SystemCode: "yingzo", Platform: service.PlatformOpenAI,
+			}})
+
+			require.True(t, setAgentRequestPlatform(c, platform))
+			forced, ok := servermiddleware.GetForcePlatformFromContext(c)
+			require.True(t, ok)
+			require.Equal(t, platform, forced)
+		})
+	}
+}
+
 func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

@@ -3,11 +3,13 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -30,14 +32,6 @@ import (
 )
 
 type sha256HexArgument struct{}
-
-type authInvalidatorSpy struct{ keys []string }
-
-func (s *authInvalidatorSpy) InvalidateAuthCacheByKey(_ context.Context, key string) {
-	s.keys = append(s.keys, key)
-}
-func (s *authInvalidatorSpy) InvalidateAuthCacheByUserID(context.Context, int64)  {}
-func (s *authInvalidatorSpy) InvalidateAuthCacheByGroupID(context.Context, int64) {}
 
 func (sha256HexArgument) Match(value driver.Value) bool {
 	s, ok := value.(string)
@@ -100,234 +94,34 @@ func responseCode(body *httptest.ResponseRecorder) string {
 	return response.Error.Code
 }
 
-func TestStartDeviceAuthorizationStoresOnlyTokenHashes(t *testing.T) {
+func TestRequestPublicOrigin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	installationID := uuid.New()
-	mock.ExpectExec("INSERT INTO agent_device_authorizations").
-		WithArgs(sqlmock.AnyArg(), sha256HexArgument{}, sha256HexArgument{}, installationID, "Mac Studio", sqlmock.AnyArg()).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	r := gin.New()
-	r.POST("/device", h.StartDeviceAuthorization)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "https://staging.example.com/device", strings.NewReader(`{"installation_id":"`+installationID.String()+`","installation_name":"Mac Studio"}`))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusCreated, w.Code)
-	var response map[string]any
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
-	require.NotEmpty(t, response["device_code"])
-	require.NotEmpty(t, response["user_code"])
-	require.Equal(t, "https://staging.example.com/agent/authorize", response["verification_uri"])
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestStartDeviceAuthorizationRejectsInvalidInstallationID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	r := gin.New()
-	r.POST("/device", h.StartDeviceAuthorization)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/device", strings.NewReader(`{"installation_id":"not-a-uuid","installation_name":"Mac"}`))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Equal(t, "invalid_request", responseCode(w))
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestApproveDeviceAuthorizationHashesNormalizedUserCode(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	mock.ExpectExec("UPDATE agent_device_authorizations").
-		WithArgs(int64(42), hashToken("AB-CD123")).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	r := gin.New()
-	r.POST("/approve", func(c *gin.Context) {
-		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
-		h.ApproveDeviceAuthorization(c)
-	})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/approve", strings.NewReader(`{"user_code":"  ab-cd123 "}`))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	require.Equal(t, http.StatusOK, w.Code)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetDeviceAuthorizationReturnsOnlyPendingRequestMetadata(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	installationID := uuid.New()
-	expiresAt := time.Now().Add(5 * time.Minute)
-	mock.ExpectQuery("SELECT installation_id,installation_name,status,expires_at").
-		WithArgs(hashToken("AB-CD123")).
-		WillReturnRows(sqlmock.NewRows([]string{"installation_id", "installation_name", "status", "expires_at"}).
-			AddRow(installationID, "Mac Studio", "pending", expiresAt))
-	r := gin.New()
-	r.GET("/authorization/:user_code", func(c *gin.Context) {
-		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
-		h.GetDeviceAuthorization(c)
-	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/authorization/ab-cd123", nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), "Mac Studio")
-	require.NotContains(t, w.Body.String(), "device_code")
-	require.NotContains(t, w.Body.String(), "api_key")
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestPollDeviceAuthorizationStatesAndCredentialReuse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	t.Run("pending", func(t *testing.T) {
-		h, mock := newAgentHandlerMock(t)
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT id,installation_id,installation_name,status,user_id,expires_at").
-			WithArgs(hashToken("pending-device")).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "installation_id", "installation_name", "status", "user_id", "expires_at"}).
-				AddRow(uuid.New(), uuid.New(), "Mac", "pending", nil, time.Now().Add(time.Minute)))
-		mock.ExpectRollback()
-		w := pollDevice(t, h, "pending-device")
-		require.Equal(t, http.StatusPreconditionRequired, w.Code)
-		require.Equal(t, "authorization_pending", responseCode(w))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("expired", func(t *testing.T) {
-		h, mock := newAgentHandlerMock(t)
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT id,installation_id,installation_name,status,user_id,expires_at").
-			WithArgs(hashToken("expired-device")).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "installation_id", "installation_name", "status", "user_id", "expires_at"}).
-				AddRow(uuid.New(), uuid.New(), "Mac", "approved", int64(7), time.Now().Add(-time.Minute)))
-		mock.ExpectRollback()
-		w := pollDevice(t, h, "expired-device")
-		require.Equal(t, http.StatusBadRequest, w.Code)
-		require.Equal(t, "expired_token", responseCode(w))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("reuses active installation credential", func(t *testing.T) {
-		h, mock := newAgentHandlerMock(t)
-		invalidator := &authInvalidatorSpy{}
-		h.authInvalidator = invalidator
-		authorizationID, installationID := uuid.New(), uuid.New()
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT id,installation_id,installation_name,status,user_id,expires_at").
-			WithArgs(hashToken("approved-device")).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "installation_id", "installation_name", "status", "user_id", "expires_at"}).
-				AddRow(authorizationID, installationID, "Mac", "approved", int64(7), time.Now().Add(time.Minute)))
-		mock.ExpectQuery("SELECT ai.api_key_id,ak.key").
-			WithArgs(installationID, int64(7)).
-			WillReturnRows(sqlmock.NewRows([]string{"api_key_id", "key"}).AddRow(int64(81), "sk-agent-existing"))
-		mock.ExpectExec("UPDATE agent_device_authorizations SET status='consumed'").
-			WithArgs(authorizationID).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
-		w := pollDevice(t, h, "approved-device")
-		require.Equal(t, http.StatusOK, w.Code)
-		require.Contains(t, w.Body.String(), "sk-agent-existing")
-		require.Equal(t, []string{"sk-agent-existing"}, invalidator.keys)
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("rejects replay of a consumed device credential", func(t *testing.T) {
-		h, mock := newAgentHandlerMock(t)
-		authorizationID, installationID := uuid.New(), uuid.New()
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT id,installation_id,installation_name,status,user_id,expires_at").
-			WithArgs(hashToken("consumed-device")).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "installation_id", "installation_name", "status", "user_id", "expires_at"}).
-				AddRow(authorizationID, installationID, "Mac", "consumed", int64(7), time.Now().Add(time.Minute)))
-		mock.ExpectRollback()
-		w := pollDevice(t, h, "consumed-device")
-		require.Equal(t, http.StatusBadRequest, w.Code)
-		require.Equal(t, "invalid_grant", responseCode(w))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-
-	t.Run("does not take over an installation owned by another user", func(t *testing.T) {
-		h, mock := newAgentHandlerMock(t)
-		authorizationID, installationID := uuid.New(), uuid.New()
-		mock.ExpectBegin()
-		mock.ExpectQuery("SELECT id,installation_id,installation_name,status,user_id,expires_at").
-			WithArgs(hashToken("conflicting-device")).
-			WillReturnRows(sqlmock.NewRows([]string{"id", "installation_id", "installation_name", "status", "user_id", "expires_at"}).
-				AddRow(authorizationID, installationID, "Mac", "approved", int64(7), time.Now().Add(time.Minute)))
-		mock.ExpectQuery("SELECT ai.api_key_id,ak.key").
-			WithArgs(installationID, int64(7)).
-			WillReturnError(sql.ErrNoRows)
-		mock.ExpectQuery("SELECT id FROM groups").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(9)))
-		mock.ExpectQuery("INSERT INTO api_keys").
-			WithArgs(int64(7), sqlmock.AnyArg(), "Yingzo Mac", int64(9)).
-			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(82)))
-		mock.ExpectExec("INSERT INTO agent_installations").
-			WithArgs(installationID, int64(7), int64(82), "Mac").
-			WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectRollback()
-		w := pollDevice(t, h, "conflicting-device")
-		require.Equal(t, http.StatusInternalServerError, w.Code)
-		require.Equal(t, "credential_provision_failed", responseCode(w))
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
-}
-
-func pollDevice(t *testing.T, h *AgentHandler, code string) *httptest.ResponseRecorder {
-	t.Helper()
-	r := gin.New()
-	r.POST("/token", h.PollDeviceAuthorization)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"device_code":"`+code+`"}`))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
-	return w
-}
-
-func TestRevokeInstallationDisablesOnlyOwnedCredential(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	invalidator := &authInvalidatorSpy{}
-	h.authInvalidator = invalidator
-	installationID := uuid.New()
-	mock.ExpectQuery("WITH revoked AS").
-		WithArgs(installationID.String(), int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"key"}).AddRow("sk-agent-revoked"))
-	r := gin.New()
-	r.DELETE("/installations/:id", func(c *gin.Context) {
-		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
-		h.RevokeInstallation(c)
-	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/installations/"+installationID.String(), nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), `"revoked":true`)
-	require.Equal(t, []string{"sk-agent-revoked"}, invalidator.keys)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestRevokeCurrentInstallationDisablesCallingAgentCredential(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	invalidator := &authInvalidatorSpy{}
-	h.authInvalidator = invalidator
-	mock.ExpectQuery("WITH revoked AS").
-		WithArgs(int64(81), int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"key"}).AddRow("sk-agent-current"))
-	r := gin.New()
-	r.DELETE("/installation", func(c *gin.Context) {
-		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 81, UserID: 42})
-		h.RevokeCurrentInstallation(c)
-	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/installation", nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), `"revoked":true`)
-	require.Equal(t, []string{"sk-agent-current"}, invalidator.keys)
-	require.NoError(t, mock.ExpectationsWereMet())
+	for _, test := range []struct {
+		name      string
+		host      string
+		proto     string
+		want      string
+		wantError bool
+	}{
+		{name: "forwarded https", host: "api.example.com", proto: "https", want: "https://api.example.com"},
+		{name: "local http", host: "127.0.0.1:8080", proto: "http", want: "http://127.0.0.1:8080"},
+		{name: "external http", host: "api.example.com", proto: "http", wantError: true},
+		{name: "host with path", host: "api.example.com/unsafe", proto: "https", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+			c.Request.Host = test.host
+			c.Request.Header.Set("X-Forwarded-Proto", test.proto)
+			got, err := requestPublicOrigin(c)
+			if test.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+		})
+	}
 }
 
 func TestEstimateImageGenerationPersistsAuthoritativeQuote(t *testing.T) {
@@ -335,19 +129,27 @@ func TestEstimateImageGenerationPersistsAuthoritativeQuote(t *testing.T) {
 	h, mock := newAgentHandlerMock(t)
 	h.billingService = service.NewBillingService(&config.Config{}, nil)
 	groupID := int64(9)
-	price := 0.3
+	accountRepo := publicAgentImageAccountRepo{account: service.Account{
+		ID: 1, Platform: service.PlatformGemini, Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gemini-3.1-flash-image": "gemini-3.1-flash-image"}},
+	}}
+	h.agentModels = service.NewAgentModelCatalogService(accountRepo, nil, &gatewayAgentModelRepoStub{models: []service.AgentGroupModel{{
+		ID: 1, GroupID: groupID, Platform: service.PlatformGemini, ModelCode: "gemini-3.1-flash-image",
+		MediaType: service.AgentMediaTypeImage, Enabled: true, Available: true,
+		Prices: []service.AgentModelPrice{{
+			Resolution: service.ImageBillingSize2K, BillingUnit: service.AgentBillingUnitImage, UnitPrice: 0.3,
+		}},
+	}}})
 	group := &service.Group{
-		ID:             groupID,
-		Kind:           "agent",
-		SystemCode:     "yingzo",
-		RateMultiplier: 2,
-		ImagePrice2K:   &price,
-		UpdatedAt:      time.Unix(1783900000, 0),
+		ID:         groupID,
+		Kind:       "agent",
+		SystemCode: "yingzo",
+		UpdatedAt:  time.Unix(1783900000, 0),
 	}
 	mock.ExpectExec("INSERT INTO agent_generation_quotes").
 		WithArgs(
-			sqlmock.AnyArg(), int64(81), groupID, "image", "gpt-image-2", sha256HexArgument{},
-			sqlmock.AnyArg(), "image", float64(2), 2, 0.3, 0.6, 1.2, "credit",
+			sqlmock.AnyArg(), int64(81), groupID, "image", "gemini-3.1-flash-image", sha256HexArgument{},
+			sqlmock.AnyArg(), "image", float64(2), 2, 0.3, 0.6, 0.6, "credit",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -358,14 +160,14 @@ func TestEstimateImageGenerationPersistsAuthoritativeQuote(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/estimate", strings.NewReader(`{
-		"kind":"image","model":"gpt-image-2","count":2,
-		"request":{"model":"gpt-image-2","size":"2048x1152","prompt":"not persisted"}
+		"kind":"image","model":"gemini-3.1-flash-image","count":2,
+		"request":{"model":"gemini-3.1-flash-image","size":"2048x1152","prompt":"not persisted"}
 	}`))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), `"quote_id":"quote_`)
-	require.Contains(t, w.Body.String(), `"actual_price":1.2`)
+	require.Contains(t, w.Body.String(), `"actual_price":0.6`)
 	require.NotContains(t, w.Body.String(), "not persisted")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -425,9 +227,11 @@ func TestTemporaryAssetUploadServeRangeHeadAndExpiry(t *testing.T) {
 	require.Equal(t, http.StatusCreated, w.Code)
 
 	var response struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		SHA256 string `json:"sha256"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Equal(t, fmt.Sprintf("%x", sha256.Sum256(png)), response.SHA256)
 	parts := strings.Split(strings.TrimRight(response.URL, "/"), "/")
 	require.GreaterOrEqual(t, len(parts), 2)
 	assetID, err := uuid.Parse(parts[len(parts)-2])
@@ -578,7 +382,7 @@ func TestTemporaryAssetS3UploadAndRange(t *testing.T) {
 	for key := range store.objects {
 		storageKey = key
 	}
-	require.True(t, strings.HasPrefix(storageKey, "yingzo-agent-assets/"))
+	require.True(t, strings.HasPrefix(storageKey, "agent-assets/"))
 
 	var response struct {
 		URL string `json:"url"`
@@ -610,7 +414,7 @@ func TestCleanupExpiredClaimsRowsAndDeletesBothBackends(t *testing.T) {
 	h, mock := newAgentHandlerMock(t)
 	store := newMemoryObjectStore()
 	h.objectStore = store
-	store.objects["yingzo-agent-assets/expired"] = []byte("data")
+	store.objects["agent-assets/expired"] = []byte("data")
 	localDir := t.TempDir()
 	localFile := filepath.Join(localDir, "object")
 	require.NoError(t, os.WriteFile(localFile, []byte("data"), 0600))
@@ -620,7 +424,7 @@ func TestCleanupExpiredClaimsRowsAndDeletesBothBackends(t *testing.T) {
 	mock.ExpectQuery("SELECT id,storage_backend,storage_key FROM temporary_assets").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "storage_backend", "storage_key"}).
 			AddRow(localID, "local", localFile).
-			AddRow(s3ID, "s3", "yingzo-agent-assets/expired"))
+			AddRow(s3ID, "s3", "agent-assets/expired"))
 	mock.ExpectExec("UPDATE temporary_assets SET deleted_at").WithArgs(localID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE temporary_assets SET deleted_at").WithArgs(s3ID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -631,7 +435,7 @@ func TestCleanupExpiredClaimsRowsAndDeletesBothBackends(t *testing.T) {
 	require.Equal(t, int64(2), n)
 	_, err = os.Stat(localDir)
 	require.ErrorIs(t, err, os.ErrNotExist)
-	require.Equal(t, []string{"yingzo-agent-assets/expired"}, store.deleted)
+	require.Equal(t, []string{"agent-assets/expired"}, store.deleted)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

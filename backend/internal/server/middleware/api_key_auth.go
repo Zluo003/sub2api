@@ -313,11 +313,10 @@ func validateAPIKeyGroupAllowed(apiKey *service.APIKey) bool {
 		return true
 	}
 	group := apiKey.Group
-	// Agent credentials are provisioned by the device authorization flow and are
-	// already bound to a concrete user and installation. They intentionally stay
-	// outside the ordinary exclusive-group grant table.
+	// Public Agent groups use ordinary user-created API keys and intentionally do
+	// not require an entry in the exclusive-group grant table.
 	if group.IsAgent() {
-		return true
+		return !group.IsExclusive
 	}
 	if group.IsSubscriptionType() {
 		return true

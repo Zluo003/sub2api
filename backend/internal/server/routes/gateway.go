@@ -33,6 +33,9 @@ func RegisterGatewayRoutes(
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
 
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
+		if setAgentRequestPlatform(c, service.PlatformOpenAI) {
+			return true
+		}
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok:
 			return true
@@ -41,6 +44,9 @@ func RegisterGatewayRoutes(
 		}
 	}
 	isOpenAIGatewayPlatform := func(c *gin.Context) bool {
+		if setAgentRequestPlatform(c, service.PlatformOpenAI) {
+			return true
+		}
 		return getGroupPlatform(c) == service.PlatformOpenAI
 	}
 	rejectGrokUnsupportedEndpoint := func(c *gin.Context, endpoint string) {
@@ -53,6 +59,7 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoHandler := func(c *gin.Context) {
+		setAgentRequestPlatform(c, service.PlatformSeedance)
 		if getGroupPlatform(c) != service.PlatformSeedance && !isAgentGroup(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
@@ -67,6 +74,7 @@ func RegisterGatewayRoutes(
 		h.Video.Create(c)
 	}
 	videoGetHandler := func(c *gin.Context) {
+		setAgentRequestPlatform(c, service.PlatformSeedance)
 		if getGroupPlatform(c) != service.PlatformSeedance && !isAgentGroup(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
@@ -92,6 +100,10 @@ func RegisterGatewayRoutes(
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
+			if setAgentRequestPlatform(c, service.PlatformAnthropic) {
+				h.Gateway.Messages(c)
+				return
+			}
 			if getGroupPlatform(c) == service.PlatformGrok {
 				rejectGrokUnsupportedEndpoint(c, "Messages API")
 				return
@@ -104,6 +116,10 @@ func RegisterGatewayRoutes(
 		})
 		// /v1/messages/count_tokens: OpenAI groups get 404
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
+			if setAgentRequestPlatform(c, service.PlatformAnthropic) {
+				h.Gateway.CountTokens(c)
+				return
+			}
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
@@ -139,6 +155,7 @@ func RegisterGatewayRoutes(
 				rejectGrokUnsupportedEndpoint(c, "Responses WebSocket API")
 				return
 			}
+			setAgentRequestPlatform(c, service.PlatformOpenAI)
 			h.OpenAIGateway.ResponsesWebSocket(c)
 		})
 		// OpenAI Chat Completions API: auto-route based on group platform
@@ -154,7 +171,7 @@ func RegisterGatewayRoutes(
 			h.Gateway.ChatCompletions(c)
 		})
 		gateway.POST("/embeddings", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
+			if !isOpenAIGatewayPlatform(c) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": gin.H{
@@ -167,7 +184,7 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.Embeddings(c)
 		})
 		gateway.POST("/images/generations", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
+			if !isOpenAIGatewayPlatform(c) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": gin.H{
@@ -180,7 +197,7 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.Images(c)
 		})
 		gateway.POST("/images/edits", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformOpenAI {
+			if !isOpenAIGatewayPlatform(c) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": gin.H{
@@ -228,6 +245,7 @@ func RegisterGatewayRoutes(
 			rejectGrokUnsupportedEndpoint(c, "Responses WebSocket API")
 			return
 		}
+		setAgentRequestPlatform(c, service.PlatformOpenAI)
 		h.OpenAIGateway.ResponsesWebSocket(c)
 	})
 	codexDirect := r.Group("/backend-api/codex")
@@ -240,6 +258,7 @@ func RegisterGatewayRoutes(
 				rejectGrokUnsupportedEndpoint(c, "Responses WebSocket API")
 				return
 			}
+			setAgentRequestPlatform(c, service.PlatformOpenAI)
 			h.OpenAIGateway.ResponsesWebSocket(c)
 		})
 	}
@@ -256,7 +275,7 @@ func RegisterGatewayRoutes(
 		h.Gateway.ChatCompletions(c)
 	})
 	r.POST("/embeddings", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
+		if !isOpenAIGatewayPlatform(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -269,7 +288,7 @@ func RegisterGatewayRoutes(
 		h.OpenAIGateway.Embeddings(c)
 	})
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
+		if !isOpenAIGatewayPlatform(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -282,7 +301,7 @@ func RegisterGatewayRoutes(
 		h.OpenAIGateway.Images(c)
 	})
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformOpenAI {
+		if !isOpenAIGatewayPlatform(c) {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
@@ -345,11 +364,17 @@ func isAgentGroup(c *gin.Context) bool {
 	return ok && apiKey.Group != nil && apiKey.Group.IsAgent()
 }
 
+func setAgentRequestPlatform(c *gin.Context, platform string) bool {
+	if !isAgentGroup(c) {
+		return false
+	}
+	middleware.SetForcePlatform(c, platform)
+	return true
+}
+
 func forceAgentPlatform(platform string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if isAgentGroup(c) {
-			middleware.SetForcePlatform(c, platform)
-		}
+		setAgentRequestPlatform(c, platform)
 		c.Next()
 	}
 }

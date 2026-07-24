@@ -287,7 +287,7 @@ func TestAPIKeyAuthRejectsExclusiveGroupWhenUserNoLongerAllowed(t *testing.T) {
 	require.Contains(t, w.Body.String(), "GROUP_NOT_ALLOWED")
 }
 
-func TestAPIKeyAuthAllowsProvisionedAgentGroupWithoutOrdinaryGrant(t *testing.T) {
+func TestAPIKeyAuthAllowsPublicAgentGroupWithoutOrdinaryGrant(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	group := &service.Group{
@@ -297,7 +297,7 @@ func TestAPIKeyAuthAllowsProvisionedAgentGroupWithoutOrdinaryGrant(t *testing.T)
 		Kind:        "agent",
 		SystemCode:  "yingzo",
 		Status:      service.StatusActive,
-		IsExclusive: true,
+		IsExclusive: false,
 		Hydrated:    true,
 	}
 	user := &service.User{
@@ -338,6 +338,17 @@ func TestAPIKeyAuthAllowsProvisionedAgentGroupWithoutOrdinaryGrant(t *testing.T)
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestValidateAPIKeyGroupAllowedRejectsPrivateAgentGroup(t *testing.T) {
+	groupID := int64(203)
+	require.False(t, validateAPIKeyGroupAllowed(&service.APIKey{
+		GroupID: &groupID,
+		User:    &service.User{ID: 7},
+		Group: &service.Group{
+			ID: groupID, Kind: "agent", SystemCode: "private-agent", IsExclusive: true,
+		},
+	}))
 }
 
 func TestAPIKeyAuthOverwritesInvalidContextGroup(t *testing.T) {

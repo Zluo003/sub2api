@@ -501,6 +501,92 @@ func TestVideoServiceCreateTaskReturnsQueuedLocalTaskAndStartsLifecycle(t *testi
 	require.Empty(t, task.UpstreamResponseJSON)
 }
 
+func TestVideoServiceCreateTaskIdempotencyReplaysWithoutDuplicateTaskOrBilling(t *testing.T) {
+	previousCoordinator := DefaultIdempotencyCoordinator()
+	SetDefaultIdempotencyCoordinator(NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), DefaultIdempotencyConfig()))
+	t.Cleanup(func() { SetDefaultIdempotencyCoordinator(previousCoordinator) })
+
+	groupID := int64(20)
+	apiKey := &APIKey{
+		ID:      10,
+		UserID:  100,
+		GroupID: &groupID,
+		User:    &User{ID: 100, Balance: 100},
+		Group:   &Group{ID: groupID, Platform: PlatformSeedance, RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard},
+	}
+	account := Account{
+		ID:          30,
+		Platform:    PlatformSeedance,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":       "sk-test",
+			"model_mapping": map[string]any{VideoModelSeedance20: VideoModelSeedance20},
+		},
+	}
+	taskRepo := newVideoTaskMemoryRepo()
+	billingRepo := &videoUsageBillingRepoStub{}
+	videoService := NewVideoService(
+		&videoAccountRepoStub{accounts: []Account{account}},
+		taskRepo,
+		&videoPricingMemoryRepo{rule: &VideoGroupPricingRule{
+			GroupID: groupID, ModelCode: VideoModelSeedance20, Resolution: VideoResolution720P,
+			CreditsPerSecond: 0.2, Enabled: true,
+		}},
+		&videoUsageLogRepoStub{},
+		billingRepo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	lifecycleStarts := 0
+	videoService.startLifecycleFunc = func(VideoTaskLifecycleInput) { lifecycleStarts++ }
+
+	newInput := func(key, payloadHash, prompt string, keyID int64) *VideoCreateInput {
+		keyCopy := *apiKey
+		keyCopy.ID = keyID
+		return &VideoCreateInput{
+			APIKey:             &keyCopy,
+			Request:            &VideoCreateRequest{Model: VideoModelSeedance20, Prompt: prompt, Duration: 8, Resolution: VideoResolution720P},
+			IdempotencyKey:     key,
+			RequestPayloadHash: payloadHash,
+		}
+	}
+
+	firstInput := newInput("video-create-1", "payload-1", "move", apiKey.ID)
+	first, err := videoService.CreateTask(context.Background(), firstInput)
+	require.NoError(t, err)
+	require.False(t, firstInput.IdempotencyReplayed)
+
+	retryInput := newInput("video-create-1", "payload-1", "move", apiKey.ID)
+	retry, err := videoService.CreateTask(context.Background(), retryInput)
+	require.NoError(t, err)
+	require.True(t, retryInput.IdempotencyReplayed)
+	require.Equal(t, first.ID, retry.ID)
+	require.Equal(t, int64(1), taskRepo.next)
+	require.Equal(t, 1, lifecycleStarts)
+	require.Len(t, billingRepo.commands, 1)
+
+	_, err = videoService.CreateTask(context.Background(), newInput("video-create-1", "payload-2", "different", apiKey.ID))
+	require.ErrorIs(t, err, ErrIdempotencyKeyConflict)
+	require.Equal(t, int64(1), taskRepo.next)
+	require.Len(t, billingRepo.commands, 1)
+
+	otherKeyResponse, err := videoService.CreateTask(context.Background(), newInput("video-create-1", "payload-1", "move", 11))
+	require.NoError(t, err)
+	require.NotEqual(t, first.ID, otherKeyResponse.ID)
+	require.Equal(t, int64(2), taskRepo.next)
+	require.Equal(t, 2, lifecycleStarts)
+	require.Len(t, billingRepo.commands, 2)
+}
+
 func TestVideoServiceForwardsLargeDataURLWithoutPersistingIt(t *testing.T) {
 	groupID := int64(20)
 	apiKey := &APIKey{
@@ -780,14 +866,14 @@ func TestVideoAccountCompatibilityUsesJingyuForSupportedBaseModelOnly(t *testing
 		VideoResolution1080P,
 		VideoResolution4K,
 	} {
-		selected, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20, resolution)
+		selected, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20, resolution, false)
 		require.NoError(t, err)
 		require.Equal(t, jingyu.ID, selected.ID)
 	}
 
 	require.False(t, isVideoAccountCompatible(&aigod, VideoModelSeedance20, VideoResolution4K))
 
-	_, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20Fast, VideoResolution720P)
+	_, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20Fast, VideoResolution720P, false)
 	require.ErrorIs(t, err, ErrVideoAccountNotFound)
 }
 

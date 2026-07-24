@@ -6,9 +6,7 @@ FRONTEND_CRITICAL_VITEST := \
 	src/views/user/__tests__/PaymentView.spec.ts \
 	src/views/user/__tests__/PaymentResultView.spec.ts \
 	src/components/user/profile/__tests__/ProfileInfoCard.spec.ts \
-	src/views/admin/__tests__/SettingsView.spec.ts \
-	src/views/admin/__tests__/YingzoView.spec.ts \
-	src/views/yingzo/components/YingzoProductContent.spec.ts
+	src/views/admin/__tests__/SettingsView.spec.ts
 
 # 一键编译前后端
 build: build-backend build-frontend

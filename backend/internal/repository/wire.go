@@ -79,6 +79,7 @@ var ProviderSet = wire.NewSet(
 	NewUsageBillingRepository,
 	NewVideoTaskRepository,
 	NewVideoGroupPricingRuleRepository,
+	NewAgentModelRepository,
 	NewIdempotencyRepository,
 	NewUsageCleanupRepository,
 	NewDashboardAggregationRepository,
@@ -126,8 +127,6 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewContentModerationHashCache,
-	NewYingzoDownloadTicketStore,
-
 	// Encryptors
 	NewAESEncryptor,
 

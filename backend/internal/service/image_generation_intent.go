@@ -282,6 +282,16 @@ func resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body []byte, fallb
 	}, nil
 }
 
+// OpenAIResponsesImageBillingTier returns the normalized Agent billing tier for
+// a Responses or Chat Completions image-generation request.
+func OpenAIResponsesImageBillingTier(body []byte, fallbackModel string) (string, error) {
+	cfg, err := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, fallbackModel)
+	if err != nil {
+		return "", err
+	}
+	return cfg.SizeTier, nil
+}
+
 func isOpenAIImageBillingModelAlias(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
 	if normalized == "" {

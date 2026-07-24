@@ -18,6 +18,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,20 +39,16 @@ import (
 )
 
 type AgentHandler struct {
-	db                *sql.DB
-	dataDir           string
-	objectStore       service.BackupObjectStore
-	fileStorage       *service.FileStorageService
-	billingService    *service.BillingService
-	videoService      *service.VideoService
-	channelService    *service.ChannelService
-	userGroupRateRepo service.UserGroupRateRepository
-	authInvalidator   service.APIKeyAuthCacheInvalidator
-	settingRepo       service.SettingRepository
-	yingzoTicketStore service.YingzoDownloadTicketStore
-	cleanupMu         sync.Mutex
-	cleanupStop       context.CancelFunc
-	cleanupDone       chan struct{}
+	db             *sql.DB
+	dataDir        string
+	objectStore    service.BackupObjectStore
+	fileStorage    *service.FileStorageService
+	billingService *service.BillingService
+	videoService   *service.VideoService
+	agentModels    *service.AgentModelCatalogService
+	cleanupMu      sync.Mutex
+	cleanupStop    context.CancelFunc
+	cleanupDone    chan struct{}
 }
 
 func NewAgentHandler(
@@ -60,11 +57,7 @@ func NewAgentHandler(
 	fileStorage *service.FileStorageService,
 	billingService *service.BillingService,
 	videoService *service.VideoService,
-	channelService *service.ChannelService,
-	userGroupRateRepo service.UserGroupRateRepository,
-	authInvalidator service.APIKeyAuthCacheInvalidator,
-	settingRepo service.SettingRepository,
-	yingzoTicketStore service.YingzoDownloadTicketStore,
+	agentModels *service.AgentModelCatalogService,
 ) *AgentHandler {
 	dir := filepath.Join(cfg.Pricing.DataDir, "agent-assets")
 	if fileStorage != nil {
@@ -72,16 +65,12 @@ func NewAgentHandler(
 	}
 	_ = os.MkdirAll(dir, 0700)
 	h := &AgentHandler{
-		db:                db,
-		dataDir:           dir,
-		billingService:    billingService,
-		videoService:      videoService,
-		channelService:    channelService,
-		userGroupRateRepo: userGroupRateRepo,
-		authInvalidator:   authInvalidator,
-		settingRepo:       settingRepo,
-		yingzoTicketStore: yingzoTicketStore,
-		fileStorage:       fileStorage,
+		db:             db,
+		dataDir:        dir,
+		billingService: billingService,
+		videoService:   videoService,
+		agentModels:    agentModels,
+		fileStorage:    fileStorage,
 	}
 	h.StartCleanupWorker(time.Hour)
 	return h
@@ -110,9 +99,6 @@ func (h *AgentHandler) StartCleanupWorker(interval time.Duration) {
 				return
 			case <-ticker.C:
 				_, _ = h.CleanupExpired(ctx)
-				_, _ = h.CleanupExpiredYingzoArtifactUploads(ctx, time.Now())
-				_, _ = h.CleanupYingzoReleaseTemporaryFiles(time.Now().Add(-24 * time.Hour))
-				_, _ = h.CleanupYingzoAbandonedDraftArtifacts(ctx, time.Now().Add(-30*24*time.Hour))
 			}
 		}
 	}()
@@ -141,246 +127,30 @@ func randomToken(n int) (string, error) {
 }
 func hashToken(s string) string { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:]) }
 
-func (h *AgentHandler) StartDeviceAuthorization(c *gin.Context) {
-	var in struct {
-		InstallationID   string `json:"installation_id" binding:"required"`
-		InstallationName string `json:"installation_name" binding:"required"`
+func requestPublicOrigin(c *gin.Context) (string, error) {
+	scheme := "https"
+	if c.Request.TLS == nil {
+		scheme = "http"
 	}
-	if c.ShouldBindJSON(&in) != nil {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request", "message": "installation_id and installation_name are required"}})
-		return
+	if forwarded := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Proto"), ",")[0]); forwarded == "http" || forwarded == "https" {
+		scheme = forwarded
 	}
-	if len(in.InstallationName) > 120 {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request", "message": "installation_name is too long"}})
-		return
+	parsed, err := url.Parse(scheme + "://" + c.Request.Host)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("request origin is invalid")
 	}
-	installationID, err := uuid.Parse(in.InstallationID)
-	if err != nil {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request", "message": "installation_id must be a UUID"}})
-		return
+	if parsed.Scheme != "https" && parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1" {
+		return "", errors.New("request origin must use HTTPS outside local development")
 	}
-	device, err := randomToken(32)
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "token_generation_failed"}})
-		return
-	}
-	user, err := randomToken(6)
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "token_generation_failed"}})
-		return
-	}
-	user = strings.ToUpper(user[:8])
-	id := uuid.New()
-	expires := time.Now().Add(10 * time.Minute)
-	_, err = h.db.ExecContext(c, `INSERT INTO agent_device_authorizations(id,device_code_hash,user_code_hash,installation_id,installation_name,system_code,status,expires_at) VALUES($1,$2,$3,$4,$5,'yingzo','pending',$6)`, id, hashToken(device), hashToken(user), installationID, in.InstallationName, expires)
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error", "message": "could not create authorization"}})
-		return
-	}
-	origin, err := h.publicOrigin(c)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "yingzo_origin_invalid"}})
-		return
-	}
-	verificationURI := origin + "/agent/authorize"
-	c.JSON(201, gin.H{"device_code": device, "user_code": user, "verification_uri": verificationURI, "verification_uri_complete": fmt.Sprintf("%s?user_code=%s", verificationURI, user), "expires_in": 600, "interval": 3})
-}
-
-func (h *AgentHandler) ApproveDeviceAuthorization(c *gin.Context) {
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok {
-		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
-		return
-	}
-	var in struct {
-		UserCode string `json:"user_code" binding:"required"`
-	}
-	if c.ShouldBindJSON(&in) != nil {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request"}})
-		return
-	}
-	res, err := h.db.ExecContext(c, `UPDATE agent_device_authorizations SET user_id=$1,status='approved',approved_at=NOW() WHERE user_code_hash=$2 AND status='pending' AND expires_at>NOW()`, subject.UserID, hashToken(strings.ToUpper(strings.TrimSpace(in.UserCode))))
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
-		c.JSON(404, gin.H{"error": gin.H{"code": "authorization_not_found"}})
-		return
-	}
-	c.JSON(200, gin.H{"approved": true})
-}
-
-func (h *AgentHandler) GetDeviceAuthorization(c *gin.Context) {
-	if _, ok := middleware.GetAuthSubjectFromContext(c); !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized"}})
-		return
-	}
-	userCode := strings.ToUpper(strings.TrimSpace(c.Param("user_code")))
-	if userCode == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "authorization_not_found"}})
-		return
-	}
-	var installationID uuid.UUID
-	var installationName, status string
-	var expiresAt time.Time
-	err := h.db.QueryRowContext(c, `SELECT installation_id,installation_name,status,expires_at FROM agent_device_authorizations WHERE user_code_hash=$1 AND system_code='yingzo' AND status='pending' AND expires_at>NOW()`, hashToken(userCode)).Scan(&installationID, &installationName, &status, &expiresAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "authorization_not_found"}})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"installation_id":   installationID,
-		"installation_name": installationName,
-		"system_code":       "yingzo",
-		"status":            status,
-		"expires_at":        expiresAt.UTC(),
-	})
-}
-
-func (h *AgentHandler) PollDeviceAuthorization(c *gin.Context) {
-	var in struct {
-		DeviceCode string `json:"device_code" binding:"required"`
-	}
-	if c.ShouldBindJSON(&in) != nil {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_request"}})
-		return
-	}
-	tx, err := h.db.BeginTx(c, &sql.TxOptions{})
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	defer func() { _ = tx.Rollback() }()
-	var id, installID uuid.UUID
-	var name, status string
-	var userID sql.NullInt64
-	var expires time.Time
-	err = tx.QueryRowContext(c, `SELECT id,installation_id,installation_name,status,user_id,expires_at FROM agent_device_authorizations WHERE device_code_hash=$1 FOR UPDATE`, hashToken(in.DeviceCode)).Scan(&id, &installID, &name, &status, &userID, &expires)
-	if errors.Is(err, sql.ErrNoRows) {
-		c.JSON(400, gin.H{"error": gin.H{"code": "expired_token"}})
-		return
-	}
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	if time.Now().After(expires) {
-		c.JSON(400, gin.H{"error": gin.H{"code": "expired_token"}})
-		return
-	}
-	if status == "pending" {
-		c.JSON(428, gin.H{"error": gin.H{"code": "authorization_pending"}})
-		return
-	}
-	if status == "consumed" {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
-		return
-	}
-	if status != "approved" || !userID.Valid {
-		c.JSON(400, gin.H{"error": gin.H{"code": "invalid_grant"}})
-		return
-	}
-	var keyID int64
-	var key string
-	err = tx.QueryRowContext(c, `SELECT ai.api_key_id,ak.key FROM agent_installations ai JOIN api_keys ak ON ak.id=ai.api_key_id WHERE ai.id=$1 AND ai.user_id=$2 AND ai.status='active' AND ak.status='active' AND ak.deleted_at IS NULL`, installID, userID.Int64).Scan(&keyID, &key)
-	if errors.Is(err, sql.ErrNoRows) {
-		key = "sk-agent-" + mustToken(24)
-		var groupID int64
-		if err = tx.QueryRowContext(c, `SELECT id FROM groups WHERE system_code='yingzo' AND deleted_at IS NULL`).Scan(&groupID); err == nil {
-			err = tx.QueryRowContext(c, `INSERT INTO api_keys(user_id,key,name,group_id,status) VALUES($1,$2,$3,$4,'active') RETURNING id`, userID.Int64, key, "Yingzo "+name, groupID).Scan(&keyID)
-		}
-		if err == nil {
-			var result sql.Result
-			result, err = tx.ExecContext(c, `INSERT INTO agent_installations(id,user_id,api_key_id,system_code,display_name,status) VALUES($1,$2,$3,'yingzo',$4,'active') ON CONFLICT(id) DO UPDATE SET api_key_id=EXCLUDED.api_key_id,status='active',revoked_at=NULL,updated_at=NOW() WHERE agent_installations.user_id=EXCLUDED.user_id`, installID, userID.Int64, keyID, name)
-			if err == nil {
-				rows, rowsErr := result.RowsAffected()
-				if rowsErr != nil || rows != 1 {
-					err = errors.New("installation ownership conflict")
-				}
-			}
-		}
-	}
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "credential_provision_failed"}})
-		return
-	}
-	if _, err = tx.ExecContext(c, `UPDATE agent_device_authorizations SET status='consumed',consumed_at=NOW() WHERE id=$1 AND status='approved'`, id); err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	if err = tx.Commit(); err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	if h.authInvalidator != nil {
-		h.authInvalidator.InvalidateAuthCacheByKey(c.Request.Context(), key)
-	}
-	c.JSON(200, gin.H{"access_token": key, "token_type": "Bearer"})
-}
-func mustToken(n int) string {
-	s, e := randomToken(n)
-	if e != nil {
-		panic(e)
-	}
-	return s
-}
-
-func (h *AgentHandler) RevokeInstallation(c *gin.Context) {
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok {
-		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
-		return
-	}
-	id := c.Param("id")
-	var key string
-	err := h.db.QueryRowContext(c, `WITH revoked AS (UPDATE agent_installations SET status='revoked',revoked_at=NOW(),updated_at=NOW() WHERE id=$1 AND user_id=$2 AND status='active' RETURNING api_key_id), disabled AS (UPDATE api_keys SET status='disabled',updated_at=NOW() WHERE id IN(SELECT api_key_id FROM revoked) RETURNING key) SELECT key FROM disabled`, id, subject.UserID).Scan(&key)
-	if errors.Is(err, sql.ErrNoRows) {
-		c.JSON(200, gin.H{"revoked": false})
-		return
-	}
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	if h.authInvalidator != nil {
-		h.authInvalidator.InvalidateAuthCacheByKey(c.Request.Context(), key)
-	}
-	c.JSON(200, gin.H{"revoked": true})
-}
-
-func (h *AgentHandler) RevokeCurrentInstallation(c *gin.Context) {
-	key, ok := middleware.GetAPIKeyFromContext(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key"}})
-		return
-	}
-	var revokedKey string
-	err := h.db.QueryRowContext(c, `WITH revoked AS (UPDATE agent_installations SET status='revoked',revoked_at=NOW(),updated_at=NOW() WHERE api_key_id=$1 AND user_id=$2 AND status='active' RETURNING api_key_id), disabled AS (UPDATE api_keys SET status='disabled',updated_at=NOW() WHERE id IN(SELECT api_key_id FROM revoked) AND status='active' RETURNING key) SELECT key FROM disabled`, key.ID, key.UserID).Scan(&revokedKey)
-	if errors.Is(err, sql.ErrNoRows) {
-		c.JSON(http.StatusOK, gin.H{"revoked": false})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	if h.authInvalidator != nil {
-		h.authInvalidator.InvalidateAuthCacheByKey(c.Request.Context(), revokedKey)
-	}
-	c.JSON(http.StatusOK, gin.H{"revoked": true})
+	return parsed.Scheme + "://" + parsed.Host, nil
 }
 
 type agentGenerationEstimateRequest struct {
-	Kind    string          `json:"kind" binding:"required"`
-	Model   string          `json:"model" binding:"required"`
-	Count   int             `json:"count" binding:"required"`
-	Request json.RawMessage `json:"request" binding:"required"`
+	Kind     string          `json:"kind" binding:"required"`
+	Platform string          `json:"platform"`
+	Model    string          `json:"model" binding:"required"`
+	Count    int             `json:"count" binding:"required"`
+	Request  json.RawMessage `json:"request" binding:"required"`
 }
 
 type agentGenerationQuote struct {
@@ -414,6 +184,7 @@ func (h *AgentHandler) EstimateGeneration(c *gin.Context) {
 		return
 	}
 	input.Kind = strings.TrimSpace(strings.ToLower(input.Kind))
+	input.Platform = strings.TrimSpace(strings.ToLower(input.Platform))
 	input.Model = strings.TrimSpace(input.Model)
 	quote, err := h.calculateGenerationQuote(c.Request.Context(), apiKey, input)
 	if err != nil {
@@ -466,8 +237,8 @@ func (h *AgentHandler) calculateGenerationQuote(ctx context.Context, apiKey *ser
 	}
 	switch input.Kind {
 	case "image":
-		if input.Model != "gpt-image-2" || h.billingService == nil {
-			return nil, infraerrors.BadRequest("invalid_image_model", "Image estimate requires gpt-image-2")
+		if h.billingService == nil || h.agentModels == nil {
+			return nil, infraerrors.ServiceUnavailable("generation_estimate_failed", "Image pricing service is unavailable")
 		}
 		var request struct {
 			Model string `json:"model"`
@@ -479,7 +250,12 @@ func (h *AgentHandler) calculateGenerationQuote(ctx context.Context, apiKey *ser
 		if request.Model != "" && request.Model != input.Model {
 			return nil, infraerrors.BadRequest("estimate_model_mismatch", "Request model does not match estimate model")
 		}
-		cost, tier, err := h.billingService.EstimateImageGenerationCost(ctx, apiKey, h.userGroupRateRepo, input.Model, request.Size, input.Count)
+		tier := service.NormalizeImageBillingTierOrDefault(request.Size)
+		platform, unitPrice, err := h.resolveAgentImageQuotePrice(ctx, apiKey.Group.ID, input.Platform, input.Model, tier)
+		if err != nil {
+			return nil, infraerrors.ServiceUnavailable("generation_estimate_failed", "Unable to resolve current image pricing").WithCause(err)
+		}
+		cost, err := h.billingService.CalculateConfiguredAgentImageCost(unitPrice, input.Count)
 		if err != nil {
 			return nil, infraerrors.ServiceUnavailable("generation_estimate_failed", "Unable to resolve current image pricing").WithCause(err)
 		}
@@ -488,8 +264,8 @@ func (h *AgentHandler) calculateGenerationQuote(ctx context.Context, apiKey *ser
 		quote.UnitPrice = cost.TotalCost / float64(input.Count)
 		quote.TotalPrice = cost.TotalCost
 		quote.ActualPrice = cost.ActualCost
-		quote.Details = map[string]any{"image_size": tier, "count": input.Count}
-		quote.RequestHash = hashJSON(map[string]any{"kind": input.Kind, "model": input.Model, "image_size": tier, "count": input.Count})
+		quote.Details = map[string]any{"platform": platform, "image_size": tier, "count": input.Count}
+		quote.RequestHash = hashJSON(map[string]any{"kind": input.Kind, "platform": platform, "model": input.Model, "image_size": tier, "count": input.Count})
 	case "video":
 		if h.videoService == nil {
 			return nil, infraerrors.ServiceUnavailable("generation_estimate_failed", "Video pricing service is unavailable")
@@ -502,6 +278,9 @@ func (h *AgentHandler) calculateGenerationQuote(ctx context.Context, apiKey *ser
 			return nil, infraerrors.BadRequest("estimate_model_mismatch", "Request model does not match estimate model")
 		}
 		request.Model = input.Model
+		if input.Platform != "" && input.Platform != service.PlatformSeedance {
+			return nil, infraerrors.BadRequest("estimate_platform_mismatch", "Video generation requires the seedance platform")
+		}
 		var raw map[string]any
 		if err := json.Unmarshal(input.Request, &raw); err == nil {
 			raw["model"] = input.Model
@@ -534,6 +313,44 @@ func (h *AgentHandler) calculateGenerationQuote(ctx context.Context, apiKey *ser
 		"actual_price": quote.ActualPrice, "group_updated_at": apiKey.Group.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	})[:24]
 	return quote, nil
+}
+
+func (h *AgentHandler) resolveAgentImageQuotePrice(
+	ctx context.Context,
+	groupID int64,
+	requestedPlatform string,
+	model string,
+	resolution string,
+) (string, float64, error) {
+	platforms := []string{service.PlatformOpenAI, service.PlatformGemini}
+	if requestedPlatform != "" {
+		platforms = []string{requestedPlatform}
+	}
+	type match struct {
+		platform string
+		price    float64
+	}
+	matches := make([]match, 0, 1)
+	for _, platform := range platforms {
+		price, _, err := h.agentModels.ResolveMediaUnitPrice(
+			ctx,
+			groupID,
+			platform,
+			service.AgentMediaTypeImage,
+			resolution,
+			model,
+		)
+		if err == nil {
+			matches = append(matches, match{platform: platform, price: price})
+		}
+	}
+	if len(matches) == 0 {
+		return "", 0, service.ErrAgentImagePricingUnavailable
+	}
+	if len(matches) > 1 {
+		return "", 0, errors.New("image model exists on multiple platforms; platform is required")
+	}
+	return matches[0].platform, matches[0].price, nil
 }
 
 func (h *AgentHandler) GetGenerationEstimate(c *gin.Context) {
@@ -797,7 +614,7 @@ func (h *AgentHandler) temporaryAssetStorageRuntime(ctx context.Context) (*servi
 			RetentionHours: 24,
 			DailyMaxCount:  maxCount,
 			DailyMaxBytes:  maxBytes,
-			S3:             service.BackupS3Config{Prefix: "yingzo-agent-assets/"},
+			S3:             service.BackupS3Config{Prefix: "agent-assets/"},
 		},
 		Store: h.objectStore,
 	}, nil
@@ -943,7 +760,7 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
 		return
 	}
-	c.JSON(201, gin.H{"id": id, "url": temporaryAssetPublicURL(publicBaseURL, id, contentType), "content_type": contentType, "size": n, "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
+	c.JSON(201, gin.H{"id": id, "url": temporaryAssetPublicURL(publicBaseURL, id, contentType), "content_type": contentType, "size": n, "sha256": hex.EncodeToString(hash.Sum(nil)), "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
 }
 
 func temporaryAssetPublicURL(publicBaseURL string, id uuid.UUID, contentType string) string {

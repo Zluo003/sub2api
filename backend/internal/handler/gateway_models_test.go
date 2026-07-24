@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -13,26 +15,101 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type gatewayAgentModelRepoStub struct {
+	models []service.AgentGroupModel
+	rates  []service.AgentPlatformRate
+}
+
+func (r *gatewayAgentModelRepoStub) SyncDiscovered(context.Context, int64, []service.AgentModelDiscovery, time.Time) error {
+	return nil
+}
+func (r *gatewayAgentModelRepoStub) ListModels(context.Context, int64, bool) ([]service.AgentGroupModel, error) {
+	return append([]service.AgentGroupModel(nil), r.models...), nil
+}
+func (r *gatewayAgentModelRepoStub) GetModelByID(context.Context, int64, int64) (*service.AgentGroupModel, error) {
+	return nil, sql.ErrNoRows
+}
+func (r *gatewayAgentModelRepoStub) GetEnabledModel(_ context.Context, groupID int64, platform, modelCode string) (*service.AgentGroupModel, error) {
+	for _, model := range r.models {
+		if model.GroupID != groupID || model.Platform != platform || model.ModelCode != modelCode || !model.Enabled || !model.Available || model.Excluded {
+			continue
+		}
+		copy := model
+		copy.Prices = append([]service.AgentModelPrice(nil), model.Prices...)
+		return &copy, nil
+	}
+	return nil, sql.ErrNoRows
+}
+func (r *gatewayAgentModelRepoStub) UpdateModelConfig(context.Context, int64, int64, string, bool, []service.AgentModelPrice) error {
+	return nil
+}
+func (r *gatewayAgentModelRepoStub) ExcludeModel(context.Context, int64, int64, time.Time) error {
+	return nil
+}
+func (r *gatewayAgentModelRepoStub) ListPlatformRates(context.Context, int64) ([]service.AgentPlatformRate, error) {
+	return append([]service.AgentPlatformRate(nil), r.rates...), nil
+}
+func (r *gatewayAgentModelRepoStub) UpsertPlatformRate(context.Context, int64, string, float64) error {
+	return nil
+}
+func (r *gatewayAgentModelRepoStub) GetPlatformRate(context.Context, int64, string) (*service.AgentPlatformRate, error) {
+	return nil, sql.ErrNoRows
+}
+
+func newGatewayAgentCatalogForTest(repo service.AccountRepository, models ...service.AgentGroupModel) *service.AgentModelCatalogService {
+	return service.NewAgentModelCatalogService(repo, nil, &gatewayAgentModelRepoStub{models: models})
+}
+
+func enabledGatewayAgentModel(platform, modelCode, mediaType string) service.AgentGroupModel {
+	return service.AgentGroupModel{
+		Platform: platform, ModelCode: modelCode, MediaType: mediaType,
+		Enabled: true, Available: true, Prices: []service.AgentModelPrice{},
+	}
+}
+
 type gatewayModelsAccountRepoStub struct {
 	service.AccountRepository
 
 	byGroup map[int64][]service.Account
+	err     error
 }
 
 type gatewayModelsResponseForTest struct {
-	Object string                    `json:"object"`
-	Data   []gatewayModelItemForTest `json:"data"`
+	Object                 string                    `json:"object"`
+	CatalogSchemaVersion   int                       `json:"catalog_schema_version"`
+	GatewayContractVersion string                    `json:"gateway_contract_version"`
+	Data                   []gatewayModelItemForTest `json:"data"`
+	Provenance             struct {
+		CatalogSource     string   `json:"catalog_source"`
+		CapabilitySources []string `json:"capability_sources"`
+	} `json:"provenance"`
 }
 
 type gatewayModelItemForTest struct {
-	ID        string `json:"id"`
-	Object    string `json:"object"`
-	Created   int64  `json:"created"`
-	OwnedBy   string `json:"owned_by"`
-	CreatedAt string `json:"created_at"`
+	ID               string `json:"id"`
+	Object           string `json:"object"`
+	Created          int64  `json:"created"`
+	OwnedBy          string `json:"owned_by"`
+	CreatedAt        string `json:"created_at"`
+	Source           string `json:"source"`
+	Availability     string `json:"availability"`
+	CapabilitySource string `json:"capability_source"`
+	Capabilities     struct {
+		MediaTypes       []string `json:"media_types"`
+		Platforms        []string `json:"platforms"`
+		Interfaces       []string `json:"interfaces"`
+		InputModalities  []string `json:"input_modalities"`
+		OutputModalities []string `json:"output_modalities"`
+		Operations       []string `json:"operations"`
+		Streaming        bool     `json:"streaming"`
+		Asynchronous     bool     `json:"asynchronous"`
+	} `json:"capabilities"`
 }
 
 func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]service.Account, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	accounts, ok := s.byGroup[groupID]
 	if !ok {
 		return nil, nil
@@ -50,6 +127,12 @@ func newGatewayModelsHandlerForTest(repo service.AccountRepository) *GatewayHand
 			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		),
 	}
+}
+
+func newGatewayModelsHandlerWithCatalogForTest(repo service.AccountRepository, catalog *service.AgentModelCatalogService) *GatewayHandler {
+	h := newGatewayModelsHandlerForTest(repo)
+	h.agentModelCatalog = catalog
+	return h
 }
 
 func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {
@@ -177,14 +260,37 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
 }
 
-func TestGatewayModels_AgentGroupAggregatesDeclaredCrossPlatformModels(t *testing.T) {
+func TestGatewayModels_AgentGroupUsesConfiguredCapabilitiesAndSchedulableAccounts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{})
+	groupID := int64(7)
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+		groupID: {
+			{ID: 1, Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-5.4": "gpt-5.4", "gpt-image-2": "gpt-image-2",
+			}}},
+			{ID: 2, Platform: service.PlatformAnthropic, Credentials: map[string]any{"model_mapping": map[string]any{
+				"claude-opus-4.8": "claude-opus-4.8",
+			}}},
+			{ID: 3, Platform: service.PlatformSeedance, Credentials: map[string]any{"model_mapping": map[string]any{
+				"seedance-2.0": "seedance-api-2.0",
+			}}},
+			{ID: 4, Platform: service.PlatformGemini, Credentials: map[string]any{"model_mapping": map[string]any{
+				"gemini-3.1-flash-image": "gemini-3.1-flash-image",
+			}}},
+		},
+	}}
+	h := newGatewayModelsHandlerWithCatalogForTest(repo, newGatewayAgentCatalogForTest(repo,
+		enabledGatewayAgentModel(service.PlatformOpenAI, "gpt-5.4", service.AgentMediaTypeText),
+		enabledGatewayAgentModel(service.PlatformOpenAI, "gpt-image-2", service.AgentMediaTypeImage),
+		enabledGatewayAgentModel(service.PlatformAnthropic, "claude-opus-4.8", service.AgentMediaTypeText),
+		enabledGatewayAgentModel(service.PlatformSeedance, "seedance-2.0", service.AgentMediaTypeVideo),
+		enabledGatewayAgentModel(service.PlatformGemini, "gemini-3.1-flash-image", service.AgentMediaTypeImage),
+	))
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{
-		ID: 7, Platform: service.PlatformOpenAI, Kind: "agent", SystemCode: "yingzo",
+		ID: groupID, Platform: service.PlatformOpenAI, Kind: "agent", SystemCode: "yingzo",
 	}})
 
 	h.Models(c)
@@ -192,7 +298,177 @@ func TestGatewayModels_AgentGroupAggregatesDeclaredCrossPlatformModels(t *testin
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-image-2", "seedance-2.0"}, modelIDsForTest(got.Data))
+	require.Equal(t, service.AgentModelCatalogSchemaVersion, got.CatalogSchemaVersion)
+	require.Equal(t, service.AgentAPIContractVersion, got.GatewayContractVersion)
+	require.Equal(t, service.AgentModelCatalogSource, got.Provenance.CatalogSource)
+	require.Equal(t, []string{"gateway"}, got.Provenance.CapabilitySources)
+	require.Equal(t, []string{"claude-opus-4.8", "gemini-3.1-flash-image", "gpt-5.4", "gpt-image-2", "seedance-2.0"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"text"}, got.Data[0].Capabilities.MediaTypes)
+	require.Equal(t, []string{"anthropic"}, got.Data[0].Capabilities.Platforms)
+	require.Equal(t, []string{service.AgentInterfaceAnthropicMessages}, got.Data[0].Capabilities.Interfaces)
+	require.Equal(t, []string{"text"}, got.Data[0].Capabilities.InputModalities)
+	require.Equal(t, []string{"text"}, got.Data[0].Capabilities.OutputModalities)
+	require.Equal(t, []string{"text.generate"}, got.Data[0].Capabilities.Operations)
+	require.True(t, got.Data[0].Capabilities.Streaming)
+	require.Equal(t, []string{"image"}, got.Data[1].Capabilities.MediaTypes)
+	require.Equal(t, []string{"gemini"}, got.Data[1].Capabilities.Platforms)
+	require.Equal(t, []string{service.AgentInterfaceGeminiGenerateContent}, got.Data[1].Capabilities.Interfaces)
+	require.Equal(t, []string{"text", "image"}, got.Data[1].Capabilities.InputModalities)
+	require.Equal(t, []string{"text", "image"}, got.Data[3].Capabilities.InputModalities)
+	require.Equal(t, []string{"image.generate"}, got.Data[3].Capabilities.Operations)
+	require.Equal(t, []string{service.AgentInterfaceOpenAIImages}, got.Data[3].Capabilities.Interfaces)
+	require.Equal(t, []string{"text", "image", "video", "audio"}, got.Data[4].Capabilities.InputModalities)
+	require.Equal(t, []string{"video.generate"}, got.Data[4].Capabilities.Operations)
+	require.Equal(t, []string{service.AgentInterfaceSeedanceVideos}, got.Data[4].Capabilities.Interfaces)
+	require.True(t, got.Data[4].Capabilities.Asynchronous)
+	require.Equal(t, "sub2api", got.Data[0].OwnedBy)
+	require.Equal(t, "gateway", got.Data[0].Source)
+	require.Equal(t, "advertised", got.Data[0].Availability)
+	require.Equal(t, "gateway", got.Data[0].CapabilitySource)
+	require.NotEmpty(t, rec.Header().Get("ETag"))
+	require.Equal(t, "private, max-age=30, must-revalidate", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "Authorization", rec.Header().Get("Vary"))
+	require.Equal(t, "3", rec.Header().Get("X-Model-Catalog-Schema-Version"))
+	require.Equal(t, service.AgentAPIContractVersion, rec.Header().Get("X-Gateway-Contract-Version"))
+}
+
+func TestGatewayModels_AgentCatalogSupportsConditionalGET(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(8)
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+		groupID: {{ID: 1, Platform: service.PlatformOpenAI}},
+	}}
+	h := newGatewayModelsHandlerWithCatalogForTest(repo, newGatewayAgentCatalogForTest(repo,
+		enabledGatewayAgentModel(service.PlatformOpenAI, "gpt-5.4", service.AgentMediaTypeText),
+	))
+	request := func(ifNoneMatch string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		c.Request.Header.Set("If-None-Match", ifNoneMatch)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{
+			ID: groupID, Platform: service.PlatformOpenAI, Kind: "agent", SystemCode: "yingzo",
+		}})
+		h.Models(c)
+		return recorder
+	}
+
+	first := request("")
+	require.Equal(t, http.StatusOK, first.Code)
+	etag := first.Header().Get("ETag")
+	require.NotEmpty(t, etag)
+	require.NotEmpty(t, first.Body.Bytes())
+
+	second := request(`W/` + etag)
+	require.Equal(t, http.StatusNotModified, second.Code)
+	require.Empty(t, second.Body.Bytes())
+	require.Equal(t, etag, second.Header().Get("ETag"))
+	require.Equal(t, service.AgentAPIContractVersion, second.Header().Get("X-Gateway-Contract-Version"))
+}
+
+func TestRequestETagMatches(t *testing.T) {
+	require.True(t, requestETagMatches(`"old", W/"current"`, `"current"`))
+	require.True(t, requestETagMatches("*", `"current"`))
+	require.False(t, requestETagMatches(`"other"`, `"current"`))
+}
+
+func TestAgentCapabilitiesUseTheConfiguredTextCategoryForEmbeddings(t *testing.T) {
+	capabilities := agentCapabilitiesForMediaTypes(
+		[]string{service.AgentMediaTypeText},
+		[]string{service.PlatformOpenAI},
+		[]string{service.AgentInterfaceOpenAIEmbeddings},
+	)
+
+	require.Equal(t, []string{"text"}, capabilities.InputModalities)
+	require.Equal(t, []string{"text"}, capabilities.OutputModalities)
+	require.Equal(t, []string{"text.generate"}, capabilities.Operations)
+	require.True(t, capabilities.Streaming)
+	require.False(t, capabilities.Asynchronous)
+}
+
+func TestAgentCapabilitiesAdvertiseReferenceMediaInputs(t *testing.T) {
+	tests := []struct {
+		name       string
+		mediaType  string
+		modalities []string
+	}{
+		{name: "image", mediaType: service.AgentMediaTypeImage, modalities: []string{"text", "image"}},
+		{name: "video", mediaType: service.AgentMediaTypeVideo, modalities: []string{"text", "image", "video", "audio"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capabilities := agentCapabilitiesForMediaTypes([]string{tt.mediaType}, nil, nil)
+
+			require.Equal(t, tt.modalities, capabilities.InputModalities)
+		})
+	}
+}
+
+func TestGatewayModels_AgentGroupFailsClosedWhenCatalogUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(7)
+	repo := &gatewayModelsAccountRepoStub{err: context.DeadlineExceeded}
+	h := newGatewayModelsHandlerWithCatalogForTest(repo, newGatewayAgentCatalogForTest(repo))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{
+		ID: groupID, Platform: service.PlatformOpenAI, Kind: "agent", SystemCode: "yingzo",
+	}})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "agent_model_catalog_unavailable")
+}
+
+func TestGeminiV1BetaModels_AgentUsesOnlyAssignedGeminiCatalogue(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(12)
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+		groupID: {
+			{Platform: service.PlatformGemini, Credentials: map[string]any{"model_mapping": map[string]any{
+				"gemini-2.5-flash": "gemini-upstream",
+			}}},
+			{Platform: service.PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{
+				"gpt-5.4": "gpt-upstream",
+			}}},
+		},
+	}}
+	h := newGatewayModelsHandlerWithCatalogForTest(repo, newGatewayAgentCatalogForTest(repo,
+		enabledGatewayAgentModel(service.PlatformGemini, "gemini-2.5-flash", service.AgentMediaTypeText),
+		enabledGatewayAgentModel(service.PlatformOpenAI, "gpt-5.4", service.AgentMediaTypeText),
+	))
+	apiKey := &service.APIKey{GroupID: &groupID, Group: &service.Group{
+		ID: groupID, Platform: service.PlatformOpenAI, Kind: "agent", SystemCode: "yingzo",
+	}}
+
+	listRecorder := httptest.NewRecorder()
+	listContext, _ := gin.CreateTestContext(listRecorder)
+	listContext.Request = httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	listContext.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+	middleware2.SetForcePlatform(listContext, service.PlatformGemini)
+	h.GeminiV1BetaListModels(listContext)
+	require.Equal(t, http.StatusOK, listRecorder.Code)
+	var list struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(listRecorder.Body.Bytes(), &list))
+	require.Equal(t, []struct {
+		Name string `json:"name"`
+	}{{Name: "models/gemini-2.5-flash"}}, list.Models)
+
+	getRecorder := httptest.NewRecorder()
+	getContext, _ := gin.CreateTestContext(getRecorder)
+	getContext.Request = httptest.NewRequest(http.MethodGet, "/v1beta/models/gpt-5.4", nil)
+	getContext.Params = gin.Params{{Key: "model", Value: "gpt-5.4"}}
+	getContext.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+	middleware2.SetForcePlatform(getContext, service.PlatformGemini)
+	h.GeminiV1BetaGetModel(getContext)
+	require.Equal(t, http.StatusNotFound, getRecorder.Code)
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {

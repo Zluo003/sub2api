@@ -164,6 +164,11 @@ type CostBreakdown struct {
 // sources can price the requested model.
 var ErrModelPricingUnavailable = errors.New("pricing not found")
 
+// ErrAgentImagePricingUnavailable means the Agent group has no explicit price
+// for the requested image resolution. Agent image generation never uses a
+// model default or the language-model multiplier.
+var ErrAgentImagePricingUnavailable = errors.New("agent image pricing not configured")
+
 // BillingService 计费服务
 type BillingService struct {
 	cfg            *config.Config
@@ -1205,6 +1210,23 @@ type ImagePriceConfig struct {
 	Price4K *float64 // 4K 尺寸价格（nil 表示使用默认值）
 }
 
+// CalculateConfiguredAgentImageCost charges a model-specific final unit price.
+// A zero unit price is an explicit free configuration.
+func (s *BillingService) CalculateConfiguredAgentImageCost(unitPrice float64, imageCount int) (*CostBreakdown, error) {
+	if imageCount <= 0 {
+		return &CostBreakdown{BillingMode: string(BillingModeImage)}, nil
+	}
+	if unitPrice < 0 {
+		return nil, fmt.Errorf("%w: unit price must be non-negative", ErrAgentImagePricingUnavailable)
+	}
+	totalCost := unitPrice * float64(imageCount)
+	return &CostBreakdown{
+		TotalCost:   totalCost,
+		ActualCost:  totalCost,
+		BillingMode: string(BillingModeImage),
+	}, nil
+}
+
 // CalculateImageCost 计算图片生成费用
 // model: 请求的模型名称（用于获取 LiteLLM 默认价格）
 // imageSize: 图片尺寸 "1K", "2K", "4K"
@@ -1254,8 +1276,13 @@ func (s *BillingService) EstimateImageGenerationCost(
 	if imageCount <= 0 {
 		return nil, "", fmt.Errorf("image count must be positive")
 	}
+	tier := NormalizeImageBillingTierOrDefault(imageSize)
+	if apiKey.Group.IsAgent() {
+		return nil, tier, fmt.Errorf("%w: use the synchronized Agent model catalogue", ErrAgentImagePricingUnavailable)
+	}
 
-	multiplier := apiKey.Group.RateMultiplier
+	multiplier := 1.0
+	multiplier = apiKey.Group.RateMultiplier
 	if rateRepo != nil {
 		userMultiplier, err := rateRepo.GetByUserAndGroup(ctx, apiKey.UserID, *apiKey.GroupID)
 		if err != nil {
@@ -1266,7 +1293,6 @@ func (s *BillingService) EstimateImageGenerationCost(
 		}
 	}
 	multiplier = resolveImageRateMultiplier(apiKey, multiplier)
-	tier := NormalizeImageBillingTierOrDefault(imageSize)
 	groupConfig := &ImagePriceConfig{
 		Price1K: apiKey.Group.ImagePrice1K,
 		Price2K: apiKey.Group.ImagePrice2K,

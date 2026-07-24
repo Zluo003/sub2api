@@ -132,16 +132,18 @@ type VideoContentURL struct {
 }
 
 type VideoCreateInput struct {
-	APIKey             *APIKey
-	Subscription       *UserSubscription
-	Request            *VideoCreateRequest
-	RawBody            []byte
-	RequestID          string
-	RequestPayloadHash string
-	UserAgent          string
-	IPAddress          string
-	InboundEndpoint    string
-	UpstreamEndpoint   string
+	APIKey              *APIKey
+	Subscription        *UserSubscription
+	Request             *VideoCreateRequest
+	RawBody             []byte
+	IdempotencyKey      string
+	IdempotencyReplayed bool
+	RequestID           string
+	RequestPayloadHash  string
+	UserAgent           string
+	IPAddress           string
+	InboundEndpoint     string
+	UpstreamEndpoint    string
 }
 
 type VideoResponse struct {

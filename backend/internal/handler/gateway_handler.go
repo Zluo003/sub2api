@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +57,7 @@ type GatewayHandler struct {
 	maxAccountSwitchesGemini  int
 	cfg                       *config.Config
 	settingService            *service.SettingService
+	agentModelCatalog         *service.AgentModelCatalogService
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -73,6 +76,7 @@ func NewGatewayHandler(
 	userMsgQueueService *service.UserMessageQueueService,
 	cfg *config.Config,
 	settingService *service.SettingService,
+	agentModelCatalog *service.AgentModelCatalogService,
 ) *GatewayHandler {
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 10
@@ -110,6 +114,7 @@ func NewGatewayHandler(
 		maxAccountSwitchesGemini:  maxAccountSwitchesGemini,
 		cfg:                       cfg,
 		settingService:            settingService,
+		agentModelCatalog:         agentModelCatalog,
 	}
 }
 
@@ -339,6 +344,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				c.Request.Context(), apiKey.Group, account, reqModel, channelMapping.MappedModel,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("gateway.gemini.agent_language_pricing_unavailable", zap.Error(err))
+				writeAnthropicAgentPricingError(c, err)
+				return
+			}
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
@@ -625,6 +640,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				c.Request.Context(), currentAPIKey.Group, account, reqModel, channelMapping.MappedModel,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("gateway.messages.agent_language_pricing_unavailable", zap.Error(err))
+				writeAnthropicAgentPricingError(c, err)
+				return
+			}
 
 			// [DEBUG-STICKY] 打印账号选择结果
 			reqLog.Info("sticky.account_selected",
@@ -992,7 +1017,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 func (h *GatewayHandler) Models(c *gin.Context) {
 	apiKey, _ := middleware2.GetAPIKeyFromContext(c)
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.IsAgent() {
-		writeOpenAIModelsList(c, service.YingzoAgentModelIDs())
+		catalog, err := h.agentModelCatalog.ListAvailable(c.Request.Context(), apiKey.Group.ID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{
+				"type":    "service_unavailable_error",
+				"code":    "agent_model_catalog_unavailable",
+				"message": "The Agent model catalogue is temporarily unavailable",
+			}})
+			return
+		}
+		writeAgentModelsList(c, catalog)
 		return
 	}
 
@@ -1041,6 +1075,145 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		"object": "list",
 		"data":   claude.DefaultModels,
 	})
+}
+
+type agentModelCapabilities struct {
+	MediaTypes       []string `json:"media_types"`
+	Platforms        []string `json:"platforms"`
+	Interfaces       []string `json:"interfaces"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
+	Operations       []string `json:"operations"`
+	Streaming        bool     `json:"streaming"`
+	Asynchronous     bool     `json:"asynchronous"`
+}
+
+type agentModelView struct {
+	ID               string                 `json:"id"`
+	Object           string                 `json:"object"`
+	Created          int64                  `json:"created"`
+	OwnedBy          string                 `json:"owned_by"`
+	Source           string                 `json:"source"`
+	Availability     string                 `json:"availability"`
+	CapabilitySource string                 `json:"capability_source"`
+	Capabilities     agentModelCapabilities `json:"capabilities"`
+}
+
+type agentModelCatalogProvenance struct {
+	CatalogSource     string   `json:"catalog_source"`
+	CapabilitySources []string `json:"capability_sources"`
+}
+
+type agentModelsListView struct {
+	Object                 string                      `json:"object"`
+	CatalogSchemaVersion   int                         `json:"catalog_schema_version"`
+	GatewayContractVersion string                      `json:"gateway_contract_version"`
+	Data                   []agentModelView            `json:"data"`
+	Provenance             agentModelCatalogProvenance `json:"provenance"`
+}
+
+func writeAgentModelsList(c *gin.Context, catalog []service.AgentModelCatalogEntry) {
+	models := make([]agentModelView, 0, len(catalog))
+	for _, entry := range catalog {
+		capabilities := agentCapabilitiesForMediaTypes(entry.MediaTypes, entry.Platforms, entry.Interfaces)
+		models = append(models, agentModelView{
+			ID:               entry.ID,
+			Object:           "model",
+			Created:          1704067200,
+			OwnedBy:          "sub2api",
+			Source:           "gateway",
+			Availability:     "advertised",
+			CapabilitySource: "gateway",
+			Capabilities:     capabilities,
+		})
+	}
+	response := agentModelsListView{
+		Object:                 "list",
+		CatalogSchemaVersion:   service.AgentModelCatalogSchemaVersion,
+		GatewayContractVersion: service.AgentAPIContractVersion,
+		Data:                   models,
+		Provenance: agentModelCatalogProvenance{
+			CatalogSource:     service.AgentModelCatalogSource,
+			CapabilitySources: []string{"gateway"},
+		},
+	}
+	body, err := json.Marshal(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+			"type": "server_error", "code": "agent_model_catalog_encode_failed",
+			"message": "The Agent model catalogue could not be encoded",
+		}})
+		return
+	}
+	digest := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(digest[:]) + `"`
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, max-age=30, must-revalidate")
+	c.Header("Vary", "Authorization")
+	c.Header("X-Model-Catalog-Schema-Version", strconv.Itoa(service.AgentModelCatalogSchemaVersion))
+	c.Header("X-Gateway-Contract-Version", service.AgentAPIContractVersion)
+	if requestETagMatches(c.GetHeader("If-None-Match"), etag) {
+		c.Status(http.StatusNotModified)
+		c.Writer.WriteHeaderNow()
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+}
+
+func agentCapabilitiesForMediaTypes(mediaTypes, platforms, interfaces []string) agentModelCapabilities {
+	capabilities := agentModelCapabilities{
+		MediaTypes:       append([]string(nil), mediaTypes...),
+		Platforms:        append([]string(nil), platforms...),
+		Interfaces:       append([]string(nil), interfaces...),
+		InputModalities:  []string{"text"},
+		OutputModalities: make([]string, 0, len(mediaTypes)),
+		Operations:       make([]string, 0, len(mediaTypes)),
+	}
+	appendInputModality := func(modality string) {
+		for _, existing := range capabilities.InputModalities {
+			if existing == modality {
+				return
+			}
+		}
+		capabilities.InputModalities = append(capabilities.InputModalities, modality)
+	}
+	for _, mediaType := range mediaTypes {
+		switch mediaType {
+		case "text":
+			capabilities.OutputModalities = append(capabilities.OutputModalities, "text")
+			capabilities.Operations = append(capabilities.Operations, "text.generate")
+			capabilities.Streaming = true
+		case "embedding":
+			capabilities.OutputModalities = append(capabilities.OutputModalities, "embedding")
+			capabilities.Operations = append(capabilities.Operations, "embedding.create")
+		case "image":
+			appendInputModality("image")
+			capabilities.OutputModalities = append(capabilities.OutputModalities, "image")
+			capabilities.Operations = append(capabilities.Operations, "image.generate")
+		case "video":
+			appendInputModality("image")
+			appendInputModality("video")
+			appendInputModality("audio")
+			capabilities.OutputModalities = append(capabilities.OutputModalities, "video")
+			capabilities.Operations = append(capabilities.Operations, "video.generate")
+			capabilities.Asynchronous = true
+		}
+	}
+	return capabilities
+}
+
+func requestETagMatches(ifNoneMatch, current string) bool {
+	for _, candidate := range strings.Split(ifNoneMatch, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == current {
+			return true
+		}
+	}
+	return false
 }
 
 func writeModelsList(c *gin.Context, modelIDs []string) {

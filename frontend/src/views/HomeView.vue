@@ -48,9 +48,6 @@
 
         <!-- Nav Actions -->
         <div class="flex items-center gap-3">
-          <router-link to="/yingzo" class="hidden text-sm font-medium text-gray-600 transition-colors hover:text-primary-600 dark:text-gray-300 dark:hover:text-primary-400 sm:inline-flex">
-            Yingzo（影作）
-          </router-link>
           <!-- Language Switcher -->
           <LocaleSwitcher />
 

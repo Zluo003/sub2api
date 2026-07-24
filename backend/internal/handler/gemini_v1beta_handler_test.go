@@ -3,11 +3,17 @@
 package handler
 
 import (
+	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // TestGeminiV1BetaHandler_PlatformRoutingInvariant 文档化并验证 Handler 层的平台路由逻辑不变量
@@ -166,4 +172,35 @@ func TestShouldFallbackGeminiModel_DelegatesScopeFallback(t *testing.T) {
 		Body:       []byte("insufficient authentication scopes"),
 	}
 	require.True(t, shouldFallbackGeminiModel("gemini-future-model", res))
+}
+
+func TestGeminiV1BetaModels_AgentMissingImageTierStopsBeforeRuntimeDependencies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	gatewayService := service.NewGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
+		service.NewBillingService(cfg, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	h := &GatewayHandler{gatewayService: gatewayService}
+	groupID := int64(7301)
+	apiKey := &service.APIKey{
+		ID: 8301, UserID: 9301, GroupID: &groupID,
+		Group: &service.Group{
+			ID: groupID, Kind: "agent", SystemCode: "yingzo", Platform: service.PlatformOpenAI,
+			AllowImageGeneration: true,
+		},
+		User: &service.User{ID: 9301},
+	}
+	body := []byte(`{"generationConfig":{"imageConfig":{"imageSize":"2K"}}}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-3.1-flash-image:generateContent", bytes.NewReader(body))
+	c.Params = gin.Params{{Key: "modelAction", Value: "/gemini-3.1-flash-image:generateContent"}}
+	c.Set(string(servermiddleware.ContextKeyAPIKey), apiKey)
+	c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: apiKey.UserID})
+	servermiddleware.SetForcePlatform(c, service.PlatformGemini)
+
+	require.NotPanics(t, func() { h.GeminiV1BetaModels(c) })
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Equal(t, agentPricingUnavailableCode, gjson.GetBytes(rec.Body.Bytes(), "error.reason").String())
 }

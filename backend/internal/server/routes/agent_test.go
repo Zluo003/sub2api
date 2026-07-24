@@ -28,9 +28,31 @@ func TestAgentRoutesRejectOrdinaryAPIKeys(t *testing.T) {
 	r := gin.New()
 	v := r.Group("/api/v1")
 	h := &handler.Handlers{Agent: &handler.AgentHandler{}}
-	RegisterAgentRoutes(r, v, h, func(c *gin.Context) { c.Next() }, agentAuthForTest(false))
+	RegisterAgentRoutes(r, v, h, agentAuthForTest(false))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/agent/generation/estimates", nil))
 	require.Equal(t, http.StatusForbidden, w.Code)
 	require.Contains(t, w.Body.String(), "agent_credential_required")
+}
+
+func TestRetiredYingzoDistributionRoutesAreNotRegistered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	v := r.Group("/api/v1")
+	h := &handler.Handlers{Agent: &handler.AgentHandler{}}
+	RegisterAgentRoutes(r, v, h, agentAuthForTest(true))
+
+	for _, endpoint := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/.well-known/yingzo.json"},
+		{method: http.MethodPost, path: "/api/v1/agent/device/token"},
+		{method: http.MethodGet, path: "/api/v1/agent/plugin/releases/latest"},
+		{method: http.MethodPost, path: "/api/v1/agent/plugin/install-instructions"},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(endpoint.method, endpoint.path, nil))
+		require.Equal(t, http.StatusNotFound, w.Code, endpoint.path)
+	}
 }

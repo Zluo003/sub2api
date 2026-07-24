@@ -60,8 +60,15 @@ type VideoService struct {
 	quotaRepo        UserPlatformQuotaRepository
 	httpUpstream     HTTPUpstream
 	cfg              *config.Config
+	agentModels      *AgentModelCatalogService
 
 	startLifecycleFunc func(VideoTaskLifecycleInput)
+}
+
+func (s *VideoService) SetAgentModelCatalog(catalog *AgentModelCatalogService) {
+	if s != nil {
+		s.agentModels = catalog
+	}
 }
 
 func NewVideoService(
@@ -102,6 +109,39 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 	if input == nil || input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil || input.Request == nil {
 		return nil, videoBadRequest("invalid_video_request", "Invalid video request")
 	}
+	if strings.TrimSpace(input.IdempotencyKey) == "" {
+		return s.createTask(ctx, input)
+	}
+
+	coordinator := DefaultIdempotencyCoordinator()
+	if coordinator == nil {
+		return nil, ErrIdempotencyStoreUnavail
+	}
+	actorScope := "api_key:" + strconv.FormatInt(input.APIKey.ID, 10)
+	result, err := coordinator.Execute(ctx, IdempotencyExecuteOptions{
+		// The repository uniqueness key is (scope, key hash), so the API key is
+		// part of the scope as well as the fingerprint to prevent cross-key collisions.
+		Scope:          "openai.videos.create." + actorScope,
+		ActorScope:     actorScope,
+		Method:         http.MethodPost,
+		Route:          videoDefaultAPIPath,
+		IdempotencyKey: input.IdempotencyKey,
+		Payload:        videoIdempotencyPayload(input),
+		TTL:            DefaultWriteIdempotencyTTL(),
+	}, func(execCtx context.Context) (any, error) {
+		return s.createTask(execCtx, input)
+	})
+	if err != nil {
+		return nil, err
+	}
+	input.IdempotencyReplayed = result.Replayed
+	return decodeIdempotentVideoResponse(result.Data)
+}
+
+func (s *VideoService) createTask(ctx context.Context, input *VideoCreateInput) (*VideoResponse, error) {
+	if input == nil || input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil || input.Request == nil {
+		return nil, videoBadRequest("invalid_video_request", "Invalid video request")
+	}
 	if input.APIKey.Group.Platform != PlatformSeedance && !input.APIKey.Group.IsAgent() {
 		return nil, videoBadRequest("video_platform_required", "Video API is not available for this API key group")
 	}
@@ -116,7 +156,7 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		return nil, err
 	}
 
-	account, err := s.selectAccount(ctx, input.APIKey.Group.ID, normalized.Model, normalized.Resolution)
+	account, err := s.selectAccount(ctx, input.APIKey.Group.ID, normalized.Model, normalized.Resolution, input.APIKey.Group.IsAgent())
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +180,7 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		Resolution:               normalized.Resolution,
 		DurationSeconds:          normalized.GeneratedSeconds,
 		ReferenceDurationSeconds: normalized.ReferenceVideoSeconds,
-		BillableSeconds:          normalized.BillableSeconds,
+		BillableSeconds:          estimate.BillableSeconds,
 		CostPerSecond:            rule.CreditsPerSecond,
 		TotalCost:                totalCost,
 		ActualCost:               actualCost,
@@ -172,6 +212,38 @@ func (s *VideoService) CreateTask(ctx context.Context, input *VideoCreateInput) 
 		s.startLifecycle(lifecycleInput)
 	}
 	return videoResponseFromTask(task), nil
+}
+
+func videoIdempotencyPayload(input *VideoCreateInput) any {
+	if input == nil {
+		return map[string]string{"request_sha256": ""}
+	}
+	hash := strings.TrimSpace(input.RequestPayloadHash)
+	if hash == "" {
+		hash = HashUsageRequestPayload(input.RawBody)
+	}
+	if hash != "" {
+		return map[string]string{"request_sha256": hash}
+	}
+	return input.Request
+}
+
+func decodeIdempotentVideoResponse(data any) (*VideoResponse, error) {
+	if response, ok := data.(*VideoResponse); ok && response != nil {
+		return response, nil
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, ErrIdempotencyStoreUnavail.WithCause(err)
+	}
+	var response VideoResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, ErrIdempotencyStoreUnavail.WithCause(err)
+	}
+	if strings.TrimSpace(response.ID) == "" {
+		return nil, ErrIdempotencyStoreUnavail
+	}
+	return &response, nil
 }
 
 // EstimateGenerationCost is the authoritative pre-charge estimate used by
@@ -215,32 +287,62 @@ func (s *VideoService) estimateGenerationCost(
 	if count <= 0 {
 		return nil, nil, nil, videoBadRequest("invalid_video_count", "Video count must be positive")
 	}
-	normalized, err := normalizeVideoCreateRequest(request)
+	var normalized *normalizedVideoRequest
+	var err error
+	if apiKey.Group.IsAgent() {
+		normalized, err = normalizeAgentVideoCreateRequest(request)
+	} else {
+		normalized, err = normalizeVideoCreateRequest(request)
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	rule, err := s.pricingRepo.GetEnabledRule(ctx, apiKey.Group.ID, normalized.Model, normalized.Resolution)
-	if err != nil {
-		if errors.Is(err, ErrVideoPricingRuleNotFound) {
+	var rule *VideoGroupPricingRule
+	if apiKey.Group.IsAgent() {
+		if s.agentModels == nil {
 			return nil, nil, nil, videoBadRequest("video_pricing_rule_not_found", "Video pricing rule is not configured")
 		}
-		return nil, nil, nil, err
+		unitPrice, modelCode, priceErr := s.agentModels.ResolveMediaUnitPrice(
+			ctx,
+			apiKey.Group.ID,
+			PlatformSeedance,
+			AgentMediaTypeVideo,
+			normalized.Resolution,
+			normalized.Model,
+		)
+		if priceErr != nil {
+			return nil, nil, nil, videoBadRequest("video_pricing_rule_not_found", "Video pricing rule is not configured")
+		}
+		rule = &VideoGroupPricingRule{
+			GroupID:          apiKey.Group.ID,
+			ModelCode:        modelCode,
+			Resolution:       normalized.Resolution,
+			CreditsPerSecond: unitPrice,
+			Enabled:          true,
+		}
+	} else {
+		rule, err = s.pricingRepo.GetEnabledRule(ctx, apiKey.Group.ID, normalized.Model, normalized.Resolution)
+		if err != nil {
+			if errors.Is(err, ErrVideoPricingRuleNotFound) {
+				return nil, nil, nil, videoBadRequest("video_pricing_rule_not_found", "Video pricing rule is not configured")
+			}
+			return nil, nil, nil, err
+		}
 	}
 	referenceMultiplier := 1.0
-	perOutputCost := float64(normalized.BillableSeconds) * rule.CreditsPerSecond
-	if apiKey.Group.IsAgent() {
-		referenceMultiplier = rule.ReferenceVideoMultiplier
-		if referenceMultiplier <= 0 {
-			referenceMultiplier = 1
-		}
-		perOutputCost = float64(normalized.GeneratedSeconds)*rule.CreditsPerSecond +
-			float64(normalized.ReferenceVideoSeconds)*rule.CreditsPerSecond*referenceMultiplier
-	}
-	totalCost := perOutputCost * float64(count)
+	billableSecondsPerOutput := normalized.BillableSeconds
+	perOutputCost := float64(billableSecondsPerOutput) * rule.CreditsPerSecond
 	rateMultiplier := apiKey.Group.RateMultiplier
 	if rateMultiplier <= 0 {
 		rateMultiplier = 1
 	}
+	if apiKey.Group.IsAgent() {
+		referenceMultiplier = 0
+		billableSecondsPerOutput = normalized.GeneratedSeconds
+		perOutputCost = float64(billableSecondsPerOutput) * rule.CreditsPerSecond
+		rateMultiplier = 1
+	}
+	totalCost := perOutputCost * float64(count)
 	estimate := &VideoCostEstimate{
 		Model:                    normalized.Model,
 		Resolution:               normalized.Resolution,
@@ -248,7 +350,7 @@ func (s *VideoService) estimateGenerationCost(
 		Count:                    count,
 		GeneratedSeconds:         normalized.GeneratedSeconds,
 		ReferenceVideoSeconds:    normalized.ReferenceVideoSeconds,
-		BillableSeconds:          normalized.BillableSeconds * count,
+		BillableSeconds:          billableSecondsPerOutput * count,
 		CreditsPerSecond:         rule.CreditsPerSecond,
 		ReferenceVideoMultiplier: referenceMultiplier,
 		RateMultiplier:           rateMultiplier,
@@ -274,7 +376,7 @@ func (s *VideoService) GetTask(ctx context.Context, publicID string, apiKey *API
 	return videoResponseFromTask(task), nil
 }
 
-func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model string, resolution string) (*Account, error) {
+func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model string, resolution string, agentGroup bool) (*Account, error) {
 	accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, PlatformSeedance)
 	if err != nil {
 		return nil, err
@@ -290,7 +392,12 @@ func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model s
 		if !account.IsModelSupported(model) {
 			continue
 		}
-		if !isVideoAccountCompatible(&account, model, resolution) {
+		if agentGroup {
+			current := agentDiscoverySet(discoverAgentModels([]Account{account}))
+			if _, supported := current[agentModelKey(PlatformSeedance, model)]; !supported {
+				continue
+			}
+		} else if !isVideoAccountCompatible(&account, model, resolution) {
 			continue
 		}
 		candidates = append(candidates, account)
@@ -664,6 +771,10 @@ func buildVideoUsageLog(task *VideoTask, apiKey *APIKey, subscription *UserSubsc
 	if requestID == "" {
 		requestID = "video:" + task.PublicID
 	}
+	rateMultiplier := apiKey.Group.RateMultiplier
+	if apiKey.Group.IsAgent() {
+		rateMultiplier = 1
+	}
 	usageLog := &UsageLog{
 		UserID:                        apiKey.User.ID,
 		APIKeyID:                      apiKey.ID,
@@ -677,7 +788,7 @@ func buildVideoUsageLog(task *VideoTask, apiKey *APIKey, subscription *UserSubsc
 		OutputCost:                    outputCost,
 		TotalCost:                     totalCost,
 		ActualCost:                    actualCost,
-		RateMultiplier:                apiKey.Group.RateMultiplier,
+		RateMultiplier:                rateMultiplier,
 		AccountRateMultiplier:         videoFloat64Ptr(account.BillingRateMultiplier()),
 		BillingType:                   BillingTypeBalance,
 		RequestType:                   RequestTypeVideo,
@@ -817,15 +928,29 @@ type normalizedVideoRequest struct {
 }
 
 func normalizeVideoCreateRequest(req *VideoCreateRequest) (*normalizedVideoRequest, error) {
+	return normalizeVideoCreateRequestWithDynamicModel(req, false)
+}
+
+func normalizeAgentVideoCreateRequest(req *VideoCreateRequest) (*normalizedVideoRequest, error) {
+	return normalizeVideoCreateRequestWithDynamicModel(req, true)
+}
+
+func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynamicModel bool) (*normalizedVideoRequest, error) {
 	model := strings.TrimSpace(req.Model)
-	if model != VideoModelSeedance20 && model != VideoModelSeedance20Fast {
+	if model == "" || (!dynamicModel && model != VideoModelSeedance20 && model != VideoModelSeedance20Fast) {
 		return nil, videoBadRequest("invalid_video_model", "Invalid video model")
 	}
 	resolution := strings.TrimSpace(req.Resolution)
 	if resolution == "" {
 		resolution = VideoResolution720P
 	}
-	if !IsSupportedVideoResolution(model, resolution) {
+	if dynamicModel {
+		var err error
+		resolution, err = normalizeAgentPriceResolution(AgentMediaTypeVideo, resolution)
+		if err != nil {
+			return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
+		}
+	} else if !IsSupportedVideoResolution(model, resolution) {
 		return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 	}
 	duration := req.Duration
