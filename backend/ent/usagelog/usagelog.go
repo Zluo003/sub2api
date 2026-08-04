@@ -66,6 +66,8 @@ const (
 	FieldActualCost = "actual_cost"
 	// FieldRateMultiplier holds the string denoting the rate_multiplier field in the database.
 	FieldRateMultiplier = "rate_multiplier"
+	// FieldLongContextBillingApplied holds the string denoting the long_context_billing_applied field in the database.
+	FieldLongContextBillingApplied = "long_context_billing_applied"
 	// FieldAccountRateMultiplier holds the string denoting the account_rate_multiplier field in the database.
 	FieldAccountRateMultiplier = "account_rate_multiplier"
 	// FieldBillingType holds the string denoting the billing_type field in the database.
@@ -104,6 +106,8 @@ const (
 	FieldVideoBillableSeconds = "video_billable_seconds"
 	// FieldVideoResultURL holds the string denoting the video_result_url field in the database.
 	FieldVideoResultURL = "video_result_url"
+	// FieldVideoCount holds the string denoting the video_count field in the database.
+	FieldVideoCount = "video_count"
 	// FieldCacheTTLOverridden holds the string denoting the cache_ttl_overridden field in the database.
 	FieldCacheTTLOverridden = "cache_ttl_overridden"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
@@ -186,6 +190,7 @@ var Columns = []string{
 	FieldTotalCost,
 	FieldActualCost,
 	FieldRateMultiplier,
+	FieldLongContextBillingApplied,
 	FieldAccountRateMultiplier,
 	FieldBillingType,
 	FieldStream,
@@ -205,6 +210,7 @@ var Columns = []string{
 	FieldVideoReferenceDurationSeconds,
 	FieldVideoBillableSeconds,
 	FieldVideoResultURL,
+	FieldVideoCount,
 	FieldCacheTTLOverridden,
 	FieldCreatedAt,
 }
@@ -260,6 +266,8 @@ var (
 	DefaultActualCost float64
 	// DefaultRateMultiplier holds the default value on creation for the "rate_multiplier" field.
 	DefaultRateMultiplier float64
+	// DefaultLongContextBillingApplied holds the default value on creation for the "long_context_billing_applied" field.
+	DefaultLongContextBillingApplied bool
 	// DefaultBillingType holds the default value on creation for the "billing_type" field.
 	DefaultBillingType int8
 	// DefaultStream holds the default value on creation for the "stream" field.
@@ -288,6 +296,8 @@ var (
 	DefaultVideoReferenceDurationSeconds int
 	// DefaultVideoBillableSeconds holds the default value on creation for the "video_billable_seconds" field.
 	DefaultVideoBillableSeconds int
+	// DefaultVideoCount holds the default value on creation for the "video_count" field.
+	DefaultVideoCount int
 	// DefaultCacheTTLOverridden holds the default value on creation for the "cache_ttl_overridden" field.
 	DefaultCacheTTLOverridden bool
 	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
@@ -432,6 +442,11 @@ func ByRateMultiplier(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldRateMultiplier, opts...).ToFunc()
 }
 
+// ByLongContextBillingApplied orders the results by the long_context_billing_applied field.
+func ByLongContextBillingApplied(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldLongContextBillingApplied, opts...).ToFunc()
+}
+
 // ByAccountRateMultiplier orders the results by the account_rate_multiplier field.
 func ByAccountRateMultiplier(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAccountRateMultiplier, opts...).ToFunc()
@@ -520,6 +535,11 @@ func ByVideoBillableSeconds(opts ...sql.OrderTermOption) OrderOption {
 // ByVideoResultURL orders the results by the video_result_url field.
 func ByVideoResultURL(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldVideoResultURL, opts...).ToFunc()
+}
+
+// ByVideoCount orders the results by the video_count field.
+func ByVideoCount(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldVideoCount, opts...).ToFunc()
 }
 
 // ByCacheTTLOverridden orders the results by the cache_ttl_overridden field.

@@ -1438,3 +1438,17 @@ func (r *videoUsageLogRepoStub) UpdateVideoResult(ctx context.Context, requestID
 	})
 	return nil
 }
+
+// 上游给 UsageBillingRepository 增加了批量图片余额冻结/扣减接口，
+// 视频链路用不到，这里补空实现让本仓库的测试桩继续满足接口。
+func (r *videoUsageBillingRepoStub) ReserveBatchImageBalance(ctx context.Context, cmd *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+	return &BatchImageBalanceHoldResult{}, nil
+}
+
+func (r *videoUsageBillingRepoStub) CaptureBatchImageBalance(ctx context.Context, cmd *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+	return &BatchImageBalanceHoldResult{}, nil
+}
+
+func (r *videoUsageBillingRepoStub) ReleaseBatchImageBalance(ctx context.Context, cmd *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+	return &BatchImageBalanceHoldResult{}, nil
+}

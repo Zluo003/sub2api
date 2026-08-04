@@ -10,18 +10,31 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type VideoHandler struct {
-	videoService *service.VideoService
+	videoService             *service.VideoService
+	securityAuditCoordinator *securityaudit.Coordinator
+	contentModerationService *service.ContentModerationService
 }
 
 func NewVideoHandler(videoService *service.VideoService) *VideoHandler {
 	return &VideoHandler{videoService: videoService}
+}
+
+// checkSecurityAudit 让视频提示词与图片生成共用上游的审核协调器。
+func (h *VideoHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, model string, body []byte) *securityaudit.Decision {
+	if h == nil {
+		return nil
+	}
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject,
+		service.ContentModerationProtocolVideos, model, body, "http")
 }
 
 func (h *VideoHandler) Create(c *gin.Context) {
@@ -57,6 +70,14 @@ func (h *VideoHandler) Create(c *gin.Context) {
 	}
 	setOpsRequestContext(c, req.Model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeVideo))
+
+	subject, hasSubject := middleware2.GetAuthSubjectFromContext(c)
+	if hasSubject {
+		reqLog := requestLogger(c, "handler.video", zap.Int64("api_key_id", apiKey.ID))
+		if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, req.Model, body); decision != nil && !decision.AllowNextStage {
+			return
+		}
+	}
 	inboundEndpoint := GetInboundEndpoint(c)
 	upstreamEndpoint := GetUpstreamEndpoint(c, service.PlatformSeedance)
 

@@ -100,6 +100,9 @@ func (UsageLog) Fields() []ent.Field {
 		field.Float("rate_multiplier").
 			Default(1).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}),
+		field.Bool("long_context_billing_applied").
+			Default(false).
+			Comment("Whether long-context pricing changed token prices for this request"),
 
 		// account_rate_multiplier: 账号计费倍率快照（NULL 表示按 1.0 处理）
 		field.Float("account_rate_multiplier").
@@ -149,6 +152,18 @@ func (UsageLog) Fields() []ent.Field {
 		field.JSON("image_size_breakdown", map[string]int{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
+
+		// 视频生成字段。
+		// 本仓库同时承载两条视频链路：
+		//   - Seedance/video 网关（/v1/videos 异步任务，billing_mode='video_duration'）
+		//   - 上游 Grok 视频（按秒计费，用 video_count>0 标记视频用量行）
+		// 两者共用 video_resolution / video_duration_seconds 两列。
+		// 列定义以迁移 156_video_gateway.sql 为准（按文件名排序先于上游 172 执行，
+		// 172 的 ADD COLUMN IF NOT EXISTS 对这两列是 no-op）：
+		//   video_resolution       VARCHAR(16)
+		//   video_duration_seconds INTEGER NOT NULL DEFAULT 0
+		// 因此 video_duration_seconds 保持非空 int，不能声明为 Nillable，
+		// 否则写入 NULL 会违反 NOT NULL 约束。
 		field.String("video_task_id").
 			MaxLen(64).
 			Optional().
@@ -156,9 +171,11 @@ func (UsageLog) Fields() []ent.Field {
 		field.String("video_resolution").
 			MaxLen(16).
 			Optional().
-			Nillable(),
+			Nillable().
+			Comment("计费用视频分辨率 480p/720p/1080p"),
 		field.Int("video_duration_seconds").
-			Default(0),
+			Default(0).
+			Comment("视频时长（秒），按秒计费的乘数"),
 		field.Int("video_reference_duration_seconds").
 			Default(0),
 		field.Int("video_billable_seconds").
@@ -167,6 +184,9 @@ func (UsageLog) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
+		field.Int("video_count").
+			Default(0).
+			Comment("视频生成数量；>0 表示本行是视频生成用量"),
 		// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 		field.Bool("cache_ttl_overridden").
 			Default(false),

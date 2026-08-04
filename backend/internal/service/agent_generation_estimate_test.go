@@ -132,8 +132,11 @@ func TestAgentImageBillingUsesPerModelPriceForGatewayPaths(t *testing.T) {
 		[]string{"shared-image"},
 		99,
 		99,
+		99,
+		99,
 		UsageTokens{},
 		"",
+		false,
 	)
 	require.NoError(t, err)
 	require.InDelta(t, 0.8, openAICost.TotalCost, 1e-12)

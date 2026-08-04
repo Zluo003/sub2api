@@ -19,12 +19,17 @@ const (
 	RequestTypeStream       RequestType = 2
 	RequestTypeWSV2         RequestType = 3
 	RequestTypeCyberBlocked RequestType = 4 // cyber_policy 命中（透传但被上游安全策略拒绝）
-	RequestTypeVideo        RequestType = 5
+	RequestTypeVideo        RequestType = 5 // 视频生成（/v1/videos 异步任务）
+	// RequestTypeLive 在上游取 5，但本仓库 usage_logs 中 5 已存量表示 video，
+	// 同一个整数不能有两种含义，因此 live 在本仓库顺延为 6。
+	// 迁移 191_allow_live_request_type_six.sql 相应放宽 request_type 的 CHECK 上界。
+	RequestTypeLive RequestType = 6 // OpenAI Live 会话
 )
 
 func (t RequestType) IsValid() bool {
 	switch t {
-	case RequestTypeUnknown, RequestTypeSync, RequestTypeStream, RequestTypeWSV2, RequestTypeCyberBlocked, RequestTypeVideo:
+	case RequestTypeUnknown, RequestTypeSync, RequestTypeStream, RequestTypeWSV2,
+		RequestTypeCyberBlocked, RequestTypeVideo, RequestTypeLive:
 		return true
 	default:
 		return false
@@ -50,6 +55,8 @@ func (t RequestType) String() string {
 		return "cyber"
 	case RequestTypeVideo:
 		return "video"
+	case RequestTypeLive:
+		return "live"
 	default:
 		return "unknown"
 	}
@@ -73,8 +80,10 @@ func ParseUsageRequestType(value string) (RequestType, error) {
 		return RequestTypeCyberBlocked, nil
 	case "video":
 		return RequestTypeVideo, nil
+	case "live":
+		return RequestTypeLive, nil
 	default:
-		return RequestTypeUnknown, fmt.Errorf("invalid request_type, allowed values: unknown, sync, stream, ws_v2, cyber, video")
+		return RequestTypeUnknown, fmt.Errorf("invalid request_type, allowed values: unknown, sync, stream, ws_v2, cyber, video, live")
 	}
 }
 
@@ -144,16 +153,19 @@ type UsageLog struct {
 	CacheCreation5mTokens int `gorm:"column:cache_creation_5m_tokens"`
 	CacheCreation1hTokens int `gorm:"column:cache_creation_1h_tokens"`
 
+	ImageInputTokens  int
+	ImageInputCost    float64
 	ImageOutputTokens int
 	ImageOutputCost   float64
 
-	InputCost         float64
-	OutputCost        float64
-	CacheCreationCost float64
-	CacheReadCost     float64
-	TotalCost         float64
-	ActualCost        float64
-	RateMultiplier    float64
+	InputCost                 float64
+	OutputCost                float64
+	CacheCreationCost         float64
+	CacheReadCost             float64
+	TotalCost                 float64
+	ActualCost                float64
+	RateMultiplier            float64
+	LongContextBillingApplied bool
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示历史数据，按 1.0 处理）
 	AccountRateMultiplier *float64
 	// AccountStatsCost 账号统计定价预计算费用（nil = 使用默认公式 total_cost × account_rate_multiplier）
@@ -167,6 +179,10 @@ type UsageLog struct {
 	FirstTokenMs *int
 	UserAgent    *string
 	IPAddress    *string
+	// SessionID is the explicit client-provided request correlation identifier
+	// (e.g. the session_id / X-Session-Id headers). Nil when the client sent no
+	// valid session header. It is never derived from prompt_cache_key or content.
+	SessionID *string
 
 	// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 	CacheTTLOverridden bool
@@ -180,12 +196,17 @@ type UsageLog struct {
 	ImageSizeBreakdown map[string]int
 	MediaType          *string
 
+	// 视频生成字段。Seedance/video 网关与上游 Grok 视频共用这组列，
+	// 其中 VideoDurationSeconds 对应 NOT NULL DEFAULT 0 的列，故为值类型而非指针
+	// （详见 ent/schema/usage_log.go 的说明）。
 	VideoTaskID                   *string
 	VideoResolution               *string
 	VideoDurationSeconds          int
 	VideoReferenceDurationSeconds int
 	VideoBillableSeconds          int
 	VideoResultURL                *string
+	// VideoCount>0 标记该行是视频生成用量（上游 Grok 用它豁免 image_size 检查）
+	VideoCount int
 
 	CreatedAt time.Time
 

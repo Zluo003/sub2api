@@ -754,7 +754,7 @@ func buildVideoUsageLog(task *VideoTask, apiKey *APIKey, subscription *UserSubsc
 	if task == nil || apiKey == nil || apiKey.User == nil || apiKey.Group == nil || account == nil {
 		return nil, false
 	}
-	billingMode := string(BillingModeVideo)
+	billingMode := string(BillingModeVideoDuration)
 	createdAt := opts.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
@@ -824,7 +824,7 @@ func (s *VideoService) applyVideoUsageBilling(ctx context.Context, usageLog *Usa
 	if usageLog.ActualCost < 0 && s.usageBillingRepo == nil {
 		return errors.New("video refund requires usage billing repository")
 	}
-	billingMode := string(BillingModeVideo)
+	billingMode := string(BillingModeVideoDuration)
 	applied, billingErr := applyUsageBilling(ctx, usageLog.RequestID, usageLog, &postUsageBillingParams{
 		Cost:                  &CostBreakdown{OutputCost: usageLog.OutputCost, TotalCost: usageLog.TotalCost, ActualCost: usageLog.ActualCost, BillingMode: billingMode},
 		User:                  apiKey.User,
