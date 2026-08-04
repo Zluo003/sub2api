@@ -179,7 +179,7 @@ func TestGeminiV1BetaModels_AgentMissingImageTierStopsBeforeRuntimeDependencies(
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	gatewayService := service.NewGatewayService(
 		nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
-		service.NewBillingService(cfg, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		service.NewBillingService(cfg, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	h := &GatewayHandler{gatewayService: gatewayService}
 	groupID := int64(7301)

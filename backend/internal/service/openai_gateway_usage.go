@@ -151,18 +151,32 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageOutputTokens:   result.Usage.ImageOutputTokens,
 	}
 
-	// Get rate multiplier
+	// Agent 文本计费使用实际账号的平台倍率；普通分组保留用户专属倍率覆盖。
 	multiplier := 1.0
 	if s.cfg != nil {
 		multiplier = s.cfg.Default.RateMultiplier
 	}
 	if apiKey.GroupID != nil && apiKey.Group != nil {
-		multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
+		if apiKey.Group.IsAgent() {
+			if s.resolver == nil {
+				return ErrAgentPlatformRateUnavailable
+			}
+			resolvedMultiplier, err := s.resolver.ResolveAgentPlatformRate(ctx, apiKey.Group.ID, account.Platform)
+			if err != nil {
+				return fmt.Errorf("resolve Agent platform multiplier: %w", err)
+			}
+			multiplier = resolvedMultiplier
+		} else {
+			multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
+		}
 	}
 	// token 倍率叠加高峰因子（token 计费含图片 token，图片按次倍率不受影响）。高峰因子按请求时刻现算，
 	// 不并入上面的 Resolve，以免污染 user:group 倍率缓存。
 	baseMultiplier := multiplier
-	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, timezone.Now())
+	imageMultiplier := 1.0
+	if apiKey.Group == nil || !apiKey.Group.IsAgent() {
+		multiplier, imageMultiplier = computePeakAwareMultipliers(apiKey, baseMultiplier, timezone.Now())
+	}
 	videoMultiplier := resolveVideoRateMultiplier(apiKey, baseMultiplier)
 
 	var cost *CostBreakdown

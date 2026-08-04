@@ -1495,8 +1495,7 @@ func (s *BillingService) EstimateImageGenerationCost(
 		return nil, tier, fmt.Errorf("%w: use the synchronized Agent model catalogue", ErrAgentImagePricingUnavailable)
 	}
 
-	multiplier := 1.0
-	multiplier = apiKey.Group.RateMultiplier
+	multiplier := apiKey.Group.RateMultiplier
 	if rateRepo != nil {
 		userMultiplier, err := rateRepo.GetByUserAndGroup(ctx, apiKey.UserID, *apiKey.GroupID)
 		if err != nil {

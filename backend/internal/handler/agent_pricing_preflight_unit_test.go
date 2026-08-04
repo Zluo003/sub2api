@@ -93,7 +93,7 @@ func newAgentPricingGatewayHandler(
 	accountRepo := &agentPricingHandlerAccountRepo{accounts: accounts}
 	gatewayService := service.NewGatewayService(
 		accountRepo, &fakeGroupRepo{group: group}, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
-		service.NewBillingService(cfg, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		service.NewBillingService(cfg, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	concurrencyService := service.NewConcurrencyService(&fakeConcurrencyCache{})

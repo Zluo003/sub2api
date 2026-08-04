@@ -917,12 +917,22 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
+	hasTargetGroups := input.GroupIDs != nil && len(*input.GroupIDs) > 0
+	hasAgentTarget := false
+	if hasTargetGroups {
+		var err error
+		hasAgentTarget, err = s.hasAgentGroup(ctx, *input.GroupIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	needMixedChannelCheck := hasTargetGroups && !input.SkipMixedChannelCheck
+	needAccountPlatforms := hasAgentTarget || needMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
 
-	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
+	// 预取所有目标账号，供凭据守卫、代理守卫和分组平台检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || input.ProbeEnabled != nil {
+	if len(input.Credentials) > 0 || input.ProxyID != nil || needAccountPlatforms || hasLongContextBillingUpdate || input.ProbeEnabled != nil {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -981,12 +991,21 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	// 预加载账号平台信息（混合渠道检查需要）。
+	// Agent 平台白名单是硬约束，不能被跳过混合渠道检查绕过。
 	platformByID := map[int64]string{}
-	if needMixedChannelCheck {
+	if needAccountPlatforms {
 		for _, account := range cachedTargets {
 			if account != nil {
 				platformByID[account.ID] = account.Platform
+			}
+		}
+		for _, accountID := range input.AccountIDs {
+			platform := platformByID[accountID]
+			if platform == "" {
+				return nil, fmt.Errorf("account %d platform is unavailable", accountID)
+			}
+			if hasAgentTarget && !isAgentPlatformSupported(platform) {
+				return nil, fmt.Errorf("platform %s cannot be bound to the Agent group", platform)
 			}
 		}
 	}

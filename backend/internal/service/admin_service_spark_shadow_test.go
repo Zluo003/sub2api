@@ -770,6 +770,13 @@ func (s *sparkShadowValidatingGroupRepoStub) ExistsByIDs(_ context.Context, ids 
 	return out, nil
 }
 
+func (s *sparkShadowValidatingGroupRepoStub) GetByIDLite(_ context.Context, id int64) (*Group, error) {
+	if !s.existing[id] {
+		return nil, ErrGroupNotFound
+	}
+	return &Group{ID: id, Kind: "standard"}, nil
+}
+
 // TestCreateShadow_DefaultsNameFromParent 验证外审 E/P2:空 name 不应 500,
 // 而是默认 "<母账号名> (Spark)"。
 func TestCreateShadow_DefaultsNameFromParent(t *testing.T) {

@@ -36,20 +36,6 @@ type apiKeyRepoStub struct {
 	listByUserIDErr        error
 	listByUserIDCalls      []int64
 	listByUserIDParams     []pagination.PaginationParams
-	updateLastUsed         func(ctx context.Context, id int64, usedAt time.Time) error
-	touchedIDs             []int64
-	touchedUsedAts         []time.Time
-	apiKey                 *APIKey // GetKeyAndOwnerID 的返回值
-	getByIDErr             error   // GetKeyAndOwnerID 的错误返回值
-	deleteErr              error   // Delete 的错误返回值
-	updateErr              error   // Update 的错误返回值
-	deletedIDs             []int64 // 记录已删除的 API Key ID 列表
-	updatedKeys            []APIKey
-	allowListByUserID      bool
-	listByUserIDKeys       []APIKey
-	listByUserIDErr        error
-	listByUserIDCalls      []int64
-	listByUserIDParams     []pagination.PaginationParams
 	listByUserIDFilters    []APIKeyListFilters
 	allowListAllByUserID   bool
 	listAllByUserIDKeys    []APIKey

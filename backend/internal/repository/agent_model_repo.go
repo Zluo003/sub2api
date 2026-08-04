@@ -66,7 +66,7 @@ WHERE group_id = $1`
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	models := make([]service.AgentGroupModel, 0)
 	for rows.Next() {
@@ -200,7 +200,7 @@ ORDER BY platform
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	rates := make([]service.AgentPlatformRate, 0)
 	for rows.Next() {
 		var rate service.AgentPlatformRate
@@ -285,7 +285,7 @@ ORDER BY p.agent_model_id, p.resolution
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		price, err := scanAgentModelPrice(rows)
 		if err != nil {
@@ -308,7 +308,7 @@ ORDER BY resolution
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	prices := make([]service.AgentModelPrice, 0)
 	for rows.Next() {
 		price, err := scanAgentModelPrice(rows)

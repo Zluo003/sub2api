@@ -649,6 +649,21 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
+	if group.IsAgent() {
+		if input.Platform != "" && input.Platform != group.Platform {
+			return nil, errors.New("system Agent group platform cannot be changed")
+		}
+		if input.IsExclusive != nil && *input.IsExclusive {
+			return nil, errors.New("system Agent group must remain public")
+		}
+		if input.AllowImageGeneration != nil && !*input.AllowImageGeneration {
+			return nil, errors.New("system Agent group must allow image generation")
+		}
+		group.AllowImageGeneration = true
+		group.IsExclusive = false
+		group.ImageRateIndependent = true
+		group.ImageRateMultiplier = 1
+	}
 
 	if input.Name != "" {
 		group.Name = input.Name
@@ -724,6 +739,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if (input.BatchImageDiscountMultiplier != nil || input.BatchImageHoldMultiplier != nil) &&
 		group.BatchImageHoldMultiplier < group.BatchImageDiscountMultiplier {
 		return nil, errors.New("batch_image_hold_multiplier must be >= batch_image_discount_multiplier")
+	}
+	if group.IsAgent() {
+		group.AllowImageGeneration = true
+		group.IsExclusive = false
+		group.ImageRateIndependent = true
+		group.ImageRateMultiplier = 1
 	}
 	if input.VideoRateIndependent != nil {
 		group.VideoRateIndependent = *input.VideoRateIndependent
@@ -907,13 +928,19 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			}
 		}
 
-		// 校验源分组的平台是否与当前分组一致
+		// 普通分组保持平台兼容；系统 Agent 分组可以聚合受支持平台的标准分组。
 		for _, srcGroupID := range uniqueSourceGroupIDs {
 			srcGroup, err := s.groupRepo.GetByIDLite(ctx, srcGroupID)
 			if err != nil {
 				return nil, fmt.Errorf("source group %d not found: %w", srcGroupID, err)
 			}
-			if !canCopyAccountsFromGroupPlatform(group.Platform, srcGroup.Platform) {
+			if srcGroup.IsAgent() {
+				return nil, fmt.Errorf("source group %d cannot be another Agent group", srcGroupID)
+			}
+			if group.IsAgent() && !isAgentPlatformSupported(srcGroup.Platform) {
+				return nil, fmt.Errorf("source group %d platform %s is not supported by the Agent group", srcGroupID, srcGroup.Platform)
+			}
+			if !group.IsAgent() && !canCopyAccountsFromGroupPlatform(group.Platform, srcGroup.Platform) {
 				return nil, fmt.Errorf("source group %d platform mismatch: expected %s, got %s", srcGroupID, group.Platform, srcGroup.Platform)
 			}
 		}

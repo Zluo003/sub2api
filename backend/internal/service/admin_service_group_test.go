@@ -17,11 +17,17 @@ func ptrString[T ~string](v T) *string {
 
 // groupRepoStubForAdmin 用于测试 AdminService 的 GroupRepository Stub
 type groupRepoStubForAdmin struct {
-	created  *Group // 记录 Create 调用的参数
-	updated  *Group // 记录 Update 调用的参数
-	getByID  *Group // GetByID 返回值
-	getErr   error  // GetByID 返回的错误
-	createID int64
+	created                  *Group // 记录 Create 调用的参数
+	updated                  *Group // 记录 Update 调用的参数
+	getByID                  *Group // GetByID 返回值
+	getErr                   error  // GetByID 返回的错误
+	createID                 int64
+	groupsByID               map[int64]*Group
+	accountIDsBySourceGroups []int64
+	accountSourceGroupIDs    []int64
+	clearedAccountGroupID    int64
+	boundAccountGroupID      int64
+	boundAccountIDs          []int64
 
 	getByIDByID map[int64]*Group
 
@@ -72,6 +78,12 @@ func (s *groupRepoStubForAdmin) GetByIDLite(_ context.Context, id int64) (*Group
 	}
 	if s.getByIDByID != nil {
 		if group, ok := s.getByIDByID[id]; ok {
+			return group, nil
+		}
+		return nil, ErrGroupNotFound
+	}
+	if s.groupsByID != nil {
+		if group, ok := s.groupsByID[id]; ok {
 			return group, nil
 		}
 		return nil, ErrGroupNotFound
@@ -135,12 +147,21 @@ func (s *groupRepoStubForAdmin) DeleteAccountGroupsByGroupID(_ context.Context, 
 	if s.deleteAccountGroupsByGroupIDFn != nil {
 		return s.deleteAccountGroupsByGroupIDFn(groupID)
 	}
+	if s.groupsByID != nil {
+		s.clearedAccountGroupID = groupID
+		return 0, nil
+	}
 	panic("unexpected DeleteAccountGroupsByGroupID call")
 }
 
 func (s *groupRepoStubForAdmin) BindAccountsToGroup(_ context.Context, groupID int64, accountIDs []int64) error {
 	if s.bindAccountsToGroupFn != nil {
 		return s.bindAccountsToGroupFn(groupID, accountIDs)
+	}
+	if s.groupsByID != nil {
+		s.boundAccountGroupID = groupID
+		s.boundAccountIDs = append([]int64(nil), accountIDs...)
+		return nil
 	}
 	panic("unexpected BindAccountsToGroup call")
 }
@@ -149,10 +170,41 @@ func (s *groupRepoStubForAdmin) GetAccountIDsByGroupIDs(_ context.Context, group
 	if s.getAccountIDsByGroupIDsFn != nil {
 		return s.getAccountIDsByGroupIDsFn(groupIDs)
 	}
+	if s.groupsByID != nil {
+		s.accountSourceGroupIDs = append([]int64(nil), groupIDs...)
+		return append([]int64(nil), s.accountIDsBySourceGroups...), nil
+	}
 	panic("unexpected GetAccountIDsByGroupIDs call")
 }
 
 func (s *groupRepoStubForAdmin) UpdateSortOrders(_ context.Context, _ []GroupSortOrderUpdate) error {
+	return nil
+}
+
+type accountRepoStubForAgentBinding struct {
+	accountRepoStub
+	account     *Account
+	createCalls int
+	updateCalls int
+	bindCalls   int
+}
+
+func (s *accountRepoStubForAgentBinding) Create(_ context.Context, _ *Account) error {
+	s.createCalls++
+	return nil
+}
+
+func (s *accountRepoStubForAgentBinding) GetByID(_ context.Context, _ int64) (*Account, error) {
+	return s.account, nil
+}
+
+func (s *accountRepoStubForAgentBinding) Update(_ context.Context, _ *Account) error {
+	s.updateCalls++
+	return nil
+}
+
+func (s *accountRepoStubForAgentBinding) BindGroups(_ context.Context, _ int64, _ []int64) error {
+	s.bindCalls++
 	return nil
 }
 

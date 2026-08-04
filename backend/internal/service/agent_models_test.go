@@ -276,13 +276,13 @@ func TestAgentModelPricingSupportsPlatformAndExplicitZeroModelPrices(t *testing.
 		Credentials: map[string]any{"model_mapping": map[string]any{"image-alias": "gpt-image-2"}},
 	}}}
 	catalogService, _ := newAgentCatalogForTest(accounts)
-	config, err := catalogService.Sync(context.Background(), 9)
+	_, err := catalogService.Sync(context.Background(), 9)
 	require.NoError(t, err)
-	config, err = catalogService.SetPlatformRate(context.Background(), 9, PlatformOpenAI, 0)
+	config, err := catalogService.SetPlatformRate(context.Background(), 9, PlatformOpenAI, 0)
 	require.NoError(t, err)
 	require.Zero(t, config.PlatformRates[0].RateMultiplier)
 
-	config, err = catalogService.UpdateModel(context.Background(), 9, config.Models[0].ID, AgentModelConfigInput{
+	_, err = catalogService.UpdateModel(context.Background(), 9, config.Models[0].ID, AgentModelConfigInput{
 		MediaType: AgentMediaTypeImage,
 		Enabled:   true,
 		Prices:    []AgentModelPrice{{Resolution: ImageBillingSize2K, UnitPrice: 0}},

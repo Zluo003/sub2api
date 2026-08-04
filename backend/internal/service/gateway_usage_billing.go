@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -699,18 +700,32 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
 	}
 
-	// 获取费率倍数（优先级：用户专属 > 分组默认 > 系统默认）
+	// Agent 文本计费使用实际账号的平台倍率；普通分组保留用户专属倍率覆盖。
 	multiplier := 1.0
 	if s.cfg != nil {
 		multiplier = s.cfg.Default.RateMultiplier
 	}
 	if apiKey.GroupID != nil && apiKey.Group != nil {
-		groupDefault := apiKey.Group.RateMultiplier
-		multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
+		if apiKey.Group.IsAgent() {
+			if s.resolver == nil {
+				return ErrAgentPlatformRateUnavailable
+			}
+			resolvedMultiplier, err := s.resolver.ResolveAgentPlatformRate(ctx, apiKey.Group.ID, account.Platform)
+			if err != nil {
+				return fmt.Errorf("resolve Agent platform multiplier: %w", err)
+			}
+			multiplier = resolvedMultiplier
+		} else {
+			groupDefault := apiKey.Group.RateMultiplier
+			multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
+		}
 	}
 	// token 倍率叠加高峰因子（token 计费含图片 token，图片按次倍率不受影响）。高峰因子按请求时刻现算，
 	// 不并入上面的 getUserGroupRateMultiplier，以免污染 user:group 倍率缓存。
-	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, multiplier, timezone.Now())
+	imageMultiplier := 1.0
+	if apiKey.Group == nil || !apiKey.Group.IsAgent() {
+		multiplier, imageMultiplier = computePeakAwareMultipliers(apiKey, multiplier, timezone.Now())
+	}
 
 	// 确定计费模型
 	concreteBillingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
@@ -738,8 +753,24 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		requestedModel = input.OriginalModel
 	}
 
-	// 计算费用
-	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, opts)
+	// Agent 使用实际账号来源渠道定价，普通分组走原有分组/渠道定价路径。
+	var cost *CostBreakdown
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		billingModels := usageBillingModelCandidates(
+			billingModel,
+			input.ChannelMappedModel,
+			requestedModel,
+			result.UpstreamModel,
+			result.Model,
+		)
+		var err error
+		cost, err = s.calculateAgentRecordUsageCost(ctx, result, apiKey.Group, account, billingModels, multiplier)
+		if err != nil {
+			return fmt.Errorf("calculate Agent usage cost: %w", err)
+		}
+	} else {
+		cost = s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, opts)
+	}
 
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
