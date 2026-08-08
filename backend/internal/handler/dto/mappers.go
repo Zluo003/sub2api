@@ -148,6 +148,9 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		Group:                       groupFromServiceBase(g),
 		Kind:                        g.Kind,
 		SystemCode:                  g.SystemCode,
+		ProfitControlEnabled:        g.ProfitControlEnabled,
+		ProfitMinMargin:             g.ProfitMinMargin,
+		ProfitSafetyBuffer:          g.ProfitSafetyBuffer,
 		ModelRouting:                g.ModelRouting,
 		ModelRoutingEnabled:         g.ModelRoutingEnabled,
 		MCPXMLInject:                g.MCPXMLInject,
@@ -711,6 +714,8 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	return &AdminUsageLog{
 		UsageLog:              usageLog,
 		UpstreamModel:         l.UpstreamModel,
+		UpstreamResponseModel: l.UpstreamResponseModel,
+		UpstreamModelMismatch: l.UpstreamModelMismatch,
 		ChannelID:             l.ChannelID,
 		ModelMappingChain:     l.ModelMappingChain,
 		BillingTier:           l.BillingTier,

@@ -223,3 +223,71 @@ rather than hand-merged. Requires `backend/internal/domain` to compile first.
 **注意**：跨越函数体的 hunk 用 `both` 会把两个函数体拼接在一起，每批之后必须跑 `gofmt -l`。
 测试文件的通用套路是「`theirs` + 用 `comm` 找出 fork 独有的 `func Test*` 再 `awk` 追加回去」。
 wire 需要单独装：`go install github.com/google/wire/cmd/wire@v0.7.0`（临时模块里装，别污染 go.mod）。
+
+---
+
+# Upstream merge: fork v0.1.167 + Wei-Shaw/sub2api v0.1.172
+
+Integration branch: `codex/merge-upstream-v0.1.172`. The merge target is the upstream
+stable tag `v0.1.172` (`155c494964c3ea6ecc31f52679525c1034bf0f16`), rather than the
+one additional version-only commit currently on upstream `main`. The merged fork version is
+`v0.1.173`.
+
+## Imported upstream functionality
+
+- Panel API rate limiting, passkey authentication, and the public model plaza.
+- Kimi K3 and Gemini 3.6 Flash support, composite reasoning-effort policies, and Codex
+  client-version synchronization with normalized outbound identity.
+- Group-level profit controls plus cross-platform upstream billing-rate probing and optional
+  writeback.
+- Tencent and Aliyun CAPTCHA providers.
+- Upstream response-model audit fields and mismatch filtering.
+- OAuth account-takeover and upstream URL path-validation security fixes, plus billing,
+  failover, WebSocket, payment, SMTP, proxy, and usage-statistics fixes from releases
+  `v0.1.166` through `v0.1.172`.
+
+## Fork compatibility decisions
+
+- Both the fork's `AgentHandler` and upstream's `ModelPlazaHandler` remain registered; both
+  Agent routes and upstream panel rate limiting are active.
+- Admin group DTOs retain fork fields (`kind`, `system_code`) alongside upstream profit-control
+  fields. Ordinary groups use request-level `PricingAt` for peak pricing; Agent groups keep
+  their own multi-platform/model pricing and do not apply ordinary profit controls.
+- Seedance asynchronous `/v1/videos`, `VideoService`, video tasks and pricing rules, S3/R2 file
+  service, Yingzo Agent routing, and fork Model Plaza/File Service/API Docs pages are preserved.
+- `RequestTypeVideo` stays `5` for existing fork data; upstream Live stays `6`.
+  `BillingModeVideoDuration` remains distinct from upstream per-video billing.
+- API-key auth snapshot version is `19`, covering both upstream profit-control data and fork
+  Agent permissions.
+- `usage_logs` is the union of upstream response-model audit fields and fork video fields. The
+  fork's effective database definitions remain `video_resolution VARCHAR(16)` and
+  `video_duration_seconds INTEGER NOT NULL DEFAULT 0`.
+- Existing fork migrations and platform constraints continue to support `seedance` and `grok`.
+  Fork README files remain authoritative.
+- Ent and Wire output was regenerated from the merged source rather than hand-edited.
+
+## Browser-discovered regression fix
+
+The system Agent uses `openai` as its compatibility platform, which initially made upstream's
+profit-control form appear in the Agent editor. `GroupsView.vue` now hides that form for
+`kind === 'agent'` and omits all three profit-control fields from Agent update payloads. A
+source regression test covers the display and payload guards.
+
+Runtime verification confirms the intended separation:
+
+- Yingzo Agent: model catalog and multi-platform pricing present; profit control absent.
+- Ordinary OpenAI group: profit control present.
+- Seedance group: video pricing present, including 4K and Fast variants.
+
+## Verification
+
+- Backend: `go test ./...` passed, including focused handler/service runs; Ent and Wire
+  regeneration succeeded.
+- Frontend: typecheck and lint passed; production build passed; Vitest passed all 213 files and
+  1499 tests. The final focused group-layout/profit tests passed 17/17.
+- Source hygiene: all merge conflicts resolved and `git diff --check` passed.
+- Runtime: the source-built Docker image started with PostgreSQL and Redis healthy;
+  `/health` returned `{"status":"ok"}` and `/` returned HTTP 200. Migrations 191-195 applied,
+  the runtime reported `v0.1.173`, and persisted fork constraints were verified.
+- Browser: the authenticated admin flow and all three group editors above were exercised
+  against the rebuilt image at `http://127.0.0.1:8080`; browser diagnostic logs were empty.

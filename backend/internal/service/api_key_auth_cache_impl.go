@@ -14,9 +14,9 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-// v18: 合并上游 v17（OpenAI 分组 Live 开关）与本仓库 v15（系统 Agent 图片权限），
-// 取比两边都大的版本号，确保升级后旧快照一律失效重建。
-const apiKeyAuthSnapshotVersion = 18
+// v19 includes both fork Agent image permissions and upstream group profit controls.
+// Bumping beyond either side's v18 invalidates every pre-merge snapshot.
+const apiKeyAuthSnapshotVersion = 19
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -424,6 +424,9 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			PeakStart:                       apiKey.Group.PeakStart,
 			PeakEnd:                         apiKey.Group.PeakEnd,
 			PeakRateMultiplier:              apiKey.Group.PeakRateMultiplier,
+			ProfitControlEnabled:            apiKey.Group.ProfitControlEnabled,
+			ProfitMinMargin:                 apiKey.Group.ProfitMinMargin,
+			ProfitSafetyBuffer:              apiKey.Group.ProfitSafetyBuffer,
 		}
 	}
 	return snapshot
@@ -513,6 +516,9 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			PeakStart:                       snapshot.Group.PeakStart,
 			PeakEnd:                         snapshot.Group.PeakEnd,
 			PeakRateMultiplier:              snapshot.Group.PeakRateMultiplier,
+			ProfitControlEnabled:            snapshot.Group.ProfitControlEnabled,
+			ProfitMinMargin:                 snapshot.Group.ProfitMinMargin,
+			ProfitSafetyBuffer:              snapshot.Group.ProfitSafetyBuffer,
 		}
 	}
 	s.compileAPIKeyIPRules(apiKey)

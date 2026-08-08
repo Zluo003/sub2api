@@ -60,10 +60,12 @@ type Handlers struct {
 	Video            *VideoHandler
 	Setting          *SettingHandler
 	Totp             *TotpHandler
+	Passkey          *PasskeyHandler
 	Payment          *PaymentHandler
 	PaymentWebhook   *PaymentWebhookHandler
 	AvailableChannel *AvailableChannelHandler
 	Agent            *AgentHandler
+	ModelPlaza       *ModelPlazaHandler
 	AsyncImage       *AsyncImageHandler
 	BatchImage       *BatchImageHandler
 }

@@ -35,6 +35,12 @@ describe("system Agent pricing layout", () => {
     expect(groupsViewSource).toContain("payload.rate_multiplier = undefined");
     expect(groupsViewSource).toContain("payload.image_price_1k = undefined");
     expect(groupsViewSource).toContain("payload.video_pricing_rules = undefined");
+    expect(groupsViewSource).toContain("payload.profit_control_enabled = undefined");
+    expect(groupsViewSource).toContain("payload.profit_min_margin = undefined");
+    expect(groupsViewSource).toContain("payload.profit_safety_buffer = undefined");
+    expect(groupsViewSource).toContain(
+      "v-if=\"editingGroup.kind !== 'agent' && isProfitControlPlatform(editForm.platform)\"",
+    );
     expect(groupsViewSource).not.toContain('data-testid="agent-image-generation-required"');
   });
 
