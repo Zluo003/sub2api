@@ -19,4 +19,20 @@ describe('modelCatalog', () => {
     expect(identity.vendor).toBe('acme')
     expect(identity.descriptionZh).toContain('acme')
   })
+
+  it.each([
+    ['seedance-2.0', '满血视频模型', '9 张参考图', '4K'],
+    ['seedance-2.0-fast', '极速视频模型', '3 个参考视频', '720p'],
+    ['seedance-2.5', '新一代视频模型', '30 张参考图', '纯音频参考']
+  ])('uses model-specific official Seedance copy for %s', (model, edition, referenceCapability, outputCapability) => {
+    const identity = getModelIdentity(model, 'seedance')
+
+    expect(identity.vendor).toBe('ByteDance')
+    expect(identity.descriptionZh).toContain(edition)
+    expect(identity.descriptionZh).toContain('官方直连')
+    expect(identity.descriptionZh).toContain(referenceCapability)
+    expect(identity.descriptionZh).toContain(outputCapability)
+    expect(identity.descriptionEn).toContain('direct official access')
+    expect(identity.descriptionZh).not.toContain('豆包/Seed 系列模型')
+  })
 })
