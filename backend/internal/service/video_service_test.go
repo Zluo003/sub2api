@@ -105,9 +105,9 @@ func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
 
 	normalized, err := normalizeVideoCreateRequest(req)
 	require.NoError(t, err)
-	body := normalized.JingyuUpstreamBody(videoJingyuSeedanceModel)
+	body := normalized.JingyuUpstreamBody(videoJingyuSeedance20Model)
 
-	require.Equal(t, "jing-video-2-pro", body["model"])
+	require.Equal(t, "yu-video-2-pro", body["model"])
 	require.Equal(t, "runway shot", body["prompt"])
 	require.Equal(t, 5, body["duration"])
 	require.Equal(t, "9:16", body["aspect_ratio"])
@@ -148,9 +148,9 @@ func TestJingyuUpstreamBodyForwardsSupportedResolutions(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			body := normalized.JingyuUpstreamBody(videoJingyuSeedanceModel)
+			body := normalized.JingyuUpstreamBody(videoJingyuSeedance20Model)
 			require.Equal(t, resolution, body["resolution"])
-			require.Equal(t, "jing-video-2-pro", body["model"])
+			require.Equal(t, "yu-video-2-pro", body["model"])
 		})
 	}
 	require.False(t, adapter.Compatible(VideoModelSeedance20Fast, VideoResolution720P))
@@ -289,7 +289,7 @@ func TestNormalizeVideoCreateRequestRejectsFast1080P(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid_video_resolution")
 }
 
-func TestNormalizeVideoCreateRequestSupportsSeedance25AigodContract(t *testing.T) {
+func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testing.T) {
 	req := &VideoCreateRequest{
 		Model:       VideoModelSeedance25,
 		Prompt:      "bring the portrait to life",
@@ -317,7 +317,11 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25AigodContract(t *testing.T
 	require.True(t, adapter.Compatible(VideoModelSeedance25, VideoResolution720P))
 	require.False(t, adapter.Compatible(VideoModelSeedance25, VideoResolution1080P))
 	require.False(t, adapter.Compatible(VideoModelSeedance25, VideoResolution4K))
-	require.False(t, (jingyuVideoProviderAdapter{}).Compatible(VideoModelSeedance25, VideoResolution720P))
+	jingyuAdapter := jingyuVideoProviderAdapter{}
+	require.True(t, jingyuAdapter.Compatible(VideoModelSeedance25, VideoResolution480P))
+	require.True(t, jingyuAdapter.Compatible(VideoModelSeedance25, VideoResolution720P))
+	require.False(t, jingyuAdapter.Compatible(VideoModelSeedance25, VideoResolution1080P))
+	require.False(t, jingyuAdapter.Compatible(VideoModelSeedance25, VideoResolution4K))
 
 	body := adapter.BuildCreateBody(normalized, adapter.UpstreamModel(nil, normalized))
 	require.Equal(t, "seedance-2.5-720p", body["model"])
@@ -326,6 +330,17 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25AigodContract(t *testing.T
 	content := body["content"].([]map[string]any)
 	require.Len(t, content, 2)
 	require.Equal(t, "person", content[1]["subject_type"])
+
+	jingyuBody := jingyuAdapter.BuildCreateBody(normalized, jingyuAdapter.UpstreamModel(nil, normalized))
+	require.Equal(t, "yu-video-2.5-pro", jingyuBody["model"])
+	require.Equal(t, VideoResolution720P, jingyuBody["resolution"])
+	require.Equal(t, "auto", jingyuBody["aspect_ratio"])
+	require.Equal(t, 5, jingyuBody["duration"])
+	require.NotContains(t, jingyuBody, "content")
+	references := jingyuBody["references"].([]map[string]any)
+	require.Len(t, references, 1)
+	require.Equal(t, "image", references[0]["type"])
+	require.Equal(t, "first_frame", references[0]["role"])
 }
 
 func TestNormalizeVideoCreateRequestSupportsSeedance25DurationAndRatioLimits(t *testing.T) {
@@ -903,7 +918,7 @@ func TestVideoServiceCreateTaskUsesJingyuProviderPayload(t *testing.T) {
 		},
 		Credentials: map[string]any{
 			"api_key":       "sk-test",
-			"model_mapping": map[string]any{VideoModelSeedance20: videoJingyuSeedanceModel},
+			"model_mapping": map[string]any{VideoModelSeedance20: videoJingyuSeedance20Model},
 		},
 	}
 	taskRepo := newVideoTaskMemoryRepo()
@@ -953,7 +968,7 @@ func TestVideoServiceCreateTaskUsesJingyuProviderPayload(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.ID)
-	require.Equal(t, videoJingyuSeedanceModel, lifecycle.UpstreamBody["model"])
+	require.Equal(t, videoJingyuSeedance20Model, lifecycle.UpstreamBody["model"])
 	require.Equal(t, "9:16", lifecycle.UpstreamBody["aspect_ratio"])
 	require.Equal(t, VideoResolution720P, lifecycle.UpstreamBody["resolution"])
 	require.NotContains(t, lifecycle.UpstreamBody, "content")
@@ -967,7 +982,7 @@ func TestVideoServiceCreateTaskUsesJingyuProviderPayload(t *testing.T) {
 
 	task, err := taskRepo.GetByPublicID(context.Background(), resp.ID)
 	require.NoError(t, err)
-	require.Equal(t, videoJingyuSeedanceModel, task.UpstreamModel)
+	require.Equal(t, videoJingyuSeedance20Model, task.UpstreamModel)
 	require.Empty(t, task.RequestJSON)
 	require.Empty(t, task.UpstreamResponseJSON)
 }
@@ -1034,7 +1049,7 @@ func TestVideoServiceCreateTaskUsesManualVideoModelMapping(t *testing.T) {
 	require.Equal(t, "custom-video-upstream-model", task.UpstreamModel)
 }
 
-func TestVideoAccountCompatibilityUsesJingyuForSupportedBaseModelOnly(t *testing.T) {
+func TestVideoAccountCompatibilityUsesJingyuForSupportedModels(t *testing.T) {
 	groupID := int64(20)
 	jingyu := Account{
 		ID:          30,
@@ -1045,8 +1060,11 @@ func TestVideoAccountCompatibilityUsesJingyuForSupportedBaseModelOnly(t *testing
 		Priority:    1,
 		Extra:       map[string]any{"video_provider": videoProviderJingyu},
 		Credentials: map[string]any{
-			"api_key":       "sk-jingyu",
-			"model_mapping": map[string]any{VideoModelSeedance20: videoJingyuSeedanceModel},
+			"api_key": "sk-jingyu",
+			"model_mapping": map[string]any{
+				VideoModelSeedance20: videoJingyuSeedance20Model,
+				VideoModelSeedance25: videoJingyuSeedance25Model,
+			},
 		},
 	}
 	aigod := Account{
@@ -1089,9 +1107,18 @@ func TestVideoAccountCompatibilityUsesJingyuForSupportedBaseModelOnly(t *testing
 		require.Equal(t, jingyu.ID, selected.ID)
 	}
 
+	for _, resolution := range []string{VideoResolution480P, VideoResolution720P} {
+		selected, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance25, resolution, false)
+		require.NoError(t, err)
+		require.Equal(t, jingyu.ID, selected.ID)
+	}
+
+	_, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance25, VideoResolution1080P, false)
+	require.ErrorIs(t, err, ErrVideoAccountNotFound)
+
 	require.False(t, isVideoAccountCompatible(&aigod, VideoModelSeedance20, VideoResolution4K))
 
-	_, err := service.selectAccount(context.Background(), groupID, VideoModelSeedance20Fast, VideoResolution720P, false)
+	_, err = service.selectAccount(context.Background(), groupID, VideoModelSeedance20Fast, VideoResolution720P, false)
 	require.ErrorIs(t, err, ErrVideoAccountNotFound)
 }
 
@@ -1127,7 +1154,7 @@ func TestVideoServiceParsesJingyuTaskIDAndResultURL(t *testing.T) {
 	}
 	service := &VideoService{}
 
-	created, err := service.createUpstreamTask(context.Background(), account, map[string]any{"model": videoJingyuSeedanceModel})
+	created, err := service.createUpstreamTask(context.Background(), account, map[string]any{"model": videoJingyuSeedance20Model})
 	require.NoError(t, err)
 	require.Equal(t, "jingyu-task-1", created.ID)
 

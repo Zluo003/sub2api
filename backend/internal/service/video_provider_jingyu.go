@@ -17,12 +17,16 @@ func (j jingyuVideoProviderAdapter) DefaultAPIPath() string {
 }
 
 func (j jingyuVideoProviderAdapter) Compatible(model, resolution string) bool {
-	if strings.TrimSpace(model) != VideoModelSeedance20 {
-		return false
-	}
-	switch strings.TrimSpace(resolution) {
-	case VideoResolution480P, VideoResolution720P, VideoResolution1080P, VideoResolution4K:
-		return true
+	model = strings.TrimSpace(model)
+	resolution = strings.TrimSpace(resolution)
+	switch model {
+	case VideoModelSeedance20:
+		return resolution == VideoResolution480P ||
+			resolution == VideoResolution720P ||
+			resolution == VideoResolution1080P ||
+			resolution == VideoResolution4K
+	case VideoModelSeedance25:
+		return resolution == VideoResolution480P || resolution == VideoResolution720P
 	default:
 		return false
 	}
@@ -35,7 +39,7 @@ func (j jingyuVideoProviderAdapter) UpstreamModel(account *Account, normalized *
 	if mappedModel := resolvedMappedVideoModel(account, normalized.Model); mappedModel != "" {
 		return mappedModel
 	}
-	return videoJingyuSeedanceModel
+	return defaultJingyuUpstreamModel(normalized.Model)
 }
 
 func (j jingyuVideoProviderAdapter) BuildCreateBody(normalized *normalizedVideoRequest, upstreamModel string) map[string]any {

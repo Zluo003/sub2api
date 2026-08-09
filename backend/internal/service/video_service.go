@@ -29,7 +29,8 @@ const (
 	videoDefaultAPIPath          = "/v1/videos"
 	videoDefaultJingyuBaseURL    = "https://api.jingyuapi.art"
 	videoDefaultJingyuAPIPath    = "/v1/video/generations"
-	videoJingyuSeedanceModel     = "jing-video-2-pro"
+	videoJingyuSeedance20Model   = "yu-video-2-pro"
+	videoJingyuSeedance25Model   = "yu-video-2.5-pro"
 	videoDefaultPollInterval     = 2 * time.Second
 	videoDefaultPollTimeout      = 5 * time.Minute
 	videoDefaultRequestTimeout   = 60 * time.Second
@@ -1051,7 +1052,7 @@ func (r *normalizedVideoRequest) UpstreamBody(upstreamModel string) map[string]a
 func (r *normalizedVideoRequest) JingyuUpstreamBody(upstreamModel string) map[string]any {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if upstreamModel == "" {
-		upstreamModel = videoJingyuSeedanceModel
+		upstreamModel = defaultJingyuUpstreamModel(r.Model)
 	}
 	body := map[string]any{
 		"model":        upstreamModel,
@@ -1361,6 +1362,17 @@ func validateVideoEstimatedCost(apiKey *APIKey, subscription *UserSubscription, 
 
 func SeedanceUpstreamModel(model, resolution string) string {
 	return strings.TrimSpace(model) + "-" + strings.TrimSpace(resolution)
+}
+
+func defaultJingyuUpstreamModel(model string) string {
+	switch strings.TrimSpace(model) {
+	case VideoModelSeedance25:
+		return videoJingyuSeedance25Model
+	case VideoModelSeedance20:
+		return videoJingyuSeedance20Model
+	default:
+		return ""
+	}
 }
 
 func videoUpstreamModelForAccount(account *Account, normalized *normalizedVideoRequest) string {

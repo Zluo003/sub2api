@@ -3893,7 +3893,10 @@ const applyVideoProviderModelDefaults = () => {
   if (videoProvider.value === 'jingyu') {
     modelRestrictionMode.value = 'mapping'
     allowedModels.value = []
-    modelMappings.value = [{ from: 'seedance-2.0', to: 'jing-video-2-pro' }]
+    modelMappings.value = [
+      { from: 'seedance-2.0', to: 'yu-video-2-pro' },
+      { from: 'seedance-2.5', to: 'yu-video-2.5-pro' }
+    ]
     return
   }
   modelRestrictionMode.value = 'whitelist'
