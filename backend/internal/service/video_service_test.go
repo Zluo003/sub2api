@@ -327,7 +327,8 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testi
 	require.Equal(t, "seedance-2.5-720p", body["model"])
 	require.Equal(t, 5, body["duration"])
 	require.Equal(t, "auto", body["ratio"])
-	content := body["content"].([]map[string]any)
+	content, ok := body["content"].([]map[string]any)
+	require.True(t, ok)
 	require.Len(t, content, 2)
 	require.Equal(t, "person", content[1]["subject_type"])
 
@@ -337,7 +338,8 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testi
 	require.Equal(t, "auto", jingyuBody["aspect_ratio"])
 	require.Equal(t, 5, jingyuBody["duration"])
 	require.NotContains(t, jingyuBody, "content")
-	references := jingyuBody["references"].([]map[string]any)
+	references, ok := jingyuBody["references"].([]map[string]any)
+	require.True(t, ok)
 	require.Len(t, references, 1)
 	require.Equal(t, "image", references[0]["type"])
 	require.Equal(t, "first_frame", references[0]["role"])
@@ -464,7 +466,8 @@ func TestNormalizeVideoCreateRequestEnforcesSeedance25ReferenceLimits(t *testing
 	require.Contains(t, err.Error(), "invalid_video_content")
 
 	videoBody := normalized.UpstreamBody(SeedanceUpstreamModel(normalized.Model, normalized.Resolution))
-	references := videoBody["content"].([]map[string]any)
+	references, ok := videoBody["content"].([]map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "person", references[31]["subject_type"])
 }
 
