@@ -36,7 +36,9 @@ const (
 	videoDefaultConnectTimeout   = 15 * time.Second
 	videoMinDurationSeconds      = 4
 	videoMaxDurationSeconds      = 15
+	videoSeedance25MaxDuration   = 30
 	videoMaxReferenceVideoTotal  = 15
+	videoSeedance25MaxReferences = 50
 	videoPublicIDPrefix          = "video_"
 	videoObject                  = "video"
 	videoAbilityTextToVideo      = "video_text_to_video"
@@ -937,7 +939,7 @@ func normalizeAgentVideoCreateRequest(req *VideoCreateRequest) (*normalizedVideo
 
 func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynamicModel bool) (*normalizedVideoRequest, error) {
 	model := strings.TrimSpace(req.Model)
-	if model == "" || (!dynamicModel && model != VideoModelSeedance20 && model != VideoModelSeedance20Fast) {
+	if model == "" || (!dynamicModel && model != VideoModelSeedance20 && model != VideoModelSeedance20Fast && model != VideoModelSeedance25) {
 		return nil, videoBadRequest("invalid_video_model", "Invalid video model")
 	}
 	resolution := strings.TrimSpace(req.Resolution)
@@ -950,11 +952,21 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 		if err != nil {
 			return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 		}
+		if model == VideoModelSeedance25 && !IsSupportedVideoResolution(model, resolution) {
+			return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
+		}
 	} else if !IsSupportedVideoResolution(model, resolution) {
 		return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 	}
 	duration := req.Duration
-	if duration != math.Trunc(duration) || duration < videoMinDurationSeconds || duration > videoMaxDurationSeconds {
+	maxDuration := float64(videoMaxDurationSeconds)
+	if model == VideoModelSeedance25 {
+		if duration == -1 {
+			duration = 5
+		}
+		maxDuration = videoSeedance25MaxDuration
+	}
+	if duration != math.Trunc(duration) || duration < videoMinDurationSeconds || duration > maxDuration {
 		return nil, videoBadRequest("invalid_video_duration", "Invalid video duration")
 	}
 	generatedSeconds := int(math.Ceil(duration))
@@ -979,14 +991,26 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 	if !isValidVideoAbility(ability) {
 		return nil, videoBadRequest("invalid_video_ability", "Invalid video ability")
 	}
-	if err := validateVideoAbilityInput(ability, prompt, stats); err != nil {
+	if err := validateVideoAbilityInput(model, ability, prompt, stats); err != nil {
 		return nil, err
 	}
-	referenceSeconds, err := referenceVideoSeconds(content)
+	referenceSeconds, err := referenceVideoSeconds(model, content)
 	if err != nil {
 		return nil, err
 	}
 	ratio := firstNonEmptyVideoString(req.Ratio, req.AspectRatio, req.AspectRatioCamel)
+	if model == VideoModelSeedance25 {
+		ratio = strings.ToLower(strings.TrimSpace(ratio))
+		if ratio == "adaptive" {
+			ratio = "auto"
+		}
+		if ratio == "" && (ability == videoAbilityImageToVideo || ability == videoAbilityStartEndToVideo) {
+			ratio = "auto"
+		}
+		if ratio != "" && !isSeedance25Ratio(ratio) {
+			return nil, videoBadRequest("invalid_video_ratio", "Invalid video ratio")
+		}
+	}
 	if ratio == "" {
 		ratio = "16:9"
 	}
@@ -1135,7 +1159,7 @@ func isValidVideoAbility(ability string) bool {
 	}
 }
 
-func validateVideoAbilityInput(ability, prompt string, stats videoContentStats) error {
+func validateVideoAbilityInput(model, ability, prompt string, stats videoContentStats) error {
 	switch ability {
 	case videoAbilityTextToVideo:
 		if strings.TrimSpace(prompt) == "" {
@@ -1159,6 +1183,16 @@ func validateVideoAbilityInput(ability, prompt string, stats videoContentStats) 
 			return videoBadRequest("invalid_video_content", "Start-end video cannot include video or audio references")
 		}
 	case videoAbilityReferenceToVideo:
+		if model == VideoModelSeedance25 {
+			referenceCount := stats.ImageCount + stats.VideoCount + stats.AudioCount
+			if stats.ImageCount > 30 || stats.VideoCount > 10 || stats.AudioCount > 10 || referenceCount > videoSeedance25MaxReferences {
+				return videoBadRequest("invalid_video_content", "Seedance 2.5 reference video requests support up to 30 images, 10 videos, 10 audio files, and 50 total media references")
+			}
+			if referenceCount == 0 {
+				return videoBadRequest("invalid_video_content", "Seedance 2.5 reference video requests require at least one image, video, or audio reference")
+			}
+			break
+		}
 		if stats.ImageCount > 9 || stats.VideoCount > 3 || stats.AudioCount > 3 {
 			return videoBadRequest("invalid_video_content", "Reference video requests support up to 9 images, 3 videos, and 3 audio files")
 		}
@@ -1169,7 +1203,13 @@ func validateVideoAbilityInput(ability, prompt string, stats videoContentStats) 
 	return nil
 }
 
-func referenceVideoSeconds(content []VideoContent) (int, error) {
+func referenceVideoSeconds(model string, content []VideoContent) (int, error) {
+	maxDuration := float64(videoMaxDurationSeconds)
+	maxTotal := videoMaxReferenceVideoTotal
+	if model == VideoModelSeedance25 {
+		maxDuration = videoSeedance25MaxDuration
+		maxTotal = videoSeedance25MaxDuration
+	}
 	total := 0
 	for _, item := range content {
 		if item.Type != "video_url" || (item.Role != "" && item.Role != "reference_video") {
@@ -1178,15 +1218,24 @@ func referenceVideoSeconds(content []VideoContent) (int, error) {
 		if item.DurationSeconds == nil || *item.DurationSeconds <= 0 {
 			return 0, videoBadRequest("reference_video_duration_required", "Reference video duration is required")
 		}
-		if *item.DurationSeconds < 2 || *item.DurationSeconds > 15 {
+		if *item.DurationSeconds < 2 || *item.DurationSeconds > maxDuration {
 			return 0, videoBadRequest("invalid_reference_video_duration", "Invalid reference video duration")
 		}
 		total += int(math.Ceil(*item.DurationSeconds))
-		if total > videoMaxReferenceVideoTotal {
+		if total > maxTotal {
 			return 0, videoBadRequest("invalid_reference_video_duration", "Invalid reference video duration")
 		}
 	}
 	return total, nil
+}
+
+func isSeedance25Ratio(ratio string) bool {
+	switch strings.TrimSpace(strings.ToLower(ratio)) {
+	case "auto", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9":
+		return true
+	default:
+		return false
+	}
 }
 
 func videoContentForUpstream(content []VideoContent, prompt string) []map[string]any {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -288,6 +289,208 @@ func TestNormalizeVideoCreateRequestRejectsFast1080P(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid_video_resolution")
 }
 
+func TestNormalizeVideoCreateRequestSupportsSeedance25AigodContract(t *testing.T) {
+	req := &VideoCreateRequest{
+		Model:       VideoModelSeedance25,
+		Prompt:      "bring the portrait to life",
+		Duration:    -1,
+		Resolution:  VideoResolution720P,
+		AspectRatio: "adaptive",
+		Content: []VideoContent{
+			{
+				Type:     "image_url",
+				Role:     "first_frame",
+				ImageURL: &VideoContentURL{URL: "https://cdn.example.com/person.png"},
+			},
+		},
+	}
+
+	normalized, err := normalizeVideoCreateRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, VideoModelSeedance25, normalized.Model)
+	require.Equal(t, 5, normalized.GeneratedSeconds)
+	require.Equal(t, float64(5), normalized.Duration)
+	require.Equal(t, "auto", normalized.Ratio)
+	require.Equal(t, videoAbilityImageToVideo, normalized.AbilityCode)
+
+	adapter := aigodVideoProviderAdapter{}
+	require.True(t, adapter.Compatible(VideoModelSeedance25, VideoResolution720P))
+	require.False(t, adapter.Compatible(VideoModelSeedance25, VideoResolution1080P))
+	require.False(t, adapter.Compatible(VideoModelSeedance25, VideoResolution4K))
+	require.False(t, (jingyuVideoProviderAdapter{}).Compatible(VideoModelSeedance25, VideoResolution720P))
+
+	body := adapter.BuildCreateBody(normalized, adapter.UpstreamModel(nil, normalized))
+	require.Equal(t, "seedance-2.5-720p", body["model"])
+	require.Equal(t, 5, body["duration"])
+	require.Equal(t, "auto", body["ratio"])
+	content := body["content"].([]map[string]any)
+	require.Len(t, content, 2)
+	require.Equal(t, "person", content[1]["subject_type"])
+}
+
+func TestNormalizeVideoCreateRequestSupportsSeedance25DurationAndRatioLimits(t *testing.T) {
+	for _, duration := range []float64{4, 30} {
+		normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+			Model:      VideoModelSeedance25,
+			Prompt:     "a cinematic shot",
+			Duration:   duration,
+			Resolution: VideoResolution480P,
+			Ratio:      "21:9",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int(duration), normalized.GeneratedSeconds)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		duration   float64
+		resolution string
+		ratio      string
+	}{
+		{name: "duration too short", duration: 3, resolution: VideoResolution720P, ratio: "16:9"},
+		{name: "duration too long", duration: 31, resolution: VideoResolution720P, ratio: "16:9"},
+		{name: "fractional duration", duration: 4.5, resolution: VideoResolution720P, ratio: "16:9"},
+		{name: "unsupported 1080p", duration: 5, resolution: VideoResolution1080P, ratio: "16:9"},
+		{name: "unsupported 4K", duration: 5, resolution: VideoResolution4K, ratio: "16:9"},
+		{name: "unsupported ratio", duration: 5, resolution: VideoResolution720P, ratio: "2:1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+				Model:      VideoModelSeedance25,
+				Prompt:     "a cinematic shot",
+				Duration:   tc.duration,
+				Resolution: tc.resolution,
+				Ratio:      tc.ratio,
+			})
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestNormalizeVideoCreateRequestSupportsSeedance25AudioOnlyReference(t *testing.T) {
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model:       VideoModelSeedance25,
+		Prompt:      "follow the music rhythm",
+		Duration:    8,
+		Resolution:  VideoResolution480P,
+		AbilityCode: videoAbilityReferenceToVideo,
+		Content: []VideoContent{
+			{
+				Type:     "audio_url",
+				Role:     "reference_audio",
+				AudioURL: &VideoContentURL{URL: "https://cdn.example.com/music.mp3"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, videoAbilityReferenceToVideo, normalized.AbilityCode)
+
+	_, err = normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model:       VideoModelSeedance25,
+		Prompt:      "missing reference",
+		Duration:    8,
+		Resolution:  VideoResolution480P,
+		AbilityCode: videoAbilityReferenceToVideo,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_content")
+}
+
+func TestNormalizeVideoCreateRequestEnforcesSeedance25ReferenceLimits(t *testing.T) {
+	content := make([]VideoContent, 0, 50)
+	for index := 0; index < 30; index++ {
+		content = append(content, VideoContent{
+			Type:     "image_url",
+			Role:     "reference_image",
+			ImageURL: &VideoContentURL{URL: fmt.Sprintf("https://cdn.example.com/image-%d.png", index)},
+		})
+	}
+	for index := 0; index < 10; index++ {
+		content = append(content, VideoContent{
+			Type:            "video_url",
+			Role:            "reference_video",
+			VideoURL:        &VideoContentURL{URL: fmt.Sprintf("https://cdn.example.com/video-%d.mp4", index)},
+			DurationSeconds: float64PtrForVideoTest(3),
+		})
+	}
+	for index := 0; index < 10; index++ {
+		content = append(content, VideoContent{
+			Type:     "audio_url",
+			Role:     "reference_audio",
+			AudioURL: &VideoContentURL{URL: fmt.Sprintf("https://cdn.example.com/audio-%d.mp3", index)},
+		})
+	}
+
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model:       VideoModelSeedance25,
+		Prompt:      "use all references",
+		Duration:    30,
+		Resolution:  VideoResolution720P,
+		AbilityCode: videoAbilityReferenceToVideo,
+		Content:     content,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 30, normalized.ReferenceVideoSeconds)
+
+	tooManyImages := append(append([]VideoContent{}, content...), VideoContent{
+		Type:     "image_url",
+		Role:     "reference_image",
+		ImageURL: &VideoContentURL{URL: "https://cdn.example.com/image-overflow.png"},
+	})
+	_, err = normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model:       VideoModelSeedance25,
+		Prompt:      "too many references",
+		Duration:    8,
+		Resolution:  VideoResolution720P,
+		AbilityCode: videoAbilityReferenceToVideo,
+		Content:     tooManyImages,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_content")
+
+	videoBody := normalized.UpstreamBody(SeedanceUpstreamModel(normalized.Model, normalized.Resolution))
+	references := videoBody["content"].([]map[string]any)
+	require.Equal(t, "person", references[31]["subject_type"])
+}
+
+func TestNormalizeVideoCreateRequestEnforcesSeedance25ReferenceVideoDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		durations []float64
+		wantError bool
+	}{
+		{name: "thirty seconds total", durations: []float64{15, 15}},
+		{name: "over thirty seconds total", durations: []float64{15, 16}, wantError: true},
+		{name: "single video over thirty seconds", durations: []float64{31}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := make([]VideoContent, 0, len(tc.durations))
+			for index, duration := range tc.durations {
+				content = append(content, VideoContent{
+					Type:            "video_url",
+					Role:            "reference_video",
+					VideoURL:        &VideoContentURL{URL: fmt.Sprintf("https://cdn.example.com/ref-%d.mp4", index)},
+					DurationSeconds: float64PtrForVideoTest(duration),
+				})
+			}
+			_, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+				Model:       VideoModelSeedance25,
+				Prompt:      "follow the references",
+				Duration:    8,
+				Resolution:  VideoResolution720P,
+				AbilityCode: videoAbilityReferenceToVideo,
+				Content:     content,
+			})
+			if tc.wantError {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "invalid_reference_video_duration")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestNormalizeVideoPricingRulesAllowsOnlyBaseSeedance1080P(t *testing.T) {
 	rules, err := normalizeVideoPricingRules([]VideoGroupPricingRule{
 		{
@@ -309,6 +512,21 @@ func TestNormalizeVideoPricingRulesAllowsOnlyBaseSeedance1080P(t *testing.T) {
 			CreditsPerSecond: 1.5,
 			Enabled:          true,
 		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_resolution")
+}
+
+func TestNormalizeVideoPricingRulesSupportsSeedance25OnlyAt480PAnd720P(t *testing.T) {
+	rules, err := normalizeVideoPricingRules([]VideoGroupPricingRule{
+		{ModelCode: VideoModelSeedance25, Resolution: VideoResolution480P, CreditsPerSecond: 1, Enabled: true},
+		{ModelCode: VideoModelSeedance25, Resolution: VideoResolution720P, CreditsPerSecond: 2, Enabled: true},
+	})
+	require.NoError(t, err)
+	require.Len(t, rules, 2)
+
+	_, err = normalizeVideoPricingRules([]VideoGroupPricingRule{
+		{ModelCode: VideoModelSeedance25, Resolution: VideoResolution1080P, CreditsPerSecond: 3, Enabled: true},
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid_video_resolution")

@@ -490,9 +490,21 @@ func TestAgentCapabilitiesAdvertisePerModelMediaOptions(t *testing.T) {
 		[]string{service.PlatformSeedance},
 		[]string{service.AgentInterfaceSeedanceVideos},
 	)
+	seedance25 := agentCapabilitiesForModel(
+		service.VideoModelSeedance25,
+		[]string{service.AgentMediaTypeVideo},
+		[]string{service.PlatformSeedance},
+		[]string{service.AgentInterfaceSeedanceVideos},
+	)
 	require.Equal(t, []string{"480p", "720p", "1080p", "4K"}, standard.SupportedVideoResolutions)
 	require.Equal(t, []string{"480p", "720p"}, fast.SupportedVideoResolutions)
 	require.Equal(t, []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, standard.SupportedVideoDurationsSec)
+	require.Equal(t, []string{"480p", "720p"}, seedance25.SupportedVideoResolutions)
+	require.Len(t, seedance25.SupportedVideoDurationsSec, 27)
+	require.Equal(t, 4, seedance25.SupportedVideoDurationsSec[0])
+	require.Equal(t, 30, seedance25.SupportedVideoDurationsSec[len(seedance25.SupportedVideoDurationsSec)-1])
+	require.Contains(t, seedance25.SupportedAspectRatios, "auto")
+	require.Equal(t, 30, seedance25.MaxInputImages)
 	require.NotNil(t, standard.SupportsVideoAudio)
 	require.True(t, *standard.SupportsVideoAudio)
 }

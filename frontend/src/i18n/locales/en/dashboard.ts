@@ -521,7 +521,8 @@ export default {
       perRequestPrice: 'Per Request',
       intervals: 'Tiered Pricing',
       unitPerMillion: '/ 1M tokens',
-      unitPerRequest: '/ request'
+      unitPerRequest: '/ request',
+      unitPerSecond: '/ second'
     }
   },
 
@@ -564,8 +565,12 @@ export default {
       unitPerMillion: '$ / 1M tokens',
       perUnitRequest: '/ request',
       perUnitImage: '/ image',
+      perUnitSecond: '/ second',
       perRequest: 'Per request',
-      perImage: 'Per image'
+      perImage: 'Per image',
+      perSecond: 'By resolution / second',
+      videoDisplayOnly: 'Channel display price; actual billing uses group video rules',
+      groupBilling: 'Group rules'
     },
     nav: {
       login: 'Sign In',

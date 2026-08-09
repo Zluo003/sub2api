@@ -28,7 +28,7 @@ export default {
   },
   modelPlaza: {
     title: 'Model Plaza',
-    description: 'Models and standard prices are collected automatically from channel pricing. Final billing also applies the group multiplier selected by the API key.',
+    description: 'Models and standard prices are collected from channel pricing. Language and image billing applies the relevant group rate; video channel prices are display-only and actual video billing follows the group video rules.',
     models: 'models',
     search: 'Search models',
     searchPlaceholder: 'Model, vendor, or capability...',
@@ -58,10 +58,6 @@ export default {
       per_request: 'Per request',
       image: 'Per image',
       video_duration: 'Per video second',
-    },
-  },
-  availableChannels: {
-    pricing: {
     },
   },
   admin: {
@@ -141,6 +137,7 @@ export default {
     availableChannels: {
       pricing: {
         billingModeVideo: 'Per Video Second',
+        unitPerSecond: '/ second',
       },
     },
     channels: {

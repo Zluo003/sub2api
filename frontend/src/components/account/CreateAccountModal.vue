@@ -3874,7 +3874,7 @@ const syncPreviewCredentials = computed(() => {
   }
 })
 
-const videoDefaultModels = ['seedance-2.0', 'seedance-2.0-fast']
+const videoDefaultModels = ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.5']
 
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)

@@ -326,6 +326,22 @@ func TestCalculateStatsCost_ImageBilling_PriceNil(t *testing.T) {
 	require.Nil(t, result)
 }
 
+func TestCalculateStatsCost_SeedanceChannelPricingIsDisplayOnly(t *testing.T) {
+	for _, mode := range []BillingMode{BillingModeToken, BillingModePerRequest, BillingModeVideoDuration} {
+		t.Run(string(mode), func(t *testing.T) {
+			pricing := &ChannelModelPricing{
+				Platform:        PlatformSeedance,
+				BillingMode:     mode,
+				InputPrice:      testPtrFloat64(0.001),
+				OutputPrice:     testPtrFloat64(0.002),
+				PerRequestPrice: testPtrFloat64(0.05),
+			}
+			result := calculateStatsCost(pricing, UsageTokens{InputTokens: 100, OutputTokens: 50}, 3)
+			require.Nil(t, result)
+		})
+	}
+}
+
 func TestCalculateStatsCost_DefaultBillingMode_FallsToToken(t *testing.T) {
 	// BillingMode is empty string (default) → falls into token billing
 	pricing := &ChannelModelPricing{

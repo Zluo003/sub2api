@@ -224,6 +224,57 @@ describe('PlazaModelPricingTable', () => {
     expect(text).toContain('modelPlaza.table.perUnitRequest')
   })
 
+  it('视频按分辨率/秒展示渠道原价,不乘分组倍率,并标明实际按分组规则扣费', () => {
+    const model = tokenModel({
+      name: 'seedance-2.0',
+      platform: 'seedance',
+      pricing: {
+        billing_mode: 'video_duration',
+        input_price: null,
+        output_price: null,
+        cache_write_price: null,
+        cache_read_price: null,
+        image_input_price: null,
+        image_output_price: null,
+        per_request_price: null,
+        intervals: [
+          {
+            min_tokens: 0,
+            max_tokens: null,
+            tier_label: '480p',
+            input_price: null,
+            output_price: null,
+            cache_write_price: null,
+            cache_read_price: null,
+            per_request_price: 0.04
+          },
+          {
+            min_tokens: 0,
+            max_tokens: null,
+            tier_label: '720p',
+            input_price: null,
+            output_price: null,
+            cache_write_price: null,
+            cache_read_price: null,
+            per_request_price: 0.06
+          }
+        ]
+      },
+      official_pricing: null
+    })
+
+    const wrapper = mountTable([model], 0.5)
+    const text = wrapper.text()
+    expect(text).toContain('480p')
+    expect(text).toContain('$0.04')
+    expect(text).toContain('720p')
+    expect(text).toContain('$0.06')
+    expect(text).not.toContain('$0.02')
+    expect(text).toContain('modelPlaza.table.perUnitSecond')
+    expect(text).toContain('modelPlaza.table.videoDisplayOnly')
+    expect(wrapper.findAll('tbody tr td').at(-1)?.text()).toBe('modelPlaza.table.groupBilling')
+  })
+
   it('token 模型阶梯定价内联进输入/输出列,按倍率折算', () => {
     const model = tokenModel({
       pricing: {

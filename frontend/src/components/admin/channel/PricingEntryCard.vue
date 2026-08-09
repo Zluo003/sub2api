@@ -226,6 +226,35 @@
             />
           </div>
         </div>
+
+        <!-- Video duration display-pricing mode -->
+        <div v-else-if="entry.billing_mode === 'video_duration'">
+          <div class="mt-3 rounded-md border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs leading-5 text-cyan-800 dark:border-cyan-900/60 dark:bg-cyan-950/20 dark:text-cyan-300">
+            {{ t('admin.channels.form.videoDisplayPricingHint') }}
+          </div>
+          <div class="mt-3 flex items-center justify-between">
+            <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
+              {{ t('admin.channels.form.videoResolutionPrices') }}
+              <span class="ml-1 font-normal text-gray-400">$/{{ t('admin.channels.form.second') }}</span>
+            </label>
+            <button type="button" @click="addVideoResolution" class="text-xs text-primary-600 hover:text-primary-700">
+              + {{ t('admin.channels.form.addResolution') }}
+            </button>
+          </div>
+          <div v-if="entry.intervals && entry.intervals.length > 0" class="mt-2 space-y-2">
+            <IntervalRow
+              v-for="(iv, idx) in entry.intervals"
+              :key="idx"
+              :interval="iv"
+              :mode="entry.billing_mode"
+              @update="updateInterval(idx, $event)"
+              @remove="removeInterval(idx)"
+            />
+          </div>
+          <div v-else class="mt-2 rounded border border-dashed border-gray-300 p-3 text-center text-xs text-gray-400 dark:border-dark-500">
+            {{ t('admin.channels.form.noVideoResolutionPrices') }}
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -261,8 +290,10 @@ const collapsed = ref(props.entry.models.length > 0)
 const billingModeOptions = computed(() => [
   { value: 'token', label: t('admin.channels.billingMode.token') },
   { value: 'per_request', label: t('admin.channels.billingMode.perRequest') },
-  { value: 'image', label: t('admin.channels.billingMode.image') }
-])
+  ...(props.platform === 'seedance'
+    ? [{ value: 'video_duration', label: t('admin.channels.billingMode.videoDuration') }]
+    : [{ value: 'image', label: t('admin.channels.billingMode.image') }])
+] as Array<{ value: BillingMode; label: string }>)
 
 const billingModeLabel = computed(() => {
   const opt = billingModeOptions.value.find(o => o.value === props.entry.billing_mode)
@@ -289,6 +320,19 @@ function addImageTier() {
   const labels = ['1K', '2K', '4K', 'HD']
   intervals.push({
     min_tokens: 0, max_tokens: null, tier_label: labels[intervals.length] || '',
+    input_price: null, output_price: null, cache_write_price: null,
+    cache_read_price: null, per_request_price: null,
+    sort_order: intervals.length
+  })
+  emit('update', { ...props.entry, intervals })
+}
+
+function addVideoResolution() {
+  const intervals = [...(props.entry.intervals || [])]
+  const configured = new Set(intervals.map(iv => iv.tier_label.toLowerCase()))
+  const resolution = ['480p', '720p', '1080p', '4K'].find(label => !configured.has(label.toLowerCase())) || '480p'
+  intervals.push({
+    min_tokens: 0, max_tokens: null, tier_label: resolution,
     input_price: null, output_price: null, cache_write_price: null,
     cache_read_price: null, per_request_price: null,
     sort_order: intervals.length

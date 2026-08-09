@@ -72,6 +72,31 @@ func TestGetIntervalPricing_NoIntervals(t *testing.T) {
 	require.Equal(t, basePricing, result)
 }
 
+func TestResolve_IgnoresSeedanceChannelDisplayPricing(t *testing.T) {
+	videoPrice := 0.04
+	channel := Channel{
+		ID:       1,
+		Status:   StatusActive,
+		GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{{
+			Platform:    PlatformSeedance,
+			Models:      []string{"seedance-2.0"},
+			BillingMode: BillingModeVideoDuration,
+			Intervals:   []PricingInterval{{TierLabel: "480p", PerRequestPrice: &videoPrice}},
+		}},
+	}
+	repo := makeStandardRepo(channel, map[int64]string{10: PlatformSeedance})
+	cs := newTestChannelService(repo)
+	bs := newTestBillingServiceForResolver()
+	r := NewModelPricingResolver(cs, bs)
+	groupID := int64(10)
+
+	resolved := r.Resolve(context.Background(), PricingInput{Model: "seedance-2.0", GroupID: &groupID})
+	require.NotNil(t, resolved)
+	require.NotEqual(t, BillingModeVideoDuration, resolved.Mode)
+	require.NotEqual(t, PricingSourceChannel, resolved.Source)
+}
+
 func TestGetIntervalPricing_MatchesInterval(t *testing.T) {
 	bs := newTestBillingServiceForResolver()
 	r := NewModelPricingResolver(&ChannelService{}, bs)

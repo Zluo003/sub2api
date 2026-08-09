@@ -526,7 +526,8 @@ export default {
       perRequestPrice: '每次请求',
       intervals: '阶梯定价',
       unitPerMillion: '/ 1M token',
-      unitPerRequest: '/ 次'
+      unitPerRequest: '/ 次',
+      unitPerSecond: '/ 秒'
     }
   },
 
@@ -569,8 +570,12 @@ export default {
       unitPerMillion: '$ / 1M token',
       perUnitRequest: '/ 次',
       perUnitImage: '/ 张',
+      perUnitSecond: '/ 秒',
       perRequest: '按次计费',
-      perImage: '按图片计费'
+      perImage: '按图片计费',
+      perSecond: '按分辨率/秒',
+      videoDisplayOnly: '渠道展示价；实际扣费按分组视频规则',
+      groupBilling: '分组规则'
     },
     nav: {
       login: '登录',

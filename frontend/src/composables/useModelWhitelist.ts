@@ -162,7 +162,8 @@ const xaiModels = [
 
 const videoModels = [
   'seedance-2.0',
-  'seedance-2.0-fast'
+  'seedance-2.0-fast',
+  'seedance-2.5'
 ]
 
 // Cohere

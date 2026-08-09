@@ -107,6 +107,33 @@ func TestListPlazaGroups_PlatformIsolation(t *testing.T) {
 	require.Equal(t, "gpt-5", byName["g-gpt"][0].Name)
 }
 
+func TestListPlazaGroups_SeedanceVideoDisplayPricing(t *testing.T) {
+	price480p := 0.04
+	price720p := 0.06
+	ch := Channel{
+		ID: 1, Name: "video", Status: StatusActive, GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{{
+			Platform:    PlatformSeedance,
+			Models:      []string{VideoModelSeedance20},
+			BillingMode: BillingModeVideoDuration,
+			Intervals: []PricingInterval{
+				{TierLabel: VideoResolution480P, PerRequestPrice: &price480p},
+				{TierLabel: VideoResolution720P, PerRequestPrice: &price720p},
+			},
+		}},
+	}
+	groups := []Group{{ID: 10, Name: "video-group", Platform: PlatformSeedance, RateMultiplier: 0.5}}
+
+	out, err := newPlazaChannelService([]Channel{ch}, groups, nil).ListPlazaGroups(context.Background())
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Len(t, out[0].Models, 1)
+	require.Equal(t, VideoModelSeedance20, out[0].Models[0].Name)
+	require.Equal(t, BillingModeVideoDuration, out[0].Models[0].Pricing.BillingMode)
+	require.Len(t, out[0].Models[0].Pricing.Intervals, 2)
+	require.InDelta(t, price480p, *out[0].Models[0].Pricing.Intervals[0].PerRequestPrice, 1e-12)
+}
+
 func TestListPlazaGroups_CompositeIncludesConfiguredConcretePlatforms(t *testing.T) {
 	anthropicPrice := 3e-6
 	openAIPrice := 2e-6

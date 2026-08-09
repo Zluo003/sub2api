@@ -166,6 +166,7 @@ import {
   BILLING_MODE_TOKEN,
   BILLING_MODE_PER_REQUEST,
   BILLING_MODE_IMAGE,
+  BILLING_MODE_VIDEO_DURATION,
   type BillingMode
 } from '@/constants/channel'
 // 复用 api/channels.ts 的用户侧最小形态 DTO。
@@ -229,6 +230,8 @@ const billingModeLabel = computed(() => {
       return t(prefixKey('billingModePerRequest'))
     case BILLING_MODE_IMAGE:
       return t(prefixKey('billingModeImage'))
+    case BILLING_MODE_VIDEO_DURATION:
+      return t(prefixKey('billingModeVideo'))
     default:
       return '-'
   }
@@ -240,8 +243,9 @@ function formatRange(min: number, max: number | null): string {
 }
 
 function formatInterval(iv: UserPricingInterval, mode: BillingMode): string {
-  if (mode === BILLING_MODE_PER_REQUEST || mode === BILLING_MODE_IMAGE) {
-    return formatScaled(iv.per_request_price, 1)
+  if (mode === BILLING_MODE_PER_REQUEST || mode === BILLING_MODE_IMAGE || mode === BILLING_MODE_VIDEO_DURATION) {
+    const unit = mode === BILLING_MODE_VIDEO_DURATION ? t(prefixKey('unitPerSecond')) : ''
+    return `${formatScaled(iv.per_request_price, 1)}${unit ? ` ${unit}` : ''}`
   }
   const input = formatScaled(iv.input_price, perMillionScale)
   const output = formatScaled(iv.output_price, perMillionScale)

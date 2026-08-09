@@ -28,7 +28,7 @@ export default {
   },
   modelPlaza: {
     title: '模型广场',
-    description: '自动汇总渠道定价中已接入的模型与标准价格，实际结算价格会叠加 API Key 所选分组倍率。',
+    description: '自动汇总渠道定价中已接入的模型与标准价格。语言和图片模型按对应分组倍率结算；视频渠道价仅用于展示，实际扣费以分组视频规则为准。',
     models: '个模型',
     search: '搜索模型',
     searchPlaceholder: '模型名称、厂商或能力...',
@@ -58,10 +58,6 @@ export default {
       per_request: '按次',
       image: '按图片',
       video_duration: '按视频秒数',
-    },
-  },
-  availableChannels: {
-    pricing: {
     },
   },
   admin: {
@@ -141,6 +137,7 @@ export default {
     availableChannels: {
       pricing: {
         billingModeVideo: '按视频秒数',
+        unitPerSecond: '/ 秒',
       },
     },
     channels: {

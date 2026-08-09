@@ -35,7 +35,8 @@ export default {
         perRequestPrice: 'Per Request',
         intervals: 'Tiered Pricing',
         unitPerMillion: '/ 1M tokens',
-        unitPerRequest: '/ request'
+        unitPerRequest: '/ request',
+        unitPerSecond: '/ second'
       }
     },
 
@@ -93,7 +94,8 @@ export default {
       billingMode: {
         token: 'Token',
         perRequest: 'Per Request',
-        image: 'Image (Per Request)'
+        image: 'Image (Per Request)',
+        videoDuration: 'Video (Resolution / Second)'
       },
       form: {
         name: 'Name',
@@ -151,6 +153,13 @@ export default {
         restrictModelsHint: 'When enabled, only models in the pricing list are allowed. Others will be rejected.',
         defaultPerRequestPrice: 'Default per-request price (fallback when no tier matches)',
         defaultImagePrice: 'Default image price (fallback when no tier matches)',
+        videoResolutionPrices: 'Video Resolution Prices',
+        videoDisplayPricingHint: 'These prices are shown in the model plaza only. Video task settlement continues to use the video pricing rules configured on the group.',
+        videoResolutionPriceRequired: 'At least one resolution price is required for per-second video pricing',
+        noVideoResolutionPrices: 'No resolution prices yet. Add one and enter its per-second display price.',
+        addResolution: 'Add Resolution',
+        perSecondPrice: 'Price per Second',
+        second: 'second',
         platformConfig: 'Platform Configuration',
         webSearchEmulation: 'Web Search Emulation',
         webSearchEmulationHint: '⚠️ When enabled, all accounts in this channel\'s Anthropic groups will intercept web_search requests. Use with caution.',

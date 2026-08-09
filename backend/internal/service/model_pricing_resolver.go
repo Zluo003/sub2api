@@ -100,6 +100,12 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 	var chPricing *ChannelModelPricing
 	if input.GroupID != nil && r.channelService != nil {
 		chPricing = r.channelService.GetChannelModelPricing(ctx, *input.GroupID, input.Model)
+		// Seedance entries in channel pricing are catalogue/display metadata,
+		// regardless of whether the admin chose token, per-request, or per-second
+		// presentation. Video task settlement reads the group's video pricing rules.
+		if chPricing != nil && chPricing.Platform == PlatformSeedance {
+			chPricing = nil
+		}
 		if chPricing != nil {
 			mode := chPricing.BillingMode
 			if mode == "" {
@@ -156,6 +162,9 @@ func (r *ModelPricingResolver) ResolveAgentAccount(
 	}
 
 	pricing := match.Pricing
+	if pricing.Platform == PlatformSeedance {
+		return nil, ErrAgentChannelPricingUnavailable
+	}
 	mode := pricing.BillingMode
 	if mode == "" {
 		mode = BillingModeToken
@@ -196,7 +205,7 @@ func (r *ModelPricingResolver) resolveBasePricing(model string) (*ModelPricing, 
 // applyChannelOverrides 应用渠道定价覆盖
 func (r *ModelPricingResolver) applyChannelOverrides(ctx context.Context, groupID int64, model string, resolved *ResolvedPricing) {
 	chPricing := r.channelService.GetChannelModelPricing(ctx, groupID, model)
-	if chPricing == nil {
+	if chPricing == nil || chPricing.Platform == PlatformSeedance {
 		return
 	}
 

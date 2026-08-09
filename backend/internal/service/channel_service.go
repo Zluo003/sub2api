@@ -651,7 +651,8 @@ func validatePricingEntries(pricing []ChannelModelPricing) error {
 	return validatePricingBillingMode(pricing)
 }
 
-// validatePricingBillingMode 校验计费模式配置：按次/图片模式必须配价格或区间，所有价格字段不能为负，区间至少有一个价格字段。
+// validatePricingBillingMode 校验计费模式配置：按次/图片模式必须配价格或区间，
+// 视频按秒展示价必须按分辨率配置，所有价格字段不能为负，区间至少有一个价格字段。
 func validatePricingBillingMode(pricing []ChannelModelPricing) error {
 	for _, p := range pricing {
 		if err := checkBillingModeRequirements(p); err != nil {
@@ -661,6 +662,9 @@ func validatePricingBillingMode(pricing []ChannelModelPricing) error {
 			return err
 		}
 		if err := checkIntervalsHavePrices(p); err != nil {
+			return err
+		}
+		if err := checkVideoDurationPricing(p); err != nil {
 			return err
 		}
 	}
@@ -673,6 +677,54 @@ func checkBillingModeRequirements(p ChannelModelPricing) error {
 			return infraerrors.BadRequest(
 				"BILLING_MODE_MISSING_PRICE",
 				"per-request price or intervals required for per_request/image billing mode",
+			)
+		}
+	}
+	return nil
+}
+
+// checkVideoDurationPricing validates the display-only Seedance price card shape.
+// Per-second prices reuse PricingInterval.PerRequestPrice for storage compatibility;
+// TierLabel is the output resolution. These values are intentionally not connected
+// to video task settlement, which remains governed by group video pricing rules.
+func checkVideoDurationPricing(p ChannelModelPricing) error {
+	if p.BillingMode != BillingModeVideoDuration {
+		return nil
+	}
+	if p.Platform != PlatformSeedance {
+		return infraerrors.BadRequest(
+			"VIDEO_DURATION_PLATFORM_INVALID",
+			"video_duration pricing is only supported for the seedance platform",
+		)
+	}
+	if len(p.Intervals) == 0 {
+		return infraerrors.BadRequest(
+			"VIDEO_DURATION_MISSING_RESOLUTION_PRICE",
+			"at least one resolution price is required for video_duration pricing mode",
+		)
+	}
+	seen := make(map[string]struct{}, len(p.Intervals))
+	for _, iv := range p.Intervals {
+		resolution := strings.ToLower(strings.TrimSpace(iv.TierLabel))
+		switch resolution {
+		case "480p", "720p", "1080p", "4k":
+		default:
+			return infraerrors.BadRequest(
+				"VIDEO_DURATION_RESOLUTION_INVALID",
+				fmt.Sprintf("unsupported video resolution %q", iv.TierLabel),
+			)
+		}
+		if _, ok := seen[resolution]; ok {
+			return infraerrors.BadRequest(
+				"VIDEO_DURATION_RESOLUTION_DUPLICATE",
+				fmt.Sprintf("duplicate video resolution %q", iv.TierLabel),
+			)
+		}
+		seen[resolution] = struct{}{}
+		if iv.PerRequestPrice == nil {
+			return infraerrors.BadRequest(
+				"VIDEO_DURATION_MISSING_RESOLUTION_PRICE",
+				fmt.Sprintf("per-second price is required for video resolution %q", iv.TierLabel),
 			)
 		}
 	}

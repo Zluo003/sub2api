@@ -35,6 +35,32 @@
       </div>
     </template>
 
+    <!-- Video duration mode: resolution + per-second display price -->
+    <template v-else-if="mode === 'video_duration'">
+      <div class="w-32">
+        <label class="text-xs text-gray-400">{{ t('admin.channels.form.resolution') }}</label>
+        <select
+          :value="interval.tier_label"
+          class="input mt-0.5 text-xs"
+          @change="emitField('tier_label', ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="480p">480p</option>
+          <option value="720p">720p</option>
+          <option value="1080p">1080p</option>
+          <option value="4K">4K</option>
+        </select>
+      </div>
+      <div class="flex-1">
+        <label class="text-xs text-gray-400">
+          {{ t('admin.channels.form.perSecondPrice') }}
+          <span v-if="isEmpty" class="text-red-500">*</span>
+          <span class="text-gray-300">$</span>
+        </label>
+        <input :value="interval.per_request_price" @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
+          type="number" step="any" min="0" class="input mt-0.5 text-xs" />
+      </div>
+    </template>
+
     <!-- Per-request / Image mode: tier label + context range + price -->
     <template v-else>
       <div class="w-24">

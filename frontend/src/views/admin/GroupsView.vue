@@ -5368,6 +5368,7 @@ const editForm = reactive({
 const videoModelOptions: Array<{ value: VideoModelCode; label: string }> = [
   { value: "seedance-2.0", label: "Seedance 2.0" },
   { value: "seedance-2.0-fast", label: "Seedance 2.0 fast" },
+  { value: "seedance-2.5", label: "Seedance 2.5" },
 ];
 
 const videoResolutionOptions: Array<{ value: VideoResolution; label: string }> = [
@@ -5415,6 +5416,20 @@ const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
   },
   {
     model_code: "seedance-2.0-fast",
+    resolution: "720p",
+    credits_per_second: 0,
+    reference_video_multiplier: 1,
+    enabled: true,
+  },
+  {
+    model_code: "seedance-2.5",
+    resolution: "480p",
+    credits_per_second: 0,
+    reference_video_multiplier: 1,
+    enabled: true,
+  },
+  {
+    model_code: "seedance-2.5",
     resolution: "720p",
     credits_per_second: 0,
     reference_video_multiplier: 1,

@@ -2397,6 +2397,49 @@ func TestValidatePricingBillingMode(t *testing.T) {
 			wantErr: true,
 			errMsg:  "has no price fields set",
 		},
+		{
+			name: "video duration resolution prices - valid",
+			pricing: []ChannelModelPricing{{
+				Platform:    PlatformSeedance,
+				BillingMode: BillingModeVideoDuration,
+				Intervals: []PricingInterval{
+					{TierLabel: "480p", PerRequestPrice: testPtrFloat64(0.04)},
+					{TierLabel: "720p", PerRequestPrice: testPtrFloat64(0.06)},
+				},
+			}},
+		},
+		{
+			name: "video duration requires resolution prices",
+			pricing: []ChannelModelPricing{{
+				Platform:    PlatformSeedance,
+				BillingMode: BillingModeVideoDuration,
+			}},
+			wantErr: true,
+			errMsg:  "at least one resolution price is required",
+		},
+		{
+			name: "video duration rejects duplicate resolution",
+			pricing: []ChannelModelPricing{{
+				Platform:    PlatformSeedance,
+				BillingMode: BillingModeVideoDuration,
+				Intervals: []PricingInterval{
+					{TierLabel: "480p", PerRequestPrice: testPtrFloat64(0.04)},
+					{TierLabel: "480P", PerRequestPrice: testPtrFloat64(0.05)},
+				},
+			}},
+			wantErr: true,
+			errMsg:  "duplicate video resolution",
+		},
+		{
+			name: "video duration only on seedance",
+			pricing: []ChannelModelPricing{{
+				Platform:    PlatformOpenAI,
+				BillingMode: BillingModeVideoDuration,
+				Intervals:   []PricingInterval{{TierLabel: "480p", PerRequestPrice: testPtrFloat64(0.04)}},
+			}},
+			wantErr: true,
+			errMsg:  "only supported for the seedance platform",
+		},
 	}
 
 	for _, tt := range tests {

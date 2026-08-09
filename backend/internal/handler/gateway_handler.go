@@ -1334,6 +1334,17 @@ func configureAgentMediaOptions(capabilities *agentModelCapabilities, modelID st
 		} else {
 			capabilities.SupportedVideoResolutions = []string{service.VideoResolution480P, service.VideoResolution720P, service.VideoResolution1080P, service.VideoResolution4K}
 		}
+	case service.VideoModelSeedance25:
+		capabilities.MaxInputImages = 30
+		capabilities.SupportedAspectRatios = []string{"auto", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"}
+		capabilities.SupportedVideoDurationsSec = make([]int, 0, 28)
+		for duration := 4; duration <= 30; duration++ {
+			capabilities.SupportedVideoDurationsSec = append(capabilities.SupportedVideoDurationsSec, duration)
+		}
+		supportsAudio := true
+		capabilities.SupportsVideoAudio = &supportsAudio
+		capabilities.Cancellation = []string{"remoteJob"}
+		capabilities.SupportedVideoResolutions = []string{service.VideoResolution480P, service.VideoResolution720P}
 	}
 }
 

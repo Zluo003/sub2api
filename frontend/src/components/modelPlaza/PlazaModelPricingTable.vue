@@ -94,10 +94,10 @@
                   class="whitespace-nowrap text-xs leading-5"
                 >
                   <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ tierLabel(iv) }}</span>
-                  {{ paidPerMillion(iv.input_price) }}
+                  {{ paidPerMillion(m, iv.input_price) }}
                 </div>
               </template>
-              <template v-else>{{ paidPerMillion(m.pricing?.input_price) }}</template>
+              <template v-else>{{ paidPerMillion(m, m.pricing?.input_price) }}</template>
             </td>
             <td class="pz-cell px-3 py-2.5 align-middle font-mono font-semibold text-gray-900 dark:text-gray-50">
               <template v-if="tokenIntervals(m).length">
@@ -107,10 +107,10 @@
                   class="whitespace-nowrap text-xs leading-5"
                 >
                   <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ tierLabel(iv) }}</span>
-                  {{ paidPerMillion(iv.output_price) }}
+                  {{ paidPerMillion(m, iv.output_price) }}
                 </div>
               </template>
-              <template v-else>{{ paidPerMillion(m.pricing?.output_price) }}</template>
+              <template v-else>{{ paidPerMillion(m, m.pricing?.output_price) }}</template>
             </td>
             <td class="pz-cell px-3 py-2.5 align-middle">
               <div
@@ -119,11 +119,11 @@
               >
                 <div>
                   <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheWrite') }}</span>
-                  {{ paidPerMillion(m.pricing?.cache_write_price) }}
+                  {{ paidPerMillion(m, m.pricing?.cache_write_price) }}
                 </div>
                 <div>
                   <span class="mr-1 font-sans font-normal text-gray-400 dark:text-dark-500">{{ t('modelPlaza.table.cacheRead') }}</span>
-                  {{ paidPerMillion(m.pricing?.cache_read_price) }}
+                  {{ paidPerMillion(m, m.pricing?.cache_read_price) }}
                 </div>
               </div>
               <span v-else class="text-gray-400 dark:text-dark-500">-</span>
@@ -154,6 +154,12 @@
                 <span class="ml-1 text-xs text-gray-400 dark:text-dark-500">{{ perUnitSuffix(m) }}</span>
               </template>
               <span v-else class="text-gray-400 dark:text-dark-500">-</span>
+              <p
+                v-if="isDisplayOnlyVideo(m)"
+                class="mt-1 text-[11px] font-normal text-cyan-700 dark:text-cyan-300"
+              >
+                {{ t('modelPlaza.table.videoDisplayOnly') }}
+              </p>
             </td>
           </template>
 
@@ -192,15 +198,19 @@
             class="border-l border-gray-100 py-2.5 pl-3 pr-5 text-right align-middle font-mono text-xs dark:border-dark-700/60"
           >
             <span
+              v-if="isDisplayOnlyVideo(m)"
+              class="font-sans font-medium text-cyan-700 dark:text-cyan-300"
+            >{{ t('modelPlaza.table.groupBilling') }}</span>
+            <span
               v-if="usesIndependentImageRate(m)"
               class="font-bold text-gray-700 dark:text-gray-300"
               >{{ requestRate(m) }}x</span
             >
-            <template v-else-if="hasCustomRate">
+            <template v-else-if="!isDisplayOnlyVideo(m) && hasCustomRate">
               <span class="mr-1 text-gray-400 line-through dark:text-dark-500">{{ rateMultiplier }}x</span>
               <span class="font-bold text-primary-600 dark:text-primary-400">{{ effectiveRate }}x</span>
             </template>
-            <span v-else class="font-bold text-gray-700 dark:text-gray-300">{{ effectiveRate }}x</span>
+            <span v-else-if="!isDisplayOnlyVideo(m)" class="font-bold text-gray-700 dark:text-gray-300">{{ effectiveRate }}x</span>
           </td>
         </tr>
       </tbody>
@@ -216,6 +226,7 @@ import { platformAccentColor, platformBadgeLightClass, platformLabel } from '@/u
 import {
   BILLING_MODE_TOKEN,
   BILLING_MODE_IMAGE,
+  BILLING_MODE_VIDEO_DURATION,
   type BillingMode
 } from '@/constants/channel'
 import type { PlazaModel } from '@/api/modelPlaza'
@@ -271,18 +282,24 @@ function billingMode(m: PlazaModel): BillingMode {
 }
 
 function billingModeLabel(m: PlazaModel): string {
-  return billingMode(m) === BILLING_MODE_IMAGE
-    ? t('modelPlaza.table.perImage')
-    : t('modelPlaza.table.perRequest')
+  switch (billingMode(m)) {
+    case BILLING_MODE_IMAGE:
+      return t('modelPlaza.table.perImage')
+    case BILLING_MODE_VIDEO_DURATION:
+      return t('modelPlaza.table.perSecond')
+    default:
+      return t('modelPlaza.table.perRequest')
+  }
 }
 
 /** 价格统一保底 2 位小数,更长的有效小数原样保留。 */
 const MIN_DECIMALS = 2
 
 /** 实付价 = 渠道单价 × 生效倍率,按 $/1M token 展示。 */
-function paidPerMillion(value: number | null | undefined): string {
+function paidPerMillion(m: PlazaModel, value: number | null | undefined): string {
   if (value == null) return '-'
-  return formatScaled(value * effectiveRate.value, PER_MILLION, MIN_DECIMALS)
+  const rate = isDisplayOnlyVideo(m) ? 1 : effectiveRate.value
+  return formatScaled(value * rate, PER_MILLION, MIN_DECIMALS)
 }
 
 /** 图片计费模型且分组开启生图独立倍率:实付倍率取独立倍率,与计费口径一致。 */
@@ -292,6 +309,7 @@ function usesIndependentImageRate(m: PlazaModel): boolean {
 
 /** 按次/按图片行的生效倍率。 */
 function requestRate(m: PlazaModel): number {
+  if (isDisplayOnlyVideo(m)) return 1
   return usesIndependentImageRate(m) ? (props.imageRateMultiplier ?? 1) : effectiveRate.value
 }
 
@@ -309,9 +327,18 @@ function official(value: number | null | undefined): string {
 
 /** 非 token 计费的单位后缀:按图片 → “/ 张”,按次 → “/ 次”。 */
 function perUnitSuffix(m: PlazaModel): string {
-  return billingMode(m) === BILLING_MODE_IMAGE
-    ? t('modelPlaza.table.perUnitImage')
-    : t('modelPlaza.table.perUnitRequest')
+  switch (billingMode(m)) {
+    case BILLING_MODE_IMAGE:
+      return t('modelPlaza.table.perUnitImage')
+    case BILLING_MODE_VIDEO_DURATION:
+      return t('modelPlaza.table.perUnitSecond')
+    default:
+      return t('modelPlaza.table.perUnitRequest')
+  }
+}
+
+function isDisplayOnlyVideo(m: PlazaModel): boolean {
+  return m.platform === 'seedance'
 }
 
 function hasCachePricing(m: PlazaModel): boolean {

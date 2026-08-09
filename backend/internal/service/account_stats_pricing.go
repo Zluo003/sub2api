@@ -170,6 +170,11 @@ func calculateStatsCost(pricing *ChannelModelPricing, tokens UsageTokens, reques
 	if pricing == nil {
 		return nil
 	}
+	if pricing.Platform == PlatformSeedance {
+		// Seedance channel prices are model-plaza display metadata for all three
+		// presentation modes. Group video pricing remains the settlement source.
+		return nil
+	}
 	switch pricing.BillingMode {
 	case BillingModePerRequest, BillingModeImage:
 		return calculatePerRequestStatsCost(pricing, requestCount)

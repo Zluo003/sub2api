@@ -443,6 +443,7 @@ func TestValidateIntervals_ImageModeAllowsMultipleUnboundedTiers(t *testing.T) {
 	}
 	require.NoError(t, ValidateIntervals(intervals, BillingModeImage))
 	require.NoError(t, ValidateIntervals(intervals, BillingModePerRequest))
+	require.NoError(t, ValidateIntervals(intervals, BillingModeVideoDuration))
 }
 
 func TestValidateIntervals_ImageModeStillRejectsNegativePrice(t *testing.T) {

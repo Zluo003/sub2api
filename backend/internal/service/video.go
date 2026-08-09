@@ -11,6 +11,7 @@ import (
 const (
 	VideoModelSeedance20     = "seedance-2.0"
 	VideoModelSeedance20Fast = "seedance-2.0-fast"
+	VideoModelSeedance25     = "seedance-2.5"
 
 	VideoResolution480P  = "480p"
 	VideoResolution720P  = "720p"
@@ -37,7 +38,7 @@ func IsSupportedVideoResolution(model, resolution string) bool {
 			resolution == VideoResolution720P ||
 			resolution == VideoResolution1080P ||
 			resolution == VideoResolution4K
-	case VideoModelSeedance20Fast:
+	case VideoModelSeedance20Fast, VideoModelSeedance25:
 		return resolution == VideoResolution480P ||
 			resolution == VideoResolution720P
 	default:
