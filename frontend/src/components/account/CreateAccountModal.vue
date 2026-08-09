@@ -1267,8 +1267,9 @@
           <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
-        <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型） -->
+        <!-- 上游倍率自动探测：仅对后端支持的平台显示 -->
         <div
+          v-if="upstreamBillingProbeSupported"
           class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
         >
           <div>
@@ -3851,8 +3852,22 @@ const videoRequestTimeoutMs = ref(60000)
 const videoConnectTimeoutMs = ref(15000)
 const videoProviderDefaults = computed(() =>
   videoProvider.value === 'jingyu'
-    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
-    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+    ? {
+        baseUrl: 'https://api.jingyuapi.art',
+        apiPath: '/v1/video/generations',
+        pollIntervalMs: 5000,
+        pollTimeoutMs: 1800000,
+        requestTimeoutMs: 1800000,
+        connectTimeoutMs: 60000
+      }
+    : {
+        baseUrl: 'https://api.aigod.one',
+        apiPath: '/v1/videos',
+        pollIntervalMs: 2000,
+        pollTimeoutMs: 300000,
+        requestTimeoutMs: 60000,
+        connectTimeoutMs: 15000
+      }
 )
 
 const resolvedVideoAPIPath = computed(() => {
@@ -3863,6 +3878,7 @@ const resolvedVideoAPIPath = computed(() => {
   return path || videoProviderDefaults.value.apiPath
 })
 const upstreamBillingAutoProbeEnabled = ref(true)
+const upstreamBillingProbeSupported = computed(() => form.platform !== 'seedance')
 
 const syncPreviewCredentials = computed(() => {
   if (!apiKeyValue.value) return undefined
@@ -4474,13 +4490,39 @@ watch(
 
 watch(videoProvider, (_newProvider, oldProvider) => {
   const previousDefaults = oldProvider === 'jingyu'
-    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
-    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+    ? {
+        baseUrl: 'https://api.jingyuapi.art',
+        apiPath: '/v1/video/generations',
+        pollIntervalMs: 5000,
+        pollTimeoutMs: 1800000,
+        requestTimeoutMs: 1800000,
+        connectTimeoutMs: 60000
+      }
+    : {
+        baseUrl: 'https://api.aigod.one',
+        apiPath: '/v1/videos',
+        pollIntervalMs: 2000,
+        pollTimeoutMs: 300000,
+        requestTimeoutMs: 60000,
+        connectTimeoutMs: 15000
+      }
   if (!apiKeyBaseUrl.value.trim() || apiKeyBaseUrl.value.trim() === previousDefaults.baseUrl) {
     apiKeyBaseUrl.value = videoProviderDefaults.value.baseUrl
   }
   if (!videoAPIPath.value.trim() || videoAPIPath.value.trim() === previousDefaults.apiPath) {
     videoAPIPath.value = videoProviderDefaults.value.apiPath
+  }
+  if (videoPollIntervalMs.value === previousDefaults.pollIntervalMs) {
+    videoPollIntervalMs.value = videoProviderDefaults.value.pollIntervalMs
+  }
+  if (videoPollTimeoutMs.value === previousDefaults.pollTimeoutMs) {
+    videoPollTimeoutMs.value = videoProviderDefaults.value.pollTimeoutMs
+  }
+  if (videoRequestTimeoutMs.value === previousDefaults.requestTimeoutMs) {
+    videoRequestTimeoutMs.value = videoProviderDefaults.value.requestTimeoutMs
+  }
+  if (videoConnectTimeoutMs.value === previousDefaults.connectTimeoutMs) {
+    videoConnectTimeoutMs.value = videoProviderDefaults.value.connectTimeoutMs
   }
   if (form.platform === 'seedance') {
     applyVideoProviderModelDefaults()
@@ -5365,10 +5407,10 @@ const handleSubmit = async () => {
         video_provider: videoProvider.value,
         base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
         api_path: resolvedVideoAPIPath.value,
-        poll_interval_ms: Number(videoPollIntervalMs.value) || 2000,
-        poll_timeout_ms: Number(videoPollTimeoutMs.value) || 300000,
-        request_timeout_ms: Number(videoRequestTimeoutMs.value) || 60000,
-        connect_timeout_ms: Number(videoConnectTimeoutMs.value) || 15000,
+        poll_interval_ms: Number(videoPollIntervalMs.value) || videoProviderDefaults.value.pollIntervalMs,
+        poll_timeout_ms: Number(videoPollTimeoutMs.value) || videoProviderDefaults.value.pollTimeoutMs,
+        request_timeout_ms: Number(videoRequestTimeoutMs.value) || videoProviderDefaults.value.requestTimeoutMs,
+        connect_timeout_ms: Number(videoConnectTimeoutMs.value) || videoProviderDefaults.value.connectTimeoutMs,
       }
     : buildAnthropicExtra(buildOpenAIExtra())
 
@@ -5376,7 +5418,7 @@ const handleSubmit = async () => {
     ...form,
     group_ids: form.group_ids,
     extra,
-    upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
+    upstream_billing_probe_enabled: upstreamBillingProbeSupported.value ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }
@@ -5507,7 +5549,7 @@ const createAccountAndFinish = async (
     expires_at: form.expires_at,
     // 上游倍率探测对全部 API-key 平台开放（antigravity upstream 走本 helper）；
     // 非 apikey 类型（bedrock/oauth）不传，后端不动作。
-    upstream_billing_probe_enabled: type === 'apikey' ? upstreamBillingAutoProbeEnabled.value : undefined,
+    upstream_billing_probe_enabled: type === 'apikey' && upstreamBillingProbeSupported.value ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }

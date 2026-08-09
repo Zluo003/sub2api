@@ -80,7 +80,6 @@ func TestNormalizeVideoCreateRequestBuildsSeedancePayloadAndBillingSeconds(t *te
 
 func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
 	generateAudio := true
-	rawExtra := map[string]any{"seedance": map[string]any{"camera": "slow_push"}}
 	req := &VideoCreateRequest{
 		Model:         VideoModelSeedance20,
 		Prompt:        "runway shot",
@@ -100,7 +99,7 @@ func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
 				AudioURL: &VideoContentURL{URL: "https://cdn.example.com/music.mp3"},
 			},
 		},
-		Raw: map[string]any{"seed": float64(12345), "extra": rawExtra},
+		Raw: map[string]any{"seed": float64(12345), "extra": map[string]any{"must_not": "forward"}},
 	}
 
 	normalized, err := normalizeVideoCreateRequest(req)
@@ -127,7 +126,7 @@ func TestJingyuUpstreamBodyMapsSeedanceRequest(t *testing.T) {
 	}, refs[0])
 	require.NotContains(t, refs[0], "subject_type")
 	require.Equal(t, "audio", refs[1]["type"])
-	require.Equal(t, rawExtra, body["extra"])
+	require.NotContains(t, body, "extra")
 }
 
 func TestJingyuUpstreamBodyForwardsSupportedResolutions(t *testing.T) {
@@ -149,7 +148,7 @@ func TestJingyuUpstreamBodyForwardsSupportedResolutions(t *testing.T) {
 			require.NoError(t, err)
 
 			body := normalized.JingyuUpstreamBody(videoJingyuSeedance20Model)
-			require.Equal(t, resolution, body["resolution"])
+			require.Equal(t, strings.ToLower(resolution), body["resolution"])
 			require.Equal(t, "yu-video-2-pro", body["model"])
 		})
 	}
@@ -336,7 +335,7 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testi
 	require.Equal(t, "yu-video-2.5-pro", jingyuBody["model"])
 	require.Equal(t, VideoResolution720P, jingyuBody["resolution"])
 	require.Equal(t, "auto", jingyuBody["aspect_ratio"])
-	require.Equal(t, 5, jingyuBody["duration"])
+	require.Equal(t, float64(-1), jingyuBody["duration"])
 	require.NotContains(t, jingyuBody, "content")
 	references, ok := jingyuBody["references"].([]map[string]any)
 	require.True(t, ok)
@@ -1137,7 +1136,7 @@ func TestVideoServiceParsesJingyuTaskIDAndResultURL(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == videoDefaultJingyuAPIPath:
-			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","status":"queued"}`))
+			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","id":"legacy-id-must-not-win","status":"queued"}`))
 		case r.Method == http.MethodGet && r.URL.Path == videoDefaultJingyuAPIPath+"/jingyu-task-1":
 			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","status":"succeeded","metadata":{"url":"https://cdn.example.com/result.mp4"}}`))
 		default:
@@ -1165,6 +1164,49 @@ func TestVideoServiceParsesJingyuTaskIDAndResultURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, VideoTaskStatusCompleted, polled.Status)
 	require.Equal(t, "https://cdn.example.com/result.mp4", polled.VideoURL)
+}
+
+func TestJingyuContractUsesNewWauleFieldPrecedenceAndDefaults(t *testing.T) {
+	account := &Account{Extra: map[string]any{"video_provider": videoProviderJingyu}}
+	require.Equal(t, 5*time.Second, videoAccountDefaultDuration(account, "poll_interval_ms"))
+	require.Equal(t, 30*time.Minute, videoAccountDefaultDuration(account, "poll_timeout_ms"))
+	require.Equal(t, 30*time.Minute, videoAccountDefaultDuration(account, "request_timeout_ms"))
+	require.Equal(t, 60*time.Second, videoAccountDefaultDuration(account, "connect_timeout_ms"))
+
+	payload := map[string]any{
+		"result_asset_url": "https://cdn.example.com/asset.mp4",
+		"url":              "https://cdn.example.com/url.mp4",
+		"video_url":        "https://cdn.example.com/video.mp4",
+	}
+	require.Equal(t, "https://cdn.example.com/asset.mp4", videoResultURLFromPayload(payload))
+
+	status, known := normalizeJingyuVideoUpstreamStatus("running")
+	require.False(t, known)
+	require.Empty(t, status)
+}
+
+func TestJingyuUpstreamBodyPreservesSeedance25AutoDurationAndReferenceRoles(t *testing.T) {
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model:       VideoModelSeedance25,
+		Prompt:      "follow the references",
+		Duration:    -1,
+		Resolution:  VideoResolution720P,
+		AbilityCode: videoAbilityReferenceToVideo,
+		Content: []VideoContent{
+			{Type: "image_url", ImageURL: &VideoContentURL{URL: "https://cdn.example.com/ref.png"}},
+			{Type: "video_url", VideoURL: &VideoContentURL{URL: "https://cdn.example.com/ref.mp4"}, DurationSeconds: float64PtrForVideoTest(5)},
+			{Type: "audio_url", AudioURL: &VideoContentURL{URL: "https://cdn.example.com/ref.mp3"}},
+		},
+	})
+	require.NoError(t, err)
+	body := normalized.JingyuUpstreamBody(videoJingyuSeedance25Model)
+	require.Equal(t, float64(-1), body["duration"])
+	require.NotContains(t, body, "aspect_ratio")
+	require.Equal(t, []map[string]any{
+		{"type": "image", "role": "reference_image", "url": "https://cdn.example.com/ref.png"},
+		{"type": "video", "role": "reference_video", "url": "https://cdn.example.com/ref.mp4"},
+		{"type": "audio", "role": "reference_audio", "url": "https://cdn.example.com/ref.mp3"},
+	}, body["references"])
 }
 
 func TestVideoResultURLFromPayloadAcceptsUnifiedJingyuFields(t *testing.T) {

@@ -35,6 +35,10 @@ const (
 	videoDefaultPollTimeout      = 5 * time.Minute
 	videoDefaultRequestTimeout   = 60 * time.Second
 	videoDefaultConnectTimeout   = 15 * time.Second
+	videoJingyuPollInterval      = 5 * time.Second
+	videoJingyuPollTimeout       = 30 * time.Minute
+	videoJingyuRequestTimeout    = 30 * time.Minute
+	videoJingyuConnectTimeout    = 60 * time.Second
 	videoMinDurationSeconds      = 4
 	videoMaxDurationSeconds      = 15
 	videoSeedance25MaxDuration   = 30
@@ -162,6 +166,9 @@ func (s *VideoService) createTask(ctx context.Context, input *VideoCreateInput) 
 	account, err := s.selectAccount(ctx, input.APIKey.Group.ID, normalized.Model, normalized.Resolution, input.APIKey.Group.IsAgent())
 	if err != nil {
 		return nil, err
+	}
+	if videoAccountProvider(account) == videoProviderJingyu && strings.TrimSpace(normalized.Prompt) == "" {
+		return nil, videoBadRequest("invalid_video_prompt", "Video prompt is required")
 	}
 	upstreamModel := videoUpstreamModelForAccount(account, normalized)
 	upstreamBody := videoUpstreamBodyForAccount(account, normalized, upstreamModel)
@@ -440,7 +447,7 @@ func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account,
 	if err != nil {
 		return nil, err
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, videoAccountDuration(account, "request_timeout_ms", videoDefaultRequestTimeout))
+	reqCtx, cancel := context.WithTimeout(ctx, videoAccountDuration(account, "request_timeout_ms", videoAccountDefaultDuration(account, "request_timeout_ms")))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
@@ -463,8 +470,8 @@ func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account,
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: err}
 	}
 	id := firstNonEmptyVideoString(
-		stringFromMap(payload, "id"),
 		stringFromMap(payload, "task_id"),
+		stringFromMap(payload, "id"),
 	)
 	if id == "" {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing upstream task id")}
@@ -478,7 +485,7 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 		return nil, err
 	}
 	endpoint = strings.TrimRight(endpoint, "/") + "/" + url.PathEscape(upstreamTaskID)
-	reqCtx, cancel := context.WithTimeout(ctx, videoAccountDuration(account, "request_timeout_ms", videoDefaultRequestTimeout))
+	reqCtx, cancel := context.WithTimeout(ctx, videoAccountDuration(account, "request_timeout_ms", videoAccountDefaultDuration(account, "request_timeout_ms")))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -498,7 +505,15 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 	if err := json.Unmarshal(respBody, &payload); err != nil {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: err}
 	}
-	status := normalizeVideoUpstreamStatus(stringFromMap(payload, "status"))
+	rawStatus := stringFromMap(payload, "status")
+	status := normalizeVideoUpstreamStatus(rawStatus)
+	if videoAccountProvider(account) == videoProviderJingyu {
+		var known bool
+		status, known = normalizeJingyuVideoUpstreamStatus(rawStatus)
+		if !known {
+			return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: fmt.Errorf("unknown jingyu task status: %s", strings.TrimSpace(rawStatus))}
+		}
+	}
 	result := &videoPollResult{Status: status}
 	if status == VideoTaskStatusCompleted {
 		result.VideoURL = videoResultURLFromPayload(payload)
@@ -561,13 +576,15 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 }
 
 func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTaskID string) {
-	interval := videoAccountDuration(input.Account, "poll_interval_ms", videoDefaultPollInterval)
-	timeout := videoAccountDuration(input.Account, "poll_timeout_ms", videoDefaultPollTimeout)
+	intervalFallback := videoAccountDefaultDuration(input.Account, "poll_interval_ms")
+	timeoutFallback := videoAccountDefaultDuration(input.Account, "poll_timeout_ms")
+	interval := videoAccountDuration(input.Account, "poll_interval_ms", intervalFallback)
+	timeout := videoAccountDuration(input.Account, "poll_timeout_ms", timeoutFallback)
 	if interval <= 0 {
-		interval = videoDefaultPollInterval
+		interval = intervalFallback
 	}
 	if timeout <= 0 {
-		timeout = videoDefaultPollTimeout
+		timeout = timeoutFallback
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -919,7 +936,9 @@ type normalizedVideoRequest struct {
 	Prompt                string
 	Content               []VideoContent
 	Ratio                 string
+	RatioProvided         bool
 	Duration              float64
+	RequestedDuration     float64
 	GeneratedSeconds      int
 	Resolution            string
 	GenerateAudio         *bool
@@ -959,7 +978,8 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 	} else if !IsSupportedVideoResolution(model, resolution) {
 		return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 	}
-	duration := req.Duration
+	requestedDuration := req.Duration
+	duration := requestedDuration
 	maxDuration := float64(videoMaxDurationSeconds)
 	if model == VideoModelSeedance25 {
 		if duration == -1 {
@@ -1000,6 +1020,7 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 		return nil, err
 	}
 	ratio := firstNonEmptyVideoString(req.Ratio, req.AspectRatio, req.AspectRatioCamel)
+	ratioProvided := ratio != ""
 	if model == VideoModelSeedance25 {
 		ratio = strings.ToLower(strings.TrimSpace(ratio))
 		if ratio == "adaptive" {
@@ -1020,7 +1041,9 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 		Prompt:                prompt,
 		Content:               content,
 		Ratio:                 ratio,
+		RatioProvided:         ratioProvided,
 		Duration:              duration,
+		RequestedDuration:     requestedDuration,
 		GeneratedSeconds:      generatedSeconds,
 		Resolution:            resolution,
 		GenerateAudio:         req.GenerateAudio,
@@ -1054,12 +1077,18 @@ func (r *normalizedVideoRequest) JingyuUpstreamBody(upstreamModel string) map[st
 	if upstreamModel == "" {
 		upstreamModel = defaultJingyuUpstreamModel(r.Model)
 	}
+	duration := any(r.GeneratedSeconds)
+	if r.Model == VideoModelSeedance25 && r.RequestedDuration == -1 {
+		duration = r.RequestedDuration
+	}
 	body := map[string]any{
-		"model":        upstreamModel,
-		"prompt":       r.Prompt,
-		"duration":     r.GeneratedSeconds,
-		"aspect_ratio": r.Ratio,
-		"resolution":   r.Resolution,
+		"model":      upstreamModel,
+		"prompt":     r.Prompt,
+		"duration":   duration,
+		"resolution": strings.ToLower(r.Resolution),
+	}
+	if r.RatioProvided {
+		body["aspect_ratio"] = r.Ratio
 	}
 	if r.GenerateAudio != nil {
 		body["generate_audio"] = *r.GenerateAudio
@@ -1069,13 +1098,8 @@ func (r *normalizedVideoRequest) JingyuUpstreamBody(upstreamModel string) map[st
 			body["seed"] = seed
 		}
 	}
-	if refs := jingyuReferencesFromContent(r.Content); len(refs) > 0 {
+	if refs := jingyuReferencesFromContent(r.Content, r.AbilityCode); len(refs) > 0 {
 		body["references"] = refs
-	}
-	if r.Raw != nil {
-		if extra, ok := mapFromAny(r.Raw["extra"]); ok && len(extra) > 0 {
-			body["extra"] = cloneMap(extra)
-		}
 	}
 	return body
 }
@@ -1292,8 +1316,9 @@ func videoContentForUpstream(content []VideoContent, prompt string) []map[string
 	return out
 }
 
-func jingyuReferencesFromContent(content []VideoContent) []map[string]any {
+func jingyuReferencesFromContent(content []VideoContent, ability string) []map[string]any {
 	out := make([]map[string]any, 0, len(content))
+	imageIndex := 0
 	for _, item := range content {
 		entry := map[string]any{}
 		switch item.Type {
@@ -1303,22 +1328,41 @@ func jingyuReferencesFromContent(content []VideoContent) []map[string]any {
 			}
 			entry["type"] = "image"
 			entry["url"] = strings.TrimSpace(item.ImageURL.URL)
+			switch ability {
+			case videoAbilityImageToVideo:
+				entry["role"] = "first_frame"
+			case videoAbilityStartEndToVideo:
+				if imageIndex == 0 {
+					entry["role"] = "first_frame"
+				} else {
+					entry["role"] = "last_frame"
+				}
+			case videoAbilityReferenceToVideo:
+				entry["role"] = "reference_image"
+			}
+			imageIndex++
 		case "video_url":
 			if item.VideoURL == nil || strings.TrimSpace(item.VideoURL.URL) == "" {
 				continue
 			}
 			entry["type"] = "video"
 			entry["url"] = strings.TrimSpace(item.VideoURL.URL)
+			if ability == videoAbilityReferenceToVideo {
+				entry["role"] = "reference_video"
+			}
 		case "audio_url":
 			if item.AudioURL == nil || strings.TrimSpace(item.AudioURL.URL) == "" {
 				continue
 			}
 			entry["type"] = "audio"
 			entry["url"] = strings.TrimSpace(item.AudioURL.URL)
+			if ability == videoAbilityReferenceToVideo {
+				entry["role"] = "reference_audio"
+			}
 		default:
 			continue
 		}
-		if item.Role != "" {
+		if _, hasRole := entry["role"]; !hasRole && item.Role != "" {
 			entry["role"] = item.Role
 		}
 		out = append(out, entry)
@@ -1474,6 +1518,21 @@ func normalizeVideoUpstreamStatus(status string) string {
 	}
 }
 
+func normalizeJingyuVideoUpstreamStatus(status string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "queued":
+		return VideoTaskStatusQueued, true
+	case "processing", "in_progress", "progress":
+		return VideoTaskStatusProcessing, true
+	case "completed", "succeeded", "success":
+		return VideoTaskStatusCompleted, true
+	case "failed":
+		return VideoTaskStatusFailed, true
+	default:
+		return "", false
+	}
+}
+
 func videoResponseFromTask(task *VideoTask) *VideoResponse {
 	if task == nil {
 		return nil
@@ -1617,6 +1676,31 @@ func videoAccountDuration(account *Account, key string, fallback time.Duration) 
 	return time.Duration(ms) * time.Millisecond
 }
 
+func videoAccountDefaultDuration(account *Account, key string) time.Duration {
+	if videoAccountProvider(account) == videoProviderJingyu {
+		switch key {
+		case "poll_interval_ms":
+			return videoJingyuPollInterval
+		case "poll_timeout_ms":
+			return videoJingyuPollTimeout
+		case "request_timeout_ms":
+			return videoJingyuRequestTimeout
+		case "connect_timeout_ms":
+			return videoJingyuConnectTimeout
+		}
+	}
+	switch key {
+	case "poll_interval_ms":
+		return videoDefaultPollInterval
+	case "poll_timeout_ms":
+		return videoDefaultPollTimeout
+	case "connect_timeout_ms":
+		return videoDefaultConnectTimeout
+	default:
+		return videoDefaultRequestTimeout
+	}
+}
+
 func accountExtraString(account *Account, key string) string {
 	if account == nil {
 		return ""
@@ -1669,9 +1753,9 @@ func firstNonEmptyVideoString(values ...string) string {
 
 func videoResultURLFromPayload(payload map[string]any) string {
 	resultURL := firstNonEmptyVideoString(
-		stringFromMap(payload, "video_url"),
-		stringFromMap(payload, "url"),
 		stringFromMap(payload, "result_asset_url"),
+		stringFromMap(payload, "url"),
+		stringFromMap(payload, "video_url"),
 	)
 	if resultURL != "" {
 		return resultURL
