@@ -271,6 +271,138 @@ const baseUrl = '{{BASE_URL}}'
 const apiKey = '{{API_KEY}}'
 const exampleApiKey = 'sk-your-api-key'
 
+const standaloneMediaUploadCurl = String.raw`UPLOAD_RESPONSE=$(curl -sS \
+  -X POST "$SUB2API_BASE_URL/api/v1/agent/assets" \
+  -H "Authorization: Bearer $SUB2API_API_KEY" \
+  -F "file=@./motion.mp4;type=video/mp4")
+
+ASSET_ID=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.id')
+VIDEO_URL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.url')
+VIDEO_DURATION=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.metadata.duration_seconds')
+
+printf 'asset_id=%s\nvideo_url=%s\nduration_seconds=%s\n' \
+  "$ASSET_ID" "$VIDEO_URL" "$VIDEO_DURATION"`
+
+const mediaUploadResponse = String.raw`{
+  "id": "8db0d973-c281-4b6e-a6d7-550f2bcc2b31",
+  "url": "{{BASE_URL}}/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
+  "content_type": "video/mp4",
+  "size": 3820184,
+  "sha256": "9c52d3f1...",
+  "metadata": {
+    "width": 1920,
+    "height": 1080,
+    "duration_seconds": 5.04,
+    "fps": 30,
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "container": "mp4",
+    "probe": "ffprobe"
+  },
+  "created_at": "2026-08-11T08:00:00Z",
+  "expires_at": "2026-08-12T08:00:00Z"
+}`
+
+const oneShotMultipartVideoCurl = String.raw`curl -sS \
+  -X POST "$SUB2API_BASE_URL/v1/videos" \
+  -H "Authorization: Bearer $SUB2API_API_KEY" \
+  -F 'request={
+    "model":"seedance-2.5",
+    "prompt":"Use Image 1 for identity, Image 2 for styling, Video 1 for motion, and Audio 1 for rhythm.",
+    "ratio":"16:9",
+    "duration":8,
+    "resolution":"720p",
+    "ability_code":"video_reference_to_video",
+    "content":[
+      {"type":"image_url","role":"reference_image","subject_type":"person","image_url":{"url":"attachment://0"}},
+      {"type":"image_url","role":"reference_image","subject_type":"person","image_url":{"url":"https://cdn.example.com/public-style.png"}},
+      {"type":"video_url","role":"reference_video","subject_type":"person","duration_seconds":5.04,"video_url":{"url":"attachment://1"}},
+      {"type":"audio_url","role":"reference_audio","audio_url":{"url":"attachment://2"}}
+    ]
+  };type=application/json' \
+  -F 'file=@./character.png;type=image/png' \
+  -F 'file=@./motion.mp4;type=video/mp4' \
+  -F 'file=@./music.mp3;type=audio/mpeg'`
+
+const oneShotMultipartVideoNode = String.raw`import { readFile } from "node:fs/promises";
+
+const request = {
+  model: "seedance-2.5",
+  prompt: "Use Image 1 for identity, Video 1 for motion, and Audio 1 for rhythm.",
+  ratio: "16:9",
+  duration: 8,
+  resolution: "720p",
+  ability_code: "video_reference_to_video",
+  content: [
+    {
+      type: "image_url",
+      role: "reference_image",
+      subject_type: "person",
+      image_url: { url: "attachment://0" }
+    },
+    {
+      type: "video_url",
+      role: "reference_video",
+      subject_type: "person",
+      duration_seconds: 5.04,
+      video_url: { url: "attachment://1" }
+    },
+    {
+      type: "audio_url",
+      role: "reference_audio",
+      audio_url: { url: "attachment://2" }
+    }
+  ]
+};
+
+const form = new FormData();
+form.append("request", JSON.stringify(request));
+form.append("file", new Blob([await readFile("./character.png")], { type: "image/png" }), "character.png");
+form.append("file", new Blob([await readFile("./motion.mp4")], { type: "video/mp4" }), "motion.mp4");
+form.append("file", new Blob([await readFile("./music.mp3")], { type: "audio/mpeg" }), "music.mp3");
+
+const response = await fetch("{{BASE_URL}}/v1/videos", {
+  method: "POST",
+  headers: { Authorization: "Bearer {{API_KEY}}" },
+  body: form
+});
+
+if (!response.ok) throw new Error(await response.text());
+console.log(await response.json());`
+
+const oneShotMultipartVideoPython = String.raw`import json
+import requests
+
+request_body = {
+    "model": "seedance-2.5",
+    "prompt": "Use Image 1 for identity, Video 1 for motion, and Audio 1 for rhythm.",
+    "ratio": "16:9",
+    "duration": 8,
+    "resolution": "720p",
+    "ability_code": "video_reference_to_video",
+    "content": [
+        {"type": "image_url", "role": "reference_image", "subject_type": "person", "image_url": {"url": "attachment://0"}},
+        {"type": "video_url", "role": "reference_video", "subject_type": "person", "duration_seconds": 5.04, "video_url": {"url": "attachment://1"}},
+        {"type": "audio_url", "role": "reference_audio", "audio_url": {"url": "attachment://2"}},
+    ],
+}
+
+with open("./character.png", "rb") as image, open("./motion.mp4", "rb") as video, open("./music.mp3", "rb") as audio:
+    response = requests.post(
+        "{{BASE_URL}}/v1/videos",
+        headers={"Authorization": "Bearer {{API_KEY}}"},
+        data={"request": json.dumps(request_body)},
+        files=[
+            ("file", ("character.png", image, "image/png")),
+            ("file", ("motion.mp4", video, "video/mp4")),
+            ("file", ("music.mp3", audio, "audio/mpeg")),
+        ],
+        timeout=900,
+    )
+
+response.raise_for_status()
+print(response.json())`
+
 const zhContent: DocsContent = {
   badge: '面向下游开发者',
   title: '{{SITE_NAME}} 接口文档',
@@ -321,6 +453,7 @@ const zhContent: DocsContent = {
           ['/v1/images/edits', 'openai', 'OpenAI 标准图片编辑接口，multipart/form-data，不包含 mask。'],
           ['/v1/messages', 'anthropic', 'Claude 标准 Messages API。'],
           ['/v1beta/models/{model}:generateContent', 'gemini', 'Gemini 标准文本、文生图、图生图接口。'],
+          ['/api/v1/agent/assets', '所有已认证分组', '独立上传本地图片、视频或音频，返回可供上游访问的本站公网 URL。'],
           ['/v1/videos', 'seedance / agent', 'Seedance 2.0、2.0 Fast、2.5 异步视频任务创建与查询。'],
         ],
       },
@@ -605,6 +738,76 @@ async function fileToBase64(file) {
       ],
     },
     {
+      id: 'media-uploads',
+      kicker: 'Media Upload',
+      title: '本地媒体上传与请求体自动转写',
+      protocol: 'POST /api/v1/agent/assets · POST /v1/videos',
+      description:
+        '下游可以先独立上传本地图片、视频或音频，也可以把 JSON 请求和文件放在同一个 multipart 请求里。一次请求模式会先按文件顺序写入 File Service，把 attachment://N 替换为本站公网 URL，再自动提交改写后的请求体到 Seedance 上游。',
+      notice:
+        '上传能力对所有已认证 API Key 开放，不限制 Yingzo Agent、Seedance、OpenAI 或其他分组。已经是 http:// 或 https:// 的输入 URL 会原样提交上游，本站不会下载、缓存或重新上传这些公网输入。',
+      bullets: [
+        { title: '独立上传', text: 'POST /api/v1/agent/assets 使用 multipart/form-data 的 file 字段上传一个文件，成功返回 201、本站 /media/* URL、SHA-256、媒体探测信息和过期时间。' },
+        { title: '一次请求自动转写', text: 'POST /v1/videos 同时接受 request、json 或 body JSON 字段，以及重复的 file 文件字段。客户端只提交一次；本站完成上传和 URL 替换后再提交上游。' },
+        { title: '严格保持文件顺序', text: 'attachment://0 对应第 1 个 file，attachment://1 对应第 2 个 file，依此类推。映射只看 multipart 添加顺序，不按文件名、媒体类型或 content 位置重新排序。' },
+        { title: '公网输入保持原样', text: 'content 中原本就是公网 http(s) URL 的图片、视频和音频不会占用 attachment 编号，也不会被下载后改写；它们与本地附件可以在同一请求中混用。' },
+        { title: '公网根地址', text: '管理员在 Admin -> File Service -> Public Base URL 配置媒体公网根地址，保存后立即生效，不需要修改 .env。反向代理必须放行 /media/*。' },
+        { title: '生成结果也会转存', text: '上游完成视频生成后，本站先下载结果并转存到 File Service，completed 响应只返回本站 /media/* URL，不暴露供应商原始结果地址。' },
+      ],
+      tables: [
+        {
+          title: '上传和访问接口',
+          headers: ['接口', '认证', '用途'],
+          rows: [
+            ['POST /api/v1/agent/assets', '任意有效 API Key', '独立上传一个本地图片、视频或音频；表单字段名固定为 file。'],
+            ['GET /api/v1/agent/assets/{id}', '上传时的同一 API Key', '读取文件名、类型、大小、SHA-256、metadata、过期时间和 active 状态。'],
+            ['GET /media/{id}/{filename}', '公开读取', 'Seedance 上游和下游客户端读取媒体；支持 HEAD 和 Range，有效期由 File Service 配置决定。'],
+            ['POST /v1/videos (multipart)', 'seedance 或视频能力 Agent Key', '同一次请求上传多个本地附件、自动改写 JSON，再创建视频任务。'],
+          ],
+        },
+        {
+          title: 'attachment://N 顺序映射',
+          headers: ['multipart file 顺序', '示例文件', 'JSON 中的 URL', '结果'],
+          rows: [
+            ['0', 'character.png', 'attachment://0', '上传后替换为本站图片 /media/* URL。'],
+            ['1', 'motion.mp4', 'attachment://1', '上传后替换为本站视频 /media/* URL。'],
+            ['2', 'music.mp3', 'attachment://2', '上传后替换为本站音频 /media/* URL。'],
+            ['不参与编号', 'https://cdn.example.com/public.png', '原始 http(s) URL', '保持原值，直接提交上游。'],
+          ],
+        },
+        {
+          title: '支持格式与单文件限制',
+          headers: ['媒体', '格式', '单文件上限', '上传响应 metadata'],
+          rows: [
+            ['图片', 'JPEG / PNG / WebP / GIF / BMP / TIFF / HEIC / HEIF', '30 MiB', 'width、height、probe。'],
+            ['视频', 'MP4 / MOV', '200 MiB', 'width、height、duration_seconds、fps、container、video_codec、audio_codec、probe。'],
+            ['音频', 'MP3 / WAV', '15 MiB', 'duration_seconds、encoding、probe。'],
+          ],
+        },
+        {
+          title: '上传与 multipart 常见错误',
+          headers: ['HTTP / error.code', '原因', '处理方式'],
+          rows: [
+            ['400 file_required', '独立上传缺少 file 字段。', '使用 -F file=@...，每次独立上传一个文件。'],
+            ['400 video_request_part_required', '一次请求缺少 request、json 或 body JSON 字段。', '添加一个包含完整视频请求 JSON 的普通表单字段。'],
+            ['400 invalid_attachment_reference / attachment_reference_out_of_range', 'attachment://N 格式错误或 N 超出 file 数量。', '按从 0 开始的实际文件添加顺序修正引用。'],
+            ['400 unsupported_media', '扩展名、声明 MIME 或文件内容不一致，或格式未支持。', '使用支持的真实媒体文件和正确 Content-Type。'],
+            ['413 media_too_large', '单文件超过对应媒体上限。', '压缩或转码后重试。'],
+            ['422 media_probe_failed', '服务端无法可信解析媒体。', '重新编码媒体，视频优先使用 MP4/H.264/AAC。'],
+            ['429 temporary_asset_quota_exceeded', 'API Key 过去 24 小时文件数或字节数达到后台配额。', '等待滚动窗口释放，或由管理员调整 File Service 配额。'],
+            ['503 file_storage_unavailable / media_upload_unavailable', 'File Service 或视频上传组件当前不可用。', '检查后台 File Service、共享存储和 /media/* 反向代理。'],
+          ],
+        },
+      ],
+      codeBlocks: [
+        { title: '独立上传视频并读取 URL 与时长', language: 'bash', code: standaloneMediaUploadCurl },
+        { title: '独立上传成功响应', language: 'json', code: mediaUploadResponse },
+        { title: '一次请求：本地图片 + 本地视频 + 本地音频 + 公网图片', language: 'bash', code: oneShotMultipartVideoCurl },
+        { title: 'Node.js 20+：一次请求自动上传和转写', language: 'javascript', code: oneShotMultipartVideoNode },
+        { title: 'Python requests：一次请求自动上传和转写', language: 'python', code: oneShotMultipartVideoPython },
+      ],
+    },
+    {
       id: 'seedance',
       kicker: 'Seedance',
       title: 'Seedance 2.0 / 2.5 异步视频接口',
@@ -621,6 +824,7 @@ async function fileToBase64(file) {
         { title: '能力自动推断', text: 'ability_code 可省略，服务端会根据 content 推断；生产调用建议显式传入，避免 role 写错后落入其他模式。' },
         { title: '计费', text: '生成秒数和每个参考视频向上取整后计费。基础公式为（生成秒数 × 分辨率单价 + 参考视频秒数 × 分辨率单价 × 参考系数）× 分组倍率；普通 seedance 分组的参考系数为 1。' },
         { title: '状态与退款', text: 'queued、processing、completed、failed、cancelled。任务创建时预扣费；失败或取消后 refund_status 会从 pending 变为 refunded，completed 时返回 video_url。' },
+        { title: '结果转存与 Jingyu 回调', text: '生成成功后，本站先把上游视频下载并转存到 File Service，video_url 只返回本站 /media/* 地址。仅 Jingyu 上游内部使用签名完成回调；Aigod 仍由本站轮询，下游始终使用 GET /v1/videos/{id} 查询。' },
         { title: '参考模式限制', text: '2.0/fast 最多 9 张参考图、3 个参考视频、3 个参考音频，且音频不能单独作为参考；2.5 最多 30 张图、10 个视频、10 个音频、总素材 50 个，并支持纯音频参考。' },
         { title: '视频编辑与延长', text: '当前统一入口使用 video_reference_to_video：把待编辑或待延长的源视频放为视频1，在 prompt 中明确“保留什么、改变什么、从哪里继续”。返回的是新视频任务，不会原地修改源文件。' },
         { title: '轮询与重试', text: '建议每 3-5 秒查询同一个任务 ID。GET 失败可以重试；POST 创建不是幂等重试入口，网络超时时不要盲目再次提交，否则可能创建新任务并再次预扣费。' },
@@ -698,7 +902,7 @@ async function fileToBase64(file) {
             ['object', '始终返回', '固定为 video。'],
             ['model', '始终返回', '创建时请求的下游模型名，不暴露具体上游账号或模型映射。'],
             ['status', '始终返回', 'queued / processing / completed / failed / cancelled。'],
-            ['video_url', 'completed', '生成结果地址；其他状态不返回。客户端应及时下载并按业务需要持久化。'],
+            ['video_url', 'completed', '本站转存后的 /media/* 结果地址；不会返回供应商原始 URL。其他状态不返回，客户端应在 expires_at 对应的 File Service 留存期内持久化。'],
             ['error', 'failed', '只包含对下游安全的 code 和 message，不透传上游内部响应。'],
             ['refund_status', '始终返回', 'not-applicable / pending / refunded；失败后应等到 refunded 再决定是否创建新任务。'],
             ['created_at / completed_at', '创建时间始终返回；完成时间仅 completed 返回', 'Unix 秒级时间戳。'],
@@ -890,7 +1094,7 @@ async function fileToBase64(file) {
   "object": "video",
   "model": "seedance-2.0",
   "status": "completed",
-  "video_url": "https://cdn.example.com/output.mp4",
+  "video_url": "{{BASE_URL}}/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
   "refund_status": "not-applicable",
   "created_at": 1782700000,
   "completed_at": 1782700030
@@ -994,6 +1198,7 @@ const enContent: DocsContent = {
           ['/v1/images/edits', 'openai', 'OpenAI-compatible image editing with multipart/form-data, without mask.'],
           ['/v1/messages', 'anthropic', 'Claude-compatible Messages API.'],
           ['/v1beta/models/{model}:generateContent', 'gemini', 'Gemini-compatible text, text-to-image, and image-to-image API.'],
+          ['/api/v1/agent/assets', 'Every authenticated group', 'Uploads a local image, video, or audio file and returns a public {{SITE_NAME}} URL.'],
           ['/v1/videos', 'seedance / agent', 'Seedance 2.0, 2.0 Fast, and 2.5 async video create and query API.'],
         ],
       },
@@ -1278,6 +1483,76 @@ async function fileToBase64(file) {
       ],
     },
     {
+      id: 'media-uploads',
+      kicker: 'Media Upload',
+      title: 'Local Media Upload And Automatic Request Rewriting',
+      protocol: 'POST /api/v1/agent/assets · POST /v1/videos',
+      description:
+        'A downstream client may upload local images, videos, or audio first, or send the JSON request and files together as one multipart request. In one-shot mode, {{SITE_NAME}} stores files in order, replaces attachment://N with public File Service URLs, and then submits the rewritten body to the Seedance provider.',
+      notice:
+        'Upload is available to every authenticated API key, regardless of Yingzo Agent, Seedance, OpenAI, or another group. Existing http:// or https:// input URLs are forwarded unchanged; {{SITE_NAME}} does not download, cache, or re-upload those public inputs.',
+      bullets: [
+        { title: 'Standalone upload', text: 'POST /api/v1/agent/assets accepts one file field as multipart/form-data and returns HTTP 201 with a public /media/* URL, SHA-256, trusted media metadata, and expiration time.' },
+        { title: 'One-shot automatic rewrite', text: 'POST /v1/videos accepts a request, json, or body JSON field plus repeated file fields. The client submits once; {{SITE_NAME}} uploads, replaces URL leaves, and then calls the provider.' },
+        { title: 'File order is strict', text: 'attachment://0 maps to the first file, attachment://1 to the second, and so on. Mapping uses multipart insertion order only and never sorts by filename, media type, or content position.' },
+        { title: 'Public inputs stay unchanged', text: 'Existing public image, video, and audio URLs do not consume attachment indexes and are not rewritten. Public URLs and local attachments may be mixed in one request.' },
+        { title: 'Public base URL', text: 'Configure Admin -> File Service -> Public Base URL. The database setting applies immediately without an .env change. The reverse proxy must expose /media/*.' },
+        { title: 'Generated results are rehosted too', text: 'After the provider completes generation, {{SITE_NAME}} downloads and rehosts the result. A completed task returns only a {{SITE_NAME}} /media/* URL and does not expose the supplier URL.' },
+      ],
+      tables: [
+        {
+          title: 'Upload And Access Endpoints',
+          headers: ['Endpoint', 'Authentication', 'Purpose'],
+          rows: [
+            ['POST /api/v1/agent/assets', 'Any valid API key', 'Uploads one local image, video, or audio file. The multipart field name is file.'],
+            ['GET /api/v1/agent/assets/{id}', 'The same API key used for upload', 'Returns filename, type, size, SHA-256, metadata, expiration, and active state.'],
+            ['GET /media/{id}/{filename}', 'Public read', 'Serves media to Seedance and downstream clients; HEAD and Range are supported until expiration.'],
+            ['POST /v1/videos (multipart)', 'Seedance or video-capable Agent key', 'Uploads multiple local attachments, rewrites JSON, and creates the video task in one request.'],
+          ],
+        },
+        {
+          title: 'attachment://N Order Mapping',
+          headers: ['file order', 'Example file', 'URL in JSON', 'Result'],
+          rows: [
+            ['0', 'character.png', 'attachment://0', 'Replaced with the uploaded {{SITE_NAME}} image /media/* URL.'],
+            ['1', 'motion.mp4', 'attachment://1', 'Replaced with the uploaded {{SITE_NAME}} video /media/* URL.'],
+            ['2', 'music.mp3', 'attachment://2', 'Replaced with the uploaded {{SITE_NAME}} audio /media/* URL.'],
+            ['Not numbered', 'https://cdn.example.com/public.png', 'Original http(s) URL', 'Kept unchanged and sent directly to the provider.'],
+          ],
+        },
+        {
+          title: 'Supported Formats And Per-file Limits',
+          headers: ['Media', 'Formats', 'Limit', 'Upload response metadata'],
+          rows: [
+            ['Image', 'JPEG / PNG / WebP / GIF / BMP / TIFF / HEIC / HEIF', '30 MiB', 'width, height, probe.'],
+            ['Video', 'MP4 / MOV', '200 MiB', 'width, height, duration_seconds, fps, container, video_codec, audio_codec, probe.'],
+            ['Audio', 'MP3 / WAV', '15 MiB', 'duration_seconds, encoding, probe.'],
+          ],
+        },
+        {
+          title: 'Common Upload And Multipart Errors',
+          headers: ['HTTP / error.code', 'Cause', 'Action'],
+          rows: [
+            ['400 file_required', 'Standalone upload omitted the file field.', 'Send one file with -F file=@... per standalone request.'],
+            ['400 video_request_part_required', 'One-shot request omitted request, json, or body.', 'Add a normal form field containing the complete video request JSON.'],
+            ['400 invalid_attachment_reference / attachment_reference_out_of_range', 'attachment://N is malformed or N exceeds the number of files.', 'Fix indexes using the actual zero-based file insertion order.'],
+            ['400 unsupported_media', 'Extension, declared MIME, and content disagree, or the format is unsupported.', 'Send a supported real media file with the correct Content-Type.'],
+            ['413 media_too_large', 'A file exceeds its media limit.', 'Compress or transcode the file before retrying.'],
+            ['422 media_probe_failed', 'The server could not decode the media with a trusted probe.', 'Re-encode it; prefer MP4/H.264/AAC for video.'],
+            ['429 temporary_asset_quota_exceeded', 'The key reached its rolling 24-hour file or byte quota.', 'Wait for the window or ask an administrator to update File Service quotas.'],
+            ['503 file_storage_unavailable / media_upload_unavailable', 'File Service or the video upload component is unavailable.', 'Check File Service, shared storage, and the /media/* reverse proxy.'],
+          ],
+        },
+      ],
+      codeBlocks: [
+        { title: 'Standalone Video Upload And URL/Duration Extraction', language: 'bash', code: standaloneMediaUploadCurl },
+        { title: 'Successful Standalone Upload Response', language: 'json', code: mediaUploadResponse },
+        { title: 'One Request: Local Image + Video + Audio + Public Image', language: 'bash', code: oneShotMultipartVideoCurl },
+        { title: 'Node.js 20+: One-shot Upload And Rewrite', language: 'javascript', code: oneShotMultipartVideoNode },
+        { title: 'Python requests: One-shot Upload And Rewrite', language: 'python', code: oneShotMultipartVideoPython },
+      ],
+    },
+    {
       id: 'seedance',
       kicker: 'Seedance',
       title: 'Seedance 2.0 / 2.5 Async Video API',
@@ -1294,6 +1569,7 @@ async function fileToBase64(file) {
         { title: 'Ability inference', text: 'ability_code may be omitted and inferred from content. Production clients should send it explicitly so an incorrect role cannot silently select another mode.' },
         { title: 'Billing', text: 'Generated duration and each reference video duration are rounded up. Base formula: (generated seconds x resolution price + reference seconds x resolution price x reference multiplier) x group multiplier. The reference multiplier is 1 for standard seedance groups.' },
         { title: 'Statuses and refunds', text: 'queued, processing, completed, failed, cancelled. Creation is precharged; on failure or cancellation refund_status moves from pending to refunded. completed responses include video_url.' },
+        { title: 'Result rehosting and Jingyu callback', text: 'After generation succeeds, {{SITE_NAME}} downloads and rehosts the provider video in File Service, so video_url contains only a {{SITE_NAME}} /media/* URL. Signed callbacks are internal to Jingyu tasks; Aigod remains polled, and downstream clients always query GET /v1/videos/{id}.' },
         { title: 'Reference mode limits', text: '2.0/fast allow up to 9 images, 3 videos, and 3 audio files, and audio cannot be the only reference. Seedance 2.5 allows up to 30 images, 10 videos, 10 audio files, 50 total media items, and audio-only reference input.' },
         { title: 'Video editing and extension', text: 'The unified route uses video_reference_to_video. Put the source to edit or extend first as Video 1, then state what to preserve, what to change, and where to continue. A new video task is created; the source is never modified in place.' },
         { title: 'Polling and retries', text: 'Poll the same task id every 3-5 seconds. A failed GET may be retried. POST creation is not an idempotent retry endpoint; do not blindly resubmit after a network timeout because that may create and precharge another task.' },
@@ -1371,7 +1647,7 @@ async function fileToBase64(file) {
             ['object', 'Always', 'Always video.'],
             ['model', 'Always', 'The requested downstream model. Provider account and upstream model mapping are not exposed.'],
             ['status', 'Always', 'queued / processing / completed / failed / cancelled.'],
-            ['video_url', 'completed', 'Generated result URL. Download promptly and persist it according to your application requirements.'],
+            ['video_url', 'completed', 'The rehosted {{SITE_NAME}} /media/* result URL. The supplier URL is never returned. Persist the result within the configured File Service retention period.'],
             ['error', 'failed', 'A downstream-safe code and message. Raw provider responses are never exposed.'],
             ['refund_status', 'Always', 'not-applicable / pending / refunded. After failure, wait for refunded before deciding whether to create another task.'],
             ['created_at / completed_at', 'Creation time is always present; completion time only on completed', 'Unix timestamps in seconds.'],
@@ -1563,7 +1839,7 @@ async function fileToBase64(file) {
   "object": "video",
   "model": "seedance-2.0",
   "status": "completed",
-  "video_url": "https://cdn.example.com/output.mp4",
+  "video_url": "{{BASE_URL}}/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
   "refund_status": "not-applicable",
   "created_at": 1782700000,
   "completed_at": 1782700030
