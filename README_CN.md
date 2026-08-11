@@ -234,6 +234,42 @@ gunzip -c backups_*.sql.gz | docker exec -i sub2api-restore-check-pg \
 
 ## 视频接口
 
+完整的媒体上传、`attachment://N` 顺序映射、JSON/multipart 请求、Node.js/Python/curl 示例、错误码和部署要求请参阅：[Seedance 视频与媒体输入接口](docs/SEEDANCE_VIDEO_MEDIA_API.md)。
+
+### 一次提交本地图片、视频和音频
+
+`/v1/videos` 同时接受普通 JSON 和 multipart 请求。已经是公网 `http(s)` URL 的媒体会原样保留并直接交给上游，不会被 sub2api 下载或重新上传。
+
+如果下游需要在一次请求中上传本地文件，使用 multipart：
+
+- JSON 请求放在 `request` 字段，也支持字段名 `json` 或 `body`。
+- 本地文件使用重复的 `file` 字段。
+- 文件顺序从 `0` 开始；请求体中的媒体 URL 使用 `attachment://0`、`attachment://1` 等序号引用对应文件。
+- sub2api 按文件顺序上传，替换对应 URL 后，再把改写后的 JSON 提交到 Seedance 上游。
+- 未使用 `attachment://N` 的公网 URL 保持原值，整个过程不会触发下载。
+
+示例：
+
+```bash
+curl -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <api-key>' \
+  -F 'request={"model":"seedance-2.0","prompt":"保持人物和动作连续","ability_code":"video_reference_to_video","resolution":"720p","duration":5,"content":[{"type":"image_url","role":"reference_image","image_url":{"url":"attachment://0"}},{"type":"video_url","role":"reference_video","duration_seconds":5,"video_url":{"url":"attachment://1"}},{"type":"audio_url","role":"reference_audio","audio_url":{"url":"https://cdn.example.com/music.mp3"}}]};type=application/json' \
+  -F 'file=@./reference.png;type=image/png' \
+  -F 'file=@./reference.mp4;type=video/mp4'
+```
+
+上传生成的临时 URL 使用共享文件服务配置的公网根地址。推荐在后台 `File Service` 中配置 `Public Base URL`，例如 `https://sub2api.example.com`；也可以使用 `FILE_SERVICE_PUBLIC_BASE_URL` 作为部署启动回退配置。临时素材默认保留 24 小时，具体以响应中的 `expires_at` 为准。
+
+素材上传接口也可以单独调用：
+
+```http
+POST /api/v1/agent/assets
+Authorization: Bearer <api-key>
+Content-Type: multipart/form-data
+```
+
+该上传接口现在对所有已认证 API Key 开放，不再要求 Yingzo Agent 分组；Agent 定价和估价接口仍保持 Agent 分组限制。
+
 创建视频任务：
 
 ```http

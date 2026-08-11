@@ -1,0 +1,786 @@
+# Seedance 视频与媒体输入接口
+
+本文档描述 Sub2API 当前的视频媒体输入协议，适用于需要向 Seedance 上游提交图片、视频和音频参考素材的下游客户端。
+
+当前接口支持两种提交模式：
+
+| 模式 | 适用场景 | sub2api 对媒体的处理 |
+| --- | --- | --- |
+| JSON + 公网 URL | 素材已经在 CDN、对象存储或其他公网服务上 | 保留原始 URL，直接提交上游，不下载、不重新上传 |
+| multipart + `attachment://N` | 下游只有本地图片、视频或音频 | 按 multipart 文件顺序上传，替换对应 URL，再提交上游 |
+
+核心原则是：**只有明确使用 `attachment://N` 的本地文件会被上传；已经是 `http://` 或 `https://` 的 URL 永远直接进入上游请求。**
+
+## 1. 基础信息
+
+假设 Sub2API 地址为：
+
+```text
+https://sub2api.example.com
+```
+
+视频接口：
+
+```text
+POST /v1/videos
+GET  /v1/videos/{id}
+```
+
+临时素材接口：
+
+```text
+POST /api/v1/agent/assets
+GET  /api/v1/agent/assets/{id}
+GET  /media/{id}/{filename}
+HEAD /media/{id}/{filename}
+```
+
+所有需要认证的请求使用：
+
+```http
+Authorization: Bearer <API_KEY>
+```
+
+## 2. API Key 权限
+
+`POST /api/v1/agent/assets` 和 `GET /api/v1/agent/assets/{id}` 现在对所有已认证 API Key 开放，不再要求 API Key 属于 Yingzo Agent 分组。
+
+这意味着下列分组的 API Key 都可以上传素材：
+
+- Seedance 分组。
+- OpenAI 分组。
+- Gemini 分组。
+- 其他已经通过 API Key 认证的推理分组。
+
+Agent 专属的下列接口仍然保留 Agent 分组限制：
+
+```text
+GET  /api/v1/agent/pricing
+POST /api/v1/agent/generation/estimates
+GET  /api/v1/agent/generation/estimates/{id}
+```
+
+## 3. 公网 URL 配置
+
+上传接口返回的媒体 URL 使用共享文件服务的公网根地址。推荐在管理后台配置：
+
+```text
+Admin → File Service → Public Base URL
+```
+
+填写根地址：
+
+```text
+https://sub2api.example.com
+```
+
+不要填写：
+
+```text
+https://sub2api.example.com/media
+https://sub2api.example.com/media/
+```
+
+也不要添加查询参数、路径、用户名或密码。系统会自动拼接 `/media/{id}/asset.{extension}`。
+
+部署环境也可以使用环境变量作为启动回退配置：
+
+```env
+FILE_SERVICE_PUBLIC_BASE_URL=https://sub2api.example.com
+FILE_SERVICE_RETENTION_HOURS=24
+FILE_SERVICE_DAILY_MAX_COUNT=100
+FILE_SERVICE_DAILY_MAX_BYTES=2147483648
+```
+
+管理后台中保存的 File Service 配置优先于环境变量，并且保存后立即生效。
+
+如果没有配置 `FILE_SERVICE_PUBLIC_BASE_URL`，服务会根据上传请求的 `Host` 和 `X-Forwarded-Proto` 推导地址。因此反向代理至少需要正确转发：
+
+```http
+Host: sub2api.example.com
+X-Forwarded-Proto: https
+```
+
+生产环境建议显式配置 `FILE_SERVICE_PUBLIC_BASE_URL`，避免生成容器内部 Host 或 HTTP URL。
+
+反向代理还必须把以下路径转发到 Sub2API API：
+
+```text
+/media/*
+```
+
+即使底层使用 S3、Cloudflare R2、MinIO 或其他对象存储，上传接口当前返回的仍然是 Sub2API 的 `/media/...` URL。Seedance 上游访问该 URL 时，Sub2API 会从配置的存储后端读取文件并响应。
+
+## 4. 模式一：已有公网 URL，直接提交
+
+如果图片、视频和音频已经能被上游服务器通过 HTTPS 访问，直接使用 JSON 请求。
+
+### 4.1 纯文本生成
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: seedance-text-001' \
+  -d '{
+    "model": "seedance-2.0",
+    "prompt": "一条小船在雾中的湖面上缓慢前进，电影感镜头",
+    "ability_code": "video_text_to_video",
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "resolution": "720p",
+    "generate_audio": true
+  }'
+```
+
+### 4.2 公网首帧图片
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "seedance-2.0",
+    "prompt": "人物抬头看向天空，头发被微风吹动",
+    "ability_code": "video_image_to_video",
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "resolution": "720p",
+    "content": [
+      {
+        "type": "image_url",
+        "role": "first_frame",
+        "image_url": {
+          "url": "https://cdn.example.com/character-first-frame.png"
+        }
+      }
+    ]
+  }'
+```
+
+### 4.3 公网首尾帧图片
+
+```json
+{
+  "model": "seedance-2.0",
+  "prompt": "从首帧自然运动到尾帧，保持人物身份、服装和镜头方向一致",
+  "ability_code": "video_start_end_to_video",
+  "aspect_ratio": "16:9",
+  "duration": 5,
+  "resolution": "720p",
+  "content": [
+    {
+      "type": "image_url",
+      "role": "first_frame",
+      "image_url": {
+        "url": "https://cdn.example.com/first-frame.png"
+      }
+    },
+    {
+      "type": "image_url",
+      "role": "last_frame",
+      "image_url": {
+        "url": "https://cdn.example.com/last-frame.png"
+      }
+    }
+  ]
+}
+```
+
+### 4.4 混合公网图片、视频和音频
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "seedance-2.0",
+    "prompt": "参考人物、动作节奏和背景音乐生成新的镜头",
+    "ability_code": "video_reference_to_video",
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "resolution": "720p",
+    "generate_audio": true,
+    "content": [
+      {
+        "type": "image_url",
+        "role": "reference_image",
+        "subject_type": "person",
+        "image_url": {
+          "url": "https://cdn.example.com/character.png"
+        }
+      },
+      {
+        "type": "video_url",
+        "role": "reference_video",
+        "subject_type": "person",
+        "duration_seconds": 5,
+        "video_url": {
+          "url": "https://cdn.example.com/motion.mp4"
+        }
+      },
+      {
+        "type": "audio_url",
+        "role": "reference_audio",
+        "audio_url": {
+          "url": "https://cdn.example.com/music.mp3"
+        }
+      }
+    ]
+  }'
+```
+
+在这种模式下，Sub2API 不会下载上述三个公网 URL。它们会保留在规范化请求中，并由当前 Seedance 上游适配器直接发送。
+
+## 5. 模式二：一次 multipart 请求上传本地文件
+
+### 5.1 multipart 协议
+
+请求使用：
+
+```http
+POST /v1/videos
+Authorization: Bearer <API_KEY>
+Content-Type: multipart/form-data; boundary=...
+```
+
+表单字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `request` | JSON 字符串 | 是 | 视频创建请求；也支持字段名 `json` 或 `body` |
+| `file` | 文件，可重复 | 按引用 | 本地图片、视频、音频文件 |
+
+文件引用格式：
+
+```text
+attachment://0  → 第 1 个 file 部件
+attachment://1  → 第 2 个 file 部件
+attachment://2  → 第 3 个 file 部件
+```
+
+`file` 字段的线序以 multipart 原始顺序为准。客户端不要依赖文件名排序，也不要把文件拆到不同字段名；需要保持稳定顺序时，重复使用同一个 `file` 字段。
+
+### 5.2 完整 curl 示例：本地图片 + 本地视频 + 公网音频
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -H 'Idempotency-Key: seedance-reference-001' \
+  -F 'request={
+    "model": "seedance-2.0",
+    "prompt": "保持人物身份一致，参考视频中的动作节奏生成新镜头",
+    "ability_code": "video_reference_to_video",
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "resolution": "720p",
+    "generate_audio": true,
+    "seed": 123,
+    "content": [
+      {
+        "type": "image_url",
+        "role": "reference_image",
+        "subject_type": "person",
+        "image_url": {
+          "url": "attachment://0"
+        }
+      },
+      {
+        "type": "video_url",
+        "role": "reference_video",
+        "subject_type": "person",
+        "duration_seconds": 5,
+        "video_url": {
+          "url": "attachment://1"
+        }
+      },
+      {
+        "type": "audio_url",
+        "role": "reference_audio",
+        "audio_url": {
+          "url": "https://cdn.example.com/background.mp3"
+        }
+      }
+    ]
+  };type=application/json' \
+  -F 'file=@./character.png;type=image/png' \
+  -F 'file=@./motion.mp4;type=video/mp4'
+```
+
+服务端内部处理结果等价于把请求体中的：
+
+```json
+{
+  "url": "attachment://0"
+}
+```
+
+改写为：
+
+```json
+{
+  "url": "https://sub2api.example.com/media/<asset-id-0>/asset.png"
+}
+```
+
+把：
+
+```json
+{
+  "url": "attachment://1"
+}
+```
+
+改写为：
+
+```json
+{
+  "url": "https://sub2api.example.com/media/<asset-id-1>/asset.mp4"
+}
+```
+
+公网音频 URL 保持：
+
+```text
+https://cdn.example.com/background.mp3
+```
+
+然后才进入现有视频服务和上游适配器。
+
+### 5.3 Node.js 20+ 完整示例
+
+Node.js 20+ 可以直接使用内置 `fetch`、`FormData`、`Blob`：
+
+```js
+import { readFile } from "node:fs/promises";
+
+const baseURL = process.env.SUB2API_BASE_URL ?? "https://sub2api.example.com";
+const apiKey = process.env.SUB2API_API_KEY;
+
+if (!apiKey) {
+  throw new Error("SUB2API_API_KEY is required");
+}
+
+const imageBytes = await readFile("./character.png");
+const videoBytes = await readFile("./motion.mp4");
+
+const request = {
+  model: "seedance-2.0",
+  prompt: "保持人物身份一致，参考视频动作生成新镜头",
+  ability_code: "video_reference_to_video",
+  aspect_ratio: "16:9",
+  duration: 5,
+  resolution: "720p",
+  generate_audio: true,
+  content: [
+    {
+      type: "image_url",
+      role: "reference_image",
+      subject_type: "person",
+      image_url: { url: "attachment://0" }
+    },
+    {
+      type: "video_url",
+      role: "reference_video",
+      subject_type: "person",
+      duration_seconds: 5,
+      video_url: { url: "attachment://1" }
+    },
+    {
+      type: "audio_url",
+      role: "reference_audio",
+      audio_url: { url: "https://cdn.example.com/background.mp3" }
+    }
+  ]
+};
+
+const form = new FormData();
+form.append("request", new Blob([JSON.stringify(request)], { type: "application/json" }));
+form.append("file", new Blob([imageBytes], { type: "image/png" }), "character.png");
+form.append("file", new Blob([videoBytes], { type: "video/mp4" }), "motion.mp4");
+
+const response = await fetch(`${baseURL}/v1/videos`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+    "Idempotency-Key": "seedance-node-example-001"
+  },
+  body: form
+});
+
+const payload = await response.json();
+if (!response.ok) {
+  throw new Error(`${response.status}: ${JSON.stringify(payload)}`);
+}
+
+console.log(payload);
+```
+
+注意：不要手动设置 `Content-Type: multipart/form-data`，Node.js 会自动生成包含 boundary 的正确值。
+
+### 5.4 Python 完整示例
+
+依赖：
+
+```bash
+python3 -m pip install requests
+```
+
+代码：
+
+```python
+import json
+import os
+from pathlib import Path
+
+import requests
+
+base_url = os.environ.get("SUB2API_BASE_URL", "https://sub2api.example.com")
+api_key = os.environ["SUB2API_API_KEY"]
+
+request_body = {
+    "model": "seedance-2.0",
+    "prompt": "保持人物身份一致，参考视频动作生成新镜头",
+    "ability_code": "video_reference_to_video",
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "resolution": "720p",
+    "generate_audio": True,
+    "content": [
+        {
+            "type": "image_url",
+            "role": "reference_image",
+            "subject_type": "person",
+            "image_url": {"url": "attachment://0"},
+        },
+        {
+            "type": "video_url",
+            "role": "reference_video",
+            "subject_type": "person",
+            "duration_seconds": 5,
+            "video_url": {"url": "attachment://1"},
+        },
+        {
+            "type": "audio_url",
+            "role": "reference_audio",
+            "audio_url": {"url": "https://cdn.example.com/background.mp3"},
+        },
+    ],
+}
+
+with Path("./character.png").open("rb") as image_file, Path("./motion.mp4").open("rb") as video_file:
+    files = [
+        ("file", ("character.png", image_file, "image/png")),
+        ("file", ("motion.mp4", video_file, "video/mp4")),
+    ]
+    response = requests.post(
+        f"{base_url}/v1/videos",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Idempotency-Key": "seedance-python-example-001",
+        },
+        data={"request": json.dumps(request_body)},
+        files=files,
+        timeout=120,
+    )
+
+response.raise_for_status()
+print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+```
+
+### 5.5 不同文件类型的完整顺序示例
+
+下面的请求中有 4 个文件，文件顺序与引用关系如下：
+
+| multipart 顺序 | 文件 | 请求体引用 |
+| ---: | --- | --- |
+| 0 | `first.png` | `attachment://0` |
+| 1 | `last.png` | `attachment://1` |
+| 2 | `motion.mp4` | `attachment://2` |
+| 3 | `voice.mp3` | `attachment://3` |
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -F 'request={
+    "model":"seedance-2.0",
+    "prompt":"从首帧运动到尾帧，并参考动作视频和音频",
+    "ability_code":"video_reference_to_video",
+    "duration":5,
+    "resolution":"720p",
+    "content":[
+      {"type":"image_url","role":"first_frame","image_url":{"url":"attachment://0"}},
+      {"type":"image_url","role":"last_frame","image_url":{"url":"attachment://1"}},
+      {"type":"video_url","role":"reference_video","duration_seconds":5,"video_url":{"url":"attachment://2"}},
+      {"type":"audio_url","role":"reference_audio","audio_url":{"url":"attachment://3"}}
+    ]
+  };type=application/json' \
+  -F 'file=@./first.png;type=image/png' \
+  -F 'file=@./last.png;type=image/png' \
+  -F 'file=@./motion.mp4;type=video/mp4' \
+  -F 'file=@./voice.mp3;type=audio/mpeg'
+```
+
+如果 `first.png` 和 `last.png` 的顺序颠倒，Sub2API 也会按照实际 multipart 顺序生成 URL；因此必须同时调整 `attachment://N` 的引用，不能依赖文件名自动排序。
+
+## 6. 独立上传接口
+
+如果客户端需要缓存素材、重复使用素材，或者需要可靠重试，可以先独立上传，再使用返回的公网 URL 调用 JSON 视频接口。
+
+### 6.1 上传图片
+
+```bash
+UPLOAD_RESPONSE=$(curl -sS \
+  -X POST 'https://sub2api.example.com/api/v1/agent/assets' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -F 'file=@./character.png;type=image/png')
+
+echo "$UPLOAD_RESPONSE"
+IMAGE_URL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.url')
+```
+
+### 6.2 上传视频并读取时长
+
+```bash
+UPLOAD_RESPONSE=$(curl -sS \
+  -X POST 'https://sub2api.example.com/api/v1/agent/assets' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -F 'file=@./motion.mp4;type=video/mp4')
+
+VIDEO_URL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.url')
+VIDEO_DURATION=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.metadata.duration_seconds')
+
+printf 'video_url=%s\nduration_seconds=%s\n' "$VIDEO_URL" "$VIDEO_DURATION"
+```
+
+### 6.3 使用上传结果创建视频
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n \
+    --arg image_url "$IMAGE_URL" \
+    --arg video_url "$VIDEO_URL" \
+    --argjson duration_seconds "$VIDEO_DURATION" \
+    '{
+      model: "seedance-2.0",
+      prompt: "参考人物和动作视频生成新镜头",
+      ability_code: "video_reference_to_video",
+      aspect_ratio: "16:9",
+      duration: 5,
+      resolution: "720p",
+      content: [
+        {type: "image_url", role: "reference_image", image_url: {url: $image_url}},
+        {type: "video_url", role: "reference_video", duration_seconds: $duration_seconds, video_url: {url: $video_url}}
+      ]
+    }')"
+```
+
+这种模式特别适合：
+
+- 客户端需要重复使用同一个素材。
+- 客户端需要在上传完成后检查 `metadata`。
+- 客户端需要在提交失败后只重试视频请求，不重复上传大文件。
+- 客户端需要使用同一个公网 URL 生成多个视频任务。
+
+## 7. 上传成功响应
+
+`POST /api/v1/agent/assets` 成功返回 HTTP `201 Created`：
+
+```json
+{
+  "id": "8db0d973-c281-4b6e-a6d7-550f2bcc2b31",
+  "url": "https://sub2api.example.com/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
+  "content_type": "video/mp4",
+  "size": 3820184,
+  "sha256": "9c52d3f1...",
+  "metadata": {
+    "width": 1920,
+    "height": 1080,
+    "duration_seconds": 5.04,
+    "fps": 30,
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "container": "mp4",
+    "probe": "ffprobe"
+  },
+  "created_at": "2026-08-11T08:00:00Z",
+  "expires_at": "2026-08-12T08:00:00Z"
+}
+```
+
+视频引用需要 `duration_seconds` 时，优先使用响应里的 `metadata.duration_seconds`，不要仅根据文件名或客户端估算。
+
+## 8. 视频任务响应和查询
+
+创建视频任务成功后返回任务 ID：
+
+```json
+{
+  "id": "video_0123456789abcdef",
+  "object": "video",
+  "model": "seedance-2.0",
+  "status": "queued",
+  "refund_status": "not-applicable",
+  "created_at": 1784102400
+}
+```
+
+轮询：
+
+```bash
+curl -sS \
+  'https://sub2api.example.com/v1/videos/video_0123456789abcdef' \
+  -H 'Authorization: Bearer <API_KEY>'
+```
+
+完成响应示例：
+
+```json
+{
+  "id": "video_0123456789abcdef",
+  "object": "video",
+  "model": "seedance-2.0",
+  "status": "completed",
+  "video_url": "https://provider.example.com/result.mp4",
+  "refund_status": "not-applicable",
+  "created_at": 1784102400,
+  "completed_at": 1784102475
+}
+```
+
+任务查询需要使用提交任务时的同一个 API Key。
+
+## 9. Seedance 能力和输入规则
+
+### 9.1 能力代码
+
+```text
+video_text_to_video       纯文本生成
+video_image_to_video      单首帧图生视频
+video_start_end_to_video  首尾帧生成视频
+video_reference_to_video  参考图片/视频/音频生成视频
+```
+
+没有显式传 `ability_code` 时，Sub2API 会根据 `content` 中的媒体类型进行推断；生产客户端建议显式传递，避免请求意图不清晰。
+
+### 9.2 图生视频
+
+必须恰好包含一张：
+
+```json
+{
+  "type": "image_url",
+  "role": "first_frame",
+  "image_url": {"url": "https://..."}
+}
+```
+
+不能同时加入视频或音频引用。
+
+### 9.3 首尾帧
+
+必须包含：
+
+- 一张 `role: "first_frame"` 图片。
+- 一张 `role: "last_frame"` 图片。
+
+不能同时加入视频或音频引用。
+
+### 9.4 参考视频
+
+Seedance 2.0 参考模式支持图片、视频和音频，但至少需要一张图片或一个视频。视频引用需要：
+
+```json
+{
+  "type": "video_url",
+  "role": "reference_video",
+  "duration_seconds": 5,
+  "video_url": {"url": "https://..."}
+}
+```
+
+当前代码校验的常用限制：
+
+| 模型 | 单次时长 | 图片数量 | 视频数量 | 音频数量 | 总引用数量 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `seedance-2.0` | 4–15 秒 | 最多 9 | 最多 3 | 最多 3 | 按图片/视频规则校验 |
+| `seedance-2.0-fast` | 4–15 秒 | 按上游能力 | 按上游能力 | 按上游能力 | 按上游能力 |
+| `seedance-2.5` | 4–30 秒 | 最多 30 | 最多 10 | 最多 10 | 最多 50 |
+
+最终可用分辨率仍取决于模型和已配置的上游路由：
+
+```text
+seedance-2.0       480p / 720p / 1080p / 4K
+seedance-2.0-fast  480p / 720p
+seedance-2.5       480p / 720p
+```
+
+## 10. 支持的上传格式和大小
+
+| 媒体 | 推荐格式 | 当前支持格式 | 单文件上限 |
+| --- | --- | --- | ---: |
+| 图片 | PNG、JPEG、WebP | JPEG、PNG、WebP、GIF、BMP、TIFF、HEIC、HEIF | 30 MiB |
+| 视频 | MP4/H.264 | MP4、MOV | 200 MiB |
+| 音频 | MP3、WAV | MP3、WAV | 15 MiB |
+
+建议视频优先使用 MP4/H.264。部分上游会依赖文件扩展名，MOV、HEIC 等格式虽然可以上传，但统一转为 PNG/JPEG/MP4 后兼容性更好。
+
+## 11. 错误响应
+
+错误统一使用：
+
+```json
+{
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_attachment_reference",
+    "message": "Content item 2 references missing attachment 3"
+  }
+}
+```
+
+常见错误码：
+
+| HTTP | code | 原因 |
+| ---: | --- | --- |
+| 400 | `video_request_part_required` | multipart 请求没有 `request`、`json` 或 `body` JSON 字段 |
+| 400 | `invalid_video_multipart` | multipart 解析失败 |
+| 400 | `invalid_attachment_reference` | `attachment://N` 格式错误 |
+| 400 | `attachment_reference_out_of_range` | N 超出本次请求的 file 数量 |
+| 400 | `unsupported_media` | 文件类型、扩展名或内容不匹配 |
+| 413 | `media_too_large` | 超过图片、视频或音频单文件限制 |
+| 413 | `request_body_too_large` | 整个 HTTP 请求超过网关限制 |
+| 422 | `media_probe_failed` | 图片、视频或音频无法被可信探测器解析 |
+| 429 | `temporary_asset_quota_exceeded` | API Key 24 小时上传数量或总字节数超限 |
+| 503 | `media_upload_unavailable` | 视频 Handler 没有连接到共享素材存储 |
+| 503 | `file_storage_unavailable` | 文件存储配置或对象存储不可用 |
+
+## 12. 重试建议
+
+一次性 multipart 请求中的本地文件每次都会创建新的临时素材 URL。如果提交失败后需要稳定重试，推荐采用两步模式：
+
+```text
+1. POST /api/v1/agent/assets 上传并缓存 URL
+2. 使用返回的 https URL 调用 POST /v1/videos
+3. 失败时只重试 JSON 视频请求
+```
+
+这样可以避免重复上传大文件，也更容易配合 `Idempotency-Key` 使用。
+
+## 13. 客户端实现要点
+
+1. 永远按照 multipart 文件添加顺序生成 `attachment://N`。
+2. 不要按文件名排序后再提交，除非请求体引用也同步重排。
+3. 已经是公网 `http(s)` URL 的媒体直接写入 JSON，不要包装成 `attachment://N`。
+4. 引用视频的 `duration_seconds` 使用上传响应中的 `metadata.duration_seconds`。
+5. 公网 URL 必须允许 Seedance 上游服务通过无认证 HTTPS `GET` 访问。
+6. 需要支持 Range 或 HEAD 时，保留 Sub2API `/media/*` 路由的正常转发。
+7. 在客户端记录 `id`、`sha256` 和 `expires_at`，便于缓存、去重和过期清理。
