@@ -294,10 +294,11 @@ var ProviderSet = wire.NewSet(
 // 让 /v1/videos 的提示词与图片生成走同一套 prompt audit。
 func ProvideVideoHandler(
 	videoService *service.VideoService,
+	agentHandler *AgentHandler,
 	contentModerationService *service.ContentModerationService,
 	coordinator *securityaudit.Coordinator,
 ) *VideoHandler {
-	h := NewVideoHandler(videoService)
+	h := NewVideoHandler(videoService, agentHandler)
 	h.contentModerationService = contentModerationService
 	h.securityAuditCoordinator = coordinator
 	return h

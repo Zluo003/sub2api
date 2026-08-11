@@ -35,6 +35,22 @@ func TestAgentRoutesRejectOrdinaryAPIKeys(t *testing.T) {
 	require.Contains(t, w.Body.String(), "agent_credential_required")
 }
 
+func TestTemporaryAssetRoutesAcceptOrdinaryAPIKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	v := r.Group("/api/v1")
+	h := &handler.Handlers{Agent: &handler.AgentHandler{}}
+	RegisterAgentRoutes(r, v, h, agentAuthForTest(false))
+
+	// Invalid UUID is rejected by the handler itself. Reaching that response
+	// proves the ordinary key passed API-key authentication without the Agent
+	// group middleware blocking the shared media capability.
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/agent/assets/not-a-uuid", nil))
+	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Contains(t, w.Body.String(), "temporary_asset_not_found")
+}
+
 func TestRetiredYingzoDistributionRoutesAreNotRegistered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

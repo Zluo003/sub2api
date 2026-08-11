@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,12 +21,17 @@ import (
 
 type VideoHandler struct {
 	videoService             *service.VideoService
+	agentHandler             *AgentHandler
 	securityAuditCoordinator *securityaudit.Coordinator
 	contentModerationService *service.ContentModerationService
 }
 
-func NewVideoHandler(videoService *service.VideoService) *VideoHandler {
-	return &VideoHandler{videoService: videoService}
+func NewVideoHandler(videoService *service.VideoService, agentHandler ...*AgentHandler) *VideoHandler {
+	h := &VideoHandler{videoService: videoService}
+	if len(agentHandler) > 0 {
+		h.agentHandler = agentHandler[0]
+	}
+	return h
 }
 
 // checkSecurityAudit 让视频提示词与图片生成共用上游的审核协调器。
@@ -45,8 +51,18 @@ func (h *VideoHandler) Create(c *gin.Context) {
 	}
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 
-	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	var body []byte
+	var err error
+	if strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+		body, err = h.readMultipartVideoRequest(c, apiKey)
+	} else {
+		body, err = pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	}
 	if err != nil {
+		if multipartErr, ok := err.(*videoMultipartRequestError); ok {
+			h.errorResponse(c, multipartErr.status, videoErrorType(multipartErr.status), multipartErr.code, multipartErr.message)
+			return
+		}
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_body_too_large", buildBodyTooLargeMessage(maxErr.Limit))
 			return
@@ -104,6 +120,223 @@ func (h *VideoHandler) Create(c *gin.Context) {
 		c.Header("X-Idempotency-Replayed", "true")
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+type videoMultipartRequestError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *videoMultipartRequestError) Error() string {
+	if e == nil {
+		return "invalid multipart video request"
+	}
+	return e.message
+}
+
+// readMultipartVideoRequest accepts a JSON request part plus repeated `file`
+// parts. Media URLs in the JSON use attachment://N, where N is the zero-based
+// position of the corresponding file part. This explicit ordinal contract
+// preserves the user's input order through upload, URL replacement, and the
+// final upstream body.
+func (h *VideoHandler) readMultipartVideoRequest(c *gin.Context, apiKey *service.APIKey) ([]byte, error) {
+	if h == nil {
+		return nil, &videoMultipartRequestError{status: http.StatusServiceUnavailable, code: "media_upload_unavailable", message: "Video media upload is not configured"}
+	}
+	// Keep only small form fields in memory; large media parts are spooled to
+	// temporary files by net/http. The route-level body limit remains the total
+	// request-size guard.
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_multipart", message: "Failed to parse multipart video request"}
+	}
+	form := c.Request.MultipartForm
+	if form == nil {
+		return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_multipart", message: "Multipart form is empty"}
+	}
+	requestJSON := ""
+	for _, field := range []string{"request", "json", "body"} {
+		if values := form.Value[field]; len(values) > 0 && strings.TrimSpace(values[0]) != "" {
+			requestJSON = values[0]
+			break
+		}
+	}
+	if strings.TrimSpace(requestJSON) == "" {
+		return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "video_request_part_required", message: "Multipart video requests require a JSON request part"}
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(requestJSON), &raw); err != nil {
+		return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_request", message: "Failed to parse multipart video JSON request"}
+	}
+	var request service.VideoCreateRequest
+	if err := json.Unmarshal([]byte(requestJSON), &request); err != nil {
+		return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_request", message: "Failed to parse multipart video JSON request"}
+	}
+
+	files := form.File["file"]
+	if len(files) == 0 {
+		if err := validateMultipartVideoAttachments(&request, 0); err != nil {
+			return nil, err
+		}
+		return []byte(requestJSON), nil
+	}
+	if h.agentHandler == nil {
+		return nil, &videoMultipartRequestError{status: http.StatusServiceUnavailable, code: "media_upload_unavailable", message: "Video media upload is not configured"}
+	}
+	if err := validateMultipartVideoAttachments(&request, len(files)); err != nil {
+		return nil, err
+	}
+	urls := make([]string, len(files))
+	for i, header := range files {
+		file, err := header.Open()
+		if err != nil {
+			return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "file_open_failed", message: fmt.Sprintf("Failed to open multipart file %d", i)}
+		}
+		result, uploadErr := h.agentHandler.uploadTemporaryAssetPart(c, apiKey, file, header)
+		_ = file.Close()
+		if uploadErr != nil {
+			if assetErr, ok := uploadErr.(*temporaryAssetUploadError); ok {
+				message := assetErr.message
+				if message == "" {
+					message = assetErr.code
+				}
+				return nil, &videoMultipartRequestError{status: assetErr.status, code: assetErr.code, message: message}
+			}
+			return nil, &videoMultipartRequestError{status: http.StatusInternalServerError, code: "media_upload_failed", message: "Failed to upload multipart media"}
+		}
+		urls[i] = result.URL
+	}
+
+	if err := rewriteMultipartRawVideoAttachments(raw, urls); err != nil {
+		return nil, err
+	}
+	// Marshal the normalized request after URL replacement. The VideoService
+	// performs the provider-specific transformation from this canonical body.
+	rewritten, err := json.Marshal(raw)
+	if err != nil {
+		return nil, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_request", message: "Failed to encode rewritten video request"}
+	}
+	return rewritten, nil
+}
+
+// rewriteMultipartRawVideoAttachments edits only the URL leaves in the raw
+// JSON map, retaining provider-neutral or provider-specific fields that are
+// not represented by VideoCreateRequest (for example seed or future fields).
+func rewriteMultipartRawVideoAttachments(raw map[string]any, urls []string) error {
+	content, ok := raw["content"].([]any)
+	if !ok {
+		return nil
+	}
+	for i, value := range content {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		var urlField string
+		switch strings.ToLower(strings.TrimSpace(stringValue(item["type"]))) {
+		case "image_url":
+			urlField = "image_url"
+		case "video_url":
+			urlField = "video_url"
+		case "audio_url":
+			urlField = "audio_url"
+		default:
+			continue
+		}
+		urlObject, ok := item[urlField].(map[string]any)
+		if !ok {
+			continue
+		}
+		rawURL, ok := urlObject["url"].(string)
+		if !ok || !strings.HasPrefix(strings.TrimSpace(rawURL), "attachment://") {
+			continue
+		}
+		index, err := parseMultipartAttachmentOrdinal(rawURL, i, len(urls))
+		if err != nil {
+			return err
+		}
+		urlObject["url"] = urls[index]
+	}
+	return nil
+}
+
+func stringValue(value any) string {
+	valueString, _ := value.(string)
+	return valueString
+}
+
+func parseMultipartAttachmentOrdinal(rawURL string, itemIndex, fileCount int) (int, error) {
+	ordinal := strings.TrimPrefix(strings.TrimSpace(rawURL), "attachment://")
+	if ordinal == "" {
+		return 0, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_attachment_reference", message: fmt.Sprintf("Content item %d has an empty attachment reference", itemIndex)}
+	}
+	index := 0
+	for _, ch := range ordinal {
+		if ch < '0' || ch > '9' {
+			return 0, &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_attachment_reference", message: fmt.Sprintf("Content item %d must reference attachment://N", itemIndex)}
+		}
+		index = index*10 + int(ch-'0')
+		if index >= fileCount {
+			return 0, &videoMultipartRequestError{status: http.StatusBadRequest, code: "attachment_reference_out_of_range", message: fmt.Sprintf("Content item %d references missing attachment %s", itemIndex, ordinal)}
+		}
+	}
+	return index, nil
+}
+
+func rewriteMultipartVideoAttachments(request *service.VideoCreateRequest, urls []string) error {
+	if request == nil {
+		return &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_request", message: "Video request is empty"}
+	}
+	for i := range request.Content {
+		item := &request.Content[i]
+		var rawURL *service.VideoContentURL
+		switch strings.ToLower(strings.TrimSpace(item.Type)) {
+		case "image_url":
+			rawURL = item.ImageURL
+		case "video_url":
+			rawURL = item.VideoURL
+		case "audio_url":
+			rawURL = item.AudioURL
+		default:
+			continue
+		}
+		if rawURL == nil || !strings.HasPrefix(strings.TrimSpace(rawURL.URL), "attachment://") {
+			continue
+		}
+		index, err := parseMultipartAttachmentOrdinal(rawURL.URL, i, len(urls))
+		if err != nil {
+			return err
+		}
+		rawURL.URL = urls[index]
+	}
+	return nil
+}
+
+func validateMultipartVideoAttachments(request *service.VideoCreateRequest, fileCount int) error {
+	if request == nil {
+		return &videoMultipartRequestError{status: http.StatusBadRequest, code: "invalid_video_request", message: "Video request is empty"}
+	}
+	for i := range request.Content {
+		item := &request.Content[i]
+		var rawURL *service.VideoContentURL
+		switch strings.ToLower(strings.TrimSpace(item.Type)) {
+		case "image_url":
+			rawURL = item.ImageURL
+		case "video_url":
+			rawURL = item.VideoURL
+		case "audio_url":
+			rawURL = item.AudioURL
+		default:
+			continue
+		}
+		if rawURL == nil || !strings.HasPrefix(strings.TrimSpace(rawURL.URL), "attachment://") {
+			continue
+		}
+		if _, err := parseMultipartAttachmentOrdinal(rawURL.URL, i, fileCount); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *VideoHandler) Get(c *gin.Context) {
