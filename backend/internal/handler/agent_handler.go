@@ -795,22 +795,6 @@ func (e *temporaryAssetUploadError) Error() string {
 	return e.code
 }
 
-func writeTemporaryAssetUploadError(c *gin.Context, err error) {
-	assetErr, ok := err.(*temporaryAssetUploadError)
-	if !ok || assetErr == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "storage_error"}})
-		return
-	}
-	payload := gin.H{"code": assetErr.code}
-	if assetErr.message != "" {
-		payload["message"] = assetErr.message
-	}
-	for key, value := range assetErr.extra {
-		payload[key] = value
-	}
-	c.JSON(assetErr.status, gin.H{"error": payload})
-}
-
 // uploadTemporaryAssetPart stores one already-parsed multipart part using the
 // same storage, quota, metadata, ownership, and expiry contract as the public
 // /api/v1/agent/assets endpoint. It is used by the one-shot video upload path.
