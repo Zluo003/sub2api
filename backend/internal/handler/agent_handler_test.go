@@ -194,8 +194,23 @@ func uploadRouter(h *AgentHandler) *gin.Engine {
 	r.POST("/assets", func(c *gin.Context) {
 		c.Request.Header.Set("X-Forwarded-Proto", "https")
 		groupID := int64(3)
-		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 2, UserID: 1, GroupID: &groupID})
-		h.UploadTemporaryAsset(c)
+		key := &service.APIKey{ID: 2, UserID: 1, GroupID: &groupID}
+		file, header, err := c.Request.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "file_required"}})
+			return
+		}
+		defer func() { _ = file.Close() }()
+		result, err := h.uploadTemporaryAssetPart(c, key, file, header)
+		if err != nil {
+			if uploadErr, ok := err.(*temporaryAssetUploadError); ok {
+				c.JSON(uploadErr.status, gin.H{"error": gin.H{"code": uploadErr.code}})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "media_upload_failed"}})
+			return
+		}
+		c.JSON(http.StatusCreated, result)
 	})
 	return r
 }
@@ -436,30 +451,5 @@ func TestCleanupExpiredClaimsRowsAndDeletesBothBackends(t *testing.T) {
 	_, err = os.Stat(localDir)
 	require.ErrorIs(t, err, os.ErrNotExist)
 	require.Equal(t, []string{"agent-assets/expired"}, store.deleted)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetTemporaryAssetEnforcesCredentialOwnership(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	h, mock := newAgentHandlerMock(t)
-	id := uuid.New()
-	now := time.Now().UTC()
-	mock.ExpectQuery("SELECT original_filename,media_type,mime_type,size_bytes,sha256,metadata,created_at,expires_at,deleted_at").
-		WithArgs(id, int64(1), int64(2)).
-		WillReturnRows(sqlmock.NewRows([]string{"original_filename", "media_type", "mime_type", "size_bytes", "sha256", "metadata", "created_at", "expires_at", "deleted_at"}).
-			AddRow("pixel.png", "image", "image/png", 8, strings.Repeat("a", 64), []byte(`{"width":1,"height":1,"probe":"go-image"}`), now, now.Add(time.Hour), nil))
-
-	r := gin.New()
-	r.GET("/assets/:id", func(c *gin.Context) {
-		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{ID: 2, UserID: 1})
-		h.GetTemporaryAsset(c)
-	})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/assets/"+id.String(), nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Contains(t, w.Body.String(), `"active":true`)
-	require.Contains(t, w.Body.String(), `"probe":"go-image"`)
-	require.NotContains(t, w.Body.String(), "public_token")
-	require.NotContains(t, w.Body.String(), "storage_key")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

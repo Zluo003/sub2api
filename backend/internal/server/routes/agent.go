@@ -16,14 +16,6 @@ func RegisterAgentRoutes(r *gin.Engine, v1 *gin.RouterGroup, h *handler.Handlers
 	g.POST("/generation/estimates", h.Agent.EstimateGeneration)
 	g.GET("/generation/estimates/:id", h.Agent.GetGenerationEstimate)
 
-	// Temporary media is an input capability shared by every authenticated API
-	// key. Agent pricing/estimate endpoints remain restricted to Agent groups,
-	// but ordinary Seedance/OpenAI/etc. keys must be able to materialize local
-	// image/video/audio inputs before a gateway request is submitted.
-	assets := v1.Group("/agent/assets")
-	assets.Use(gin.HandlerFunc(apiKeyAuth))
-	assets.POST("", h.Agent.UploadTemporaryAsset)
-	assets.GET("/:id", h.Agent.GetTemporaryAsset)
 	r.GET("/temporary-assets/:token", h.Agent.ServeTemporaryAsset)
 	r.HEAD("/temporary-assets/:token", h.Agent.ServeTemporaryAsset)
 	r.GET("/media/:id/:filename", h.Agent.ServeCleanTemporaryAsset)

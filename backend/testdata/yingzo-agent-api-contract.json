@@ -1,6 +1,6 @@
 {
   "schema_version": "3.0.0",
-  "agent_api_contract_version": "2026-07-24.2",
+  "agent_api_contract_version": "2026-08-11.1",
   "model_catalog": {
     "schema_version": 3,
     "source": "configured_account_synced_catalog",
@@ -37,8 +37,6 @@
     "POST /v1beta/models/:model:streamGenerateContent",
     "GET /api/v1/agent/pricing",
     "POST /api/v1/agent/generation/estimates",
-    "POST /api/v1/agent/assets",
-    "GET /api/v1/agent/assets/:id",
     "HEAD /media/:id/:filename",
     "GET /media/:id/:filename",
     "POST /v1/images/generations",
@@ -46,15 +44,6 @@
     "POST /v1/videos",
     "GET /v1/videos/:id"
   ],
-  "temporary_asset_response_required_fields": [
-    "id",
-    "url",
-    "content_type",
-    "size",
-    "sha256",
-    "expires_at"
-  ],
-  "temporary_asset_public_url_contract": "https_no_credentials_no_query_readable_by_head_and_get_until_expiry",
   "video_response_required_fields": [
     "id",
     "object",

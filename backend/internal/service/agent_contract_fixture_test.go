@@ -18,11 +18,9 @@ type yingzoAgentContractFixture struct {
 		CapabilityFields []string `json:"capability_fields"`
 		CacheHeaders     []string `json:"cache_headers"`
 	} `json:"model_catalog"`
-	Endpoints                    []string `json:"endpoints"`
-	TemporaryAssetRequiredFields []string `json:"temporary_asset_response_required_fields"`
-	TemporaryAssetURLContract    string   `json:"temporary_asset_public_url_contract"`
-	VideoResponseRequiredFields  []string `json:"video_response_required_fields"`
-	VideoRefundStatusValues      []string `json:"video_refund_status_values"`
+	Endpoints                   []string `json:"endpoints"`
+	VideoResponseRequiredFields []string `json:"video_response_required_fields"`
+	VideoRefundStatusValues     []string `json:"video_refund_status_values"`
 }
 
 func TestYingzoAgentContractFixtureMatchesService(t *testing.T) {
@@ -55,8 +53,6 @@ func TestYingzoAgentContractFixtureMatchesService(t *testing.T) {
 		"GET /v1beta/models/:model",
 		"POST /v1beta/models/:model:generateContent",
 		"POST /v1beta/models/:model:streamGenerateContent",
-		"POST /api/v1/agent/assets",
-		"GET /api/v1/agent/assets/:id",
 		"HEAD /media/:id/:filename",
 		"GET /media/:id/:filename",
 		"POST /v1/images/generations",
@@ -69,14 +65,8 @@ func TestYingzoAgentContractFixtureMatchesService(t *testing.T) {
 	require.NotContains(t, fixture.Endpoints, "GET /api/v1/agent/models/:id/capabilities")
 	require.NotContains(t, fixture.Endpoints, "POST /api/v1/agent/media/preflight")
 	require.NotContains(t, fixture.Endpoints, "DELETE /api/v1/agent/installation")
-	require.Equal(t, []string{
-		"id", "url", "content_type", "size", "sha256", "expires_at",
-	}, fixture.TemporaryAssetRequiredFields)
-	require.Equal(
-		t,
-		"https_no_credentials_no_query_readable_by_head_and_get_until_expiry",
-		fixture.TemporaryAssetURLContract,
-	)
+	require.NotContains(t, fixture.Endpoints, "POST /api/v1/agent/assets")
+	require.NotContains(t, fixture.Endpoints, "GET /api/v1/agent/assets/:id")
 
 	encodedVideo, err := json.Marshal(videoResponseFromTask(&VideoTask{
 		PublicID:  "video_contract",

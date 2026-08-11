@@ -42,7 +42,7 @@
         </div>
       </section>
 
-      <div class="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <div class="grid min-w-0 gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside class="hidden lg:block">
           <div class="sticky top-24 rounded-2xl border border-gray-100 bg-white/80 p-3 shadow-card backdrop-blur dark:border-dark-700/50 dark:bg-dark-800/70">
             <div class="px-3 pb-2 text-xs font-semibold uppercase text-gray-500 dark:text-dark-400">
@@ -61,12 +61,12 @@
           </div>
         </aside>
 
-        <main class="space-y-6">
+        <main class="min-w-0 space-y-6">
           <section
             v-for="section in content.sections"
             :id="section.id"
             :key="section.id"
-            class="scroll-mt-24 rounded-2xl border border-gray-100 bg-white shadow-card dark:border-dark-700/50 dark:bg-dark-800/50"
+            class="min-w-0 scroll-mt-24 rounded-2xl border border-gray-100 bg-white shadow-card dark:border-dark-700/50 dark:bg-dark-800/50"
           >
             <div class="border-b border-gray-100 p-6 dark:border-dark-700">
               <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -84,7 +84,7 @@
               </div>
             </div>
 
-            <div class="space-y-6 p-6">
+            <div class="min-w-0 space-y-6 p-6">
               <div v-if="section.notice" class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200">
                 {{ section.notice }}
               </div>
@@ -100,7 +100,7 @@
                 </div>
               </div>
 
-              <div v-if="section.table" class="overflow-hidden rounded-xl border border-gray-100 dark:border-dark-700">
+              <div v-if="section.table" class="min-w-0 overflow-hidden rounded-xl border border-gray-100 dark:border-dark-700">
                 <div class="overflow-x-auto">
                   <table class="w-full min-w-[680px] text-left text-sm">
                     <thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-dark-900/60 dark:text-dark-400">
@@ -126,11 +126,11 @@
                 </div>
               </div>
 
-              <div v-if="section.tables?.length" class="space-y-4">
+              <div v-if="section.tables?.length" class="min-w-0 space-y-4">
                 <div
                   v-for="table in section.tables"
                   :key="table.title"
-                  class="overflow-hidden rounded-xl border border-gray-100 dark:border-dark-700"
+                  class="min-w-0 overflow-hidden rounded-xl border border-gray-100 dark:border-dark-700"
                 >
                   <div class="border-b border-gray-100 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-900 dark:border-dark-700 dark:bg-dark-900/60 dark:text-white">
                     {{ table.title }}
@@ -175,11 +175,11 @@
                 </div>
               </div>
 
-              <div v-if="section.codeBlocks?.length" class="space-y-4">
+              <div v-if="section.codeBlocks?.length" class="min-w-0 space-y-4">
                 <div
                   v-for="(block, blockIndex) in section.codeBlocks"
                   :key="`${section.id}-${blockIndex}`"
-                  class="overflow-hidden rounded-xl border border-gray-100 bg-dark-950 shadow-card dark:border-dark-700"
+                  class="min-w-0 overflow-hidden rounded-xl border border-gray-100 bg-dark-950 shadow-card dark:border-dark-700"
                 >
                   <div class="flex items-center justify-between border-b border-white/10 bg-dark-900 px-4 py-3">
                     <div class="min-w-0">
@@ -270,38 +270,6 @@ const appStore = useAppStore()
 const baseUrl = '{{BASE_URL}}'
 const apiKey = '{{API_KEY}}'
 const exampleApiKey = 'sk-your-api-key'
-
-const standaloneMediaUploadCurl = String.raw`UPLOAD_RESPONSE=$(curl -sS \
-  -X POST "$SUB2API_BASE_URL/api/v1/agent/assets" \
-  -H "Authorization: Bearer $SUB2API_API_KEY" \
-  -F "file=@./motion.mp4;type=video/mp4")
-
-ASSET_ID=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.id')
-VIDEO_URL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.url')
-VIDEO_DURATION=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.metadata.duration_seconds')
-
-printf 'asset_id=%s\nvideo_url=%s\nduration_seconds=%s\n' \
-  "$ASSET_ID" "$VIDEO_URL" "$VIDEO_DURATION"`
-
-const mediaUploadResponse = String.raw`{
-  "id": "8db0d973-c281-4b6e-a6d7-550f2bcc2b31",
-  "url": "{{BASE_URL}}/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
-  "content_type": "video/mp4",
-  "size": 3820184,
-  "sha256": "9c52d3f1...",
-  "metadata": {
-    "width": 1920,
-    "height": 1080,
-    "duration_seconds": 5.04,
-    "fps": 30,
-    "video_codec": "h264",
-    "audio_codec": "aac",
-    "container": "mp4",
-    "probe": "ffprobe"
-  },
-  "created_at": "2026-08-11T08:00:00Z",
-  "expires_at": "2026-08-12T08:00:00Z"
-}`
 
 const oneShotMultipartVideoCurl = String.raw`curl -sS \
   -X POST "$SUB2API_BASE_URL/v1/videos" \
@@ -414,7 +382,7 @@ const zhContent: DocsContent = {
   copySuccess: 'Markdown 文档已复制',
   tocTitle: '文档目录',
   highlights: [
-    { label: '基础地址', value: baseUrl, description: '请替换为你自己的部署域名或反向代理地址。' },
+    { label: '基础地址', value: baseUrl, description: '请替换为本站提供的 API 服务地址。' },
     { label: '认证方式', value: 'Bearer / x-api-key / x-goog-api-key', description: '所有接口都使用本站 API Key 鉴权。' },
     { label: '计费归属', value: '按密钥绑定分组计费', description: '不同平台接口必须使用对应平台分组。' },
     { label: '复制格式', value: 'Markdown + 标准示例代码', description: '可直接提交给 AI 进行二次开发。' },
@@ -426,7 +394,7 @@ const zhContent: DocsContent = {
       title: '快速开始与通用规则',
       protocol: 'All APIs',
       description:
-        '所有请求都经过本站用户、API Key、分组、额度、计费和上游账号调度。请求体尽量保持对应生态的标准格式，方便 SDK 或 AI 编程工具直接接入。',
+        '所有请求都使用本站 API Key，并遵循密钥所属分组的额度和计费规则。请求体尽量保持对应生态的标准格式，方便 SDK 或 AI 编程工具直接接入。',
       bullets: [
         {
           title: '不要把 API Key 放在 URL 查询参数',
@@ -434,7 +402,7 @@ const zhContent: DocsContent = {
         },
         {
           title: '平台分组必须匹配',
-          text: 'OpenAI 接口使用 openai 分组，Claude 标准接口使用 anthropic 分组，Gemini 标准接口使用 gemini 分组，Seedance 使用 seedance 分组；Agent 聚合分组也可以按模型能力调度 Seedance。',
+          text: 'OpenAI 接口使用 openai 分组，Claude 标准接口使用 anthropic 分组，Gemini 标准接口使用 gemini 分组，Seedance 使用 seedance 分组；Agent 聚合分组需确认可用模型列表包含对应 Seedance 模型。',
         },
         {
           title: '错误格式跟随接口生态',
@@ -442,7 +410,7 @@ const zhContent: DocsContent = {
         },
         {
           title: '用量与计费记录',
-          text: '文本、图片和视频请求都会进入本站使用记录。异步视频任务创建、完成、失败与退费记录由后台任务处理。',
+          text: '文本、图片和视频请求都会进入本站使用记录。异步视频任务的创建、完成、失败与退款均会生成对应记录。',
         },
       ],
       table: {
@@ -453,7 +421,6 @@ const zhContent: DocsContent = {
           ['/v1/images/edits', 'openai', 'OpenAI 标准图片编辑接口，multipart/form-data，不包含 mask。'],
           ['/v1/messages', 'anthropic', 'Claude 标准 Messages API。'],
           ['/v1beta/models/{model}:generateContent', 'gemini', 'Gemini 标准文本、文生图、图生图接口。'],
-          ['/api/v1/agent/assets', '所有已认证分组', '独立上传本地图片、视频或音频，返回可供上游访问的本站公网 URL。'],
           ['/v1/videos', 'seedance / agent', 'Seedance 2.0、2.0 Fast、2.5 异步视频任务创建与查询。'],
         ],
       },
@@ -474,7 +441,7 @@ export SUB2API_API_KEY="${apiKey}"`,
       description:
         'Responses API 使用 OpenAI 标准请求结构，适合文本、工具调用、多轮上下文与多模态输入。当前文档示例使用模型 gpt-5.5。',
       items: [
-        { title: '模型', text: 'model 固定填写 gpt-5.5，具体可用性取决于管理员配置的 openai 分组和上游账号。' },
+        { title: '模型', text: 'model 固定填写 gpt-5.5；调用前请确认当前 API Key 的可用模型列表包含该模型。' },
         { title: '输入', text: 'input 可以是字符串，也可以是 OpenAI Responses 标准消息数组。' },
         { title: '流式', text: '设置 stream: true 可使用 SSE 流式响应；非流式返回完整 JSON。' },
       ],
@@ -583,7 +550,7 @@ console.log(data.data?.[0]?.url ?? data);`,
       title: 'Claude 标准 Messages 接口',
       protocol: 'POST /v1/messages',
       description:
-        'Claude 接口保持 Anthropic Messages API 结构。请使用绑定 anthropic 分组的本站 API Key。模型名按管理员开放的 Claude 模型填写。',
+        'Claude 接口保持 Anthropic Messages API 结构。请使用绑定 anthropic 分组的本站 API Key，并从该密钥的可用模型列表中选择模型。',
       bullets: [
         { title: '请求结构', text: '使用 model、max_tokens、system、messages 等 Claude 标准字段。' },
         { title: '流式输出', text: '设置 stream: true 时返回 Anthropic 风格事件流。' },
@@ -740,68 +707,60 @@ async function fileToBase64(file) {
     {
       id: 'media-uploads',
       kicker: 'Media Upload',
-      title: '本地媒体上传与请求体自动转写',
-      protocol: 'POST /api/v1/agent/assets · POST /v1/videos',
+      title: '本地媒体随视频请求上传',
+      protocol: 'POST /v1/videos · multipart/form-data',
       description:
-        '下游可以先独立上传本地图片、视频或音频，也可以把 JSON 请求和文件放在同一个 multipart 请求里。一次请求模式会先按文件顺序写入 File Service，把 attachment://N 替换为本站公网 URL，再自动提交改写后的请求体到 Seedance 上游。',
+        '本地图片、视频或音频必须与视频 JSON 放在同一个 multipart 请求中提交。使用 attachment://N 在 JSON 中引用按顺序添加的 file 字段。',
       notice:
-        '上传能力对所有已认证 API Key 开放，不限制 Yingzo Agent、Seedance、OpenAI 或其他分组。已经是 http:// 或 https:// 的输入 URL 会原样提交上游，本站不会下载、缓存或重新上传这些公网输入。',
+        '已经是 http:// 或 https:// 的输入 URL 会原样提交上游，本站不会下载、缓存或重新上传这些公网输入。',
       bullets: [
-        { title: '独立上传', text: 'POST /api/v1/agent/assets 使用 multipart/form-data 的 file 字段上传一个文件，成功返回 201、本站 /media/* URL、SHA-256、媒体探测信息和过期时间。' },
-        { title: '一次请求自动转写', text: 'POST /v1/videos 同时接受 request、json 或 body JSON 字段，以及重复的 file 文件字段。客户端只提交一次；本站完成上传和 URL 替换后再提交上游。' },
+        { title: '一次请求完成', text: 'POST /v1/videos 同时接受 request、json 或 body JSON 字段，以及重复的 file 文件字段。客户端只需提交一次。' },
         { title: '严格保持文件顺序', text: 'attachment://0 对应第 1 个 file，attachment://1 对应第 2 个 file，依此类推。映射只看 multipart 添加顺序，不按文件名、媒体类型或 content 位置重新排序。' },
         { title: '公网输入保持原样', text: 'content 中原本就是公网 http(s) URL 的图片、视频和音频不会占用 attachment 编号，也不会被下载后改写；它们与本地附件可以在同一请求中混用。' },
-        { title: '公网根地址', text: '管理员在 Admin -> File Service -> Public Base URL 配置媒体公网根地址，保存后立即生效，不需要修改 .env。反向代理必须放行 /media/*。' },
-        { title: '生成结果也会转存', text: '上游完成视频生成后，本站先下载结果并转存到 File Service，completed 响应只返回本站 /media/* URL，不暴露供应商原始结果地址。' },
       ],
       tables: [
         {
-          title: '上传和访问接口',
-          headers: ['接口', '认证', '用途'],
+          title: 'multipart 字段',
+          headers: ['字段', '类型', '用途'],
           rows: [
-            ['POST /api/v1/agent/assets', '任意有效 API Key', '独立上传一个本地图片、视频或音频；表单字段名固定为 file。'],
-            ['GET /api/v1/agent/assets/{id}', '上传时的同一 API Key', '读取文件名、类型、大小、SHA-256、metadata、过期时间和 active 状态。'],
-            ['GET /media/{id}/{filename}', '公开读取', 'Seedance 上游和下游客户端读取媒体；支持 HEAD 和 Range，有效期由 File Service 配置决定。'],
-            ['POST /v1/videos (multipart)', 'seedance 或视频能力 Agent Key', '同一次请求上传多个本地附件、自动改写 JSON，再创建视频任务。'],
+            ['request / json / body', 'JSON 字符串', '完整的视频创建请求；三个字段名任选一个。'],
+            ['file', '文件，可重复', '本地图片、视频或音频；按 multipart 添加顺序从 0 编号。'],
           ],
         },
         {
           title: 'attachment://N 顺序映射',
           headers: ['multipart file 顺序', '示例文件', 'JSON 中的 URL', '结果'],
           rows: [
-            ['0', 'character.png', 'attachment://0', '上传后替换为本站图片 /media/* URL。'],
-            ['1', 'motion.mp4', 'attachment://1', '上传后替换为本站视频 /media/* URL。'],
-            ['2', 'music.mp3', 'attachment://2', '上传后替换为本站音频 /media/* URL。'],
-            ['不参与编号', 'https://cdn.example.com/public.png', '原始 http(s) URL', '保持原值，直接提交上游。'],
+            ['0', 'character.png', 'attachment://0', '作为第 1 个本地附件使用。'],
+            ['1', 'motion.mp4', 'attachment://1', '作为第 2 个本地附件使用。'],
+            ['2', 'music.mp3', 'attachment://2', '作为第 3 个本地附件使用。'],
+            ['不参与编号', 'https://cdn.example.com/public.png', '原始 http(s) URL', '保持原值。'],
           ],
         },
         {
           title: '支持格式与单文件限制',
-          headers: ['媒体', '格式', '单文件上限', '上传响应 metadata'],
+          headers: ['媒体', '格式', '单文件上限', '校验要求'],
           rows: [
-            ['图片', 'JPEG / PNG / WebP / GIF / BMP / TIFF / HEIC / HEIF', '30 MiB', 'width、height、probe。'],
-            ['视频', 'MP4 / MOV', '200 MiB', 'width、height、duration_seconds、fps、container、video_codec、audio_codec、probe。'],
-            ['音频', 'MP3 / WAV', '15 MiB', 'duration_seconds、encoding、probe。'],
+            ['图片', 'JPEG / PNG / WebP / GIF / BMP / TIFF / HEIC / HEIF', '30 MiB', '扩展名、MIME 与文件内容必须一致。'],
+            ['视频', 'MP4 / MOV', '200 MiB', '文件必须可解析；推荐 MP4/H.264/AAC。'],
+            ['音频', 'MP3 / WAV', '15 MiB', '文件必须可解析且编码有效。'],
           ],
         },
         {
           title: '上传与 multipart 常见错误',
           headers: ['HTTP / error.code', '原因', '处理方式'],
           rows: [
-            ['400 file_required', '独立上传缺少 file 字段。', '使用 -F file=@...，每次独立上传一个文件。'],
             ['400 video_request_part_required', '一次请求缺少 request、json 或 body JSON 字段。', '添加一个包含完整视频请求 JSON 的普通表单字段。'],
             ['400 invalid_attachment_reference / attachment_reference_out_of_range', 'attachment://N 格式错误或 N 超出 file 数量。', '按从 0 开始的实际文件添加顺序修正引用。'],
             ['400 unsupported_media', '扩展名、声明 MIME 或文件内容不一致，或格式未支持。', '使用支持的真实媒体文件和正确 Content-Type。'],
             ['413 media_too_large', '单文件超过对应媒体上限。', '压缩或转码后重试。'],
             ['422 media_probe_failed', '服务端无法可信解析媒体。', '重新编码媒体，视频优先使用 MP4/H.264/AAC。'],
-            ['429 temporary_asset_quota_exceeded', 'API Key 过去 24 小时文件数或字节数达到后台配额。', '等待滚动窗口释放，或由管理员调整 File Service 配额。'],
-            ['503 file_storage_unavailable / media_upload_unavailable', 'File Service 或视频上传组件当前不可用。', '检查后台 File Service、共享存储和 /media/* 反向代理。'],
+            ['429 temporary_asset_quota_exceeded', 'API Key 过去 24 小时文件数或字节数达到配额。', '等待滚动窗口释放后重试。'],
+            ['503 file_storage_unavailable / media_upload_unavailable', '媒体处理服务暂时不可用。', '稍后重试；持续失败时联系管理员。'],
           ],
         },
       ],
       codeBlocks: [
-        { title: '独立上传视频并读取 URL 与时长', language: 'bash', code: standaloneMediaUploadCurl },
-        { title: '独立上传成功响应', language: 'json', code: mediaUploadResponse },
         { title: '一次请求：本地图片 + 本地视频 + 本地音频 + 公网图片', language: 'bash', code: oneShotMultipartVideoCurl },
         { title: 'Node.js 20+：一次请求自动上传和转写', language: 'javascript', code: oneShotMultipartVideoNode },
         { title: 'Python requests：一次请求自动上传和转写', language: 'python', code: oneShotMultipartVideoPython },
@@ -813,7 +772,7 @@ async function fileToBase64(file) {
       title: 'Seedance 2.0 / 2.5 异步视频接口',
       protocol: 'POST /v1/videos · GET /v1/videos/{id}',
       description:
-        'Seedance 视频接口是 OpenAI 风格异步任务协议。POST 创建本地任务并返回任务 ID；GET 查询任务状态。下游只会看到本站任务 ID、状态、视频地址和本站加工后的错误。',
+        'Seedance 视频接口是 OpenAI 风格异步任务协议。POST 创建任务并返回任务 ID；GET 查询任务状态、视频地址或错误信息。',
       notice:
         'content 数组顺序就是参考素材顺序。提示词必须按同类素材出现顺序写“图片1、图片2、视频1、视频2、音频1、音频2”，不要引用文件名。reference_video 必须提供 duration_seconds；图片和视频的 subject_type 省略时，sub2api 会自动补为 person。',
       bullets: [
@@ -824,7 +783,6 @@ async function fileToBase64(file) {
         { title: '能力自动推断', text: 'ability_code 可省略，服务端会根据 content 推断；生产调用建议显式传入，避免 role 写错后落入其他模式。' },
         { title: '计费', text: '生成秒数和每个参考视频向上取整后计费。基础公式为（生成秒数 × 分辨率单价 + 参考视频秒数 × 分辨率单价 × 参考系数）× 分组倍率；普通 seedance 分组的参考系数为 1。' },
         { title: '状态与退款', text: 'queued、processing、completed、failed、cancelled。任务创建时预扣费；失败或取消后 refund_status 会从 pending 变为 refunded，completed 时返回 video_url。' },
-        { title: '结果转存与 Jingyu 回调', text: '生成成功后，本站先把上游视频下载并转存到 File Service，video_url 只返回本站 /media/* 地址。仅 Jingyu 上游内部使用签名完成回调；Aigod 仍由本站轮询，下游始终使用 GET /v1/videos/{id} 查询。' },
         { title: '参考模式限制', text: '2.0/fast 最多 9 张参考图、3 个参考视频、3 个参考音频，且音频不能单独作为参考；2.5 最多 30 张图、10 个视频、10 个音频、总素材 50 个，并支持纯音频参考。' },
         { title: '视频编辑与延长', text: '当前统一入口使用 video_reference_to_video：把待编辑或待延长的源视频放为视频1，在 prompt 中明确“保留什么、改变什么、从哪里继续”。返回的是新视频任务，不会原地修改源文件。' },
         { title: '轮询与重试', text: '建议每 3-5 秒查询同一个任务 ID。GET 失败可以重试；POST 创建不是幂等重试入口，网络超时时不要盲目再次提交，否则可能创建新任务并再次预扣费。' },
@@ -845,12 +803,12 @@ async function fileToBase64(file) {
           rows: [
             ['model', 'string，必填', 'seedance-2.0、seedance-2.0-fast 或 seedance-2.5。'],
             ['prompt', 'string，条件必填', '文生视频必填；其他模式强烈建议填写。为空时会取 content 中第一个非空 text。'],
-            ['content', 'array，按能力填写', '元素顺序会原样保留到上游；文本、图片、视频、音频的字段见下一表。'],
+            ['content', 'array，按能力填写', '元素顺序会保持不变；文本、图片、视频、音频的字段见下一表。'],
             ['ability_code', 'string，可选', '可显式传四种能力代码；省略时按 content 的类型和 role 自动推断。'],
             ['ratio / aspect_ratio / aspectRatio', 'string，可选', '三个别名按此前后顺序取第一个非空值。2.5 支持 auto、16:9、4:3、1:1、3:4、9:16、21:9；adaptive 会转为 auto；2.5 图生视频和首尾帧模式默认 auto，其余默认 16:9。'],
             ['duration', 'number，必填', '2.0/fast 为 4-15 的整数秒且不接受 -1；2.5 为 4-30 的整数秒，-1 按智能时长兼容并转换为 5 秒。'],
             ['resolution', 'string，可选', '默认 720p；可用值取决于 model。大小写敏感，4K 必须写成 4K。'],
-            ['generate_audio', 'boolean，可选', '是否请求模型生成音频；省略时由上游默认行为决定。'],
+            ['generate_audio', 'boolean，可选', '是否请求模型生成音频；省略时使用模型默认行为。'],
             ['safety_identifier', 'string，可选', '建议传项目或最终用户的稳定标识，不能放密钥或其他秘密。'],
           ],
         },
@@ -887,23 +845,23 @@ async function fileToBase64(file) {
           title: '任务状态与退款字段',
           headers: ['status', '含义', '响应规则'],
           rows: [
-            ['queued', '本地任务已创建，等待提交或调度', '保存 id 并开始轮询；refund_status 通常为 not-applicable。'],
-            ['processing', '上游已接受，正在生成', '继续轮询，不要重复 POST 创建同一业务任务。'],
+            ['queued', '任务已创建，等待处理', '保存 id 并开始轮询；refund_status 通常为 not-applicable。'],
+            ['processing', '任务正在生成', '继续轮询，不要重复 POST 创建同一业务任务。'],
             ['completed', '生成成功', '返回 video_url 和 completed_at；refund_status 为 not-applicable。'],
             ['failed', '提交、轮询或生成失败', '返回 error；已预扣费时 refund_status 为 pending 或 refunded。'],
-            ['cancelled', '上游取消任务', '当前响应不返回 error；已预扣费时退款状态同 failed。'],
+            ['cancelled', '任务已取消', '当前响应不返回 error；已预扣费时退款状态同 failed。'],
           ],
         },
         {
           title: '任务响应字段',
           headers: ['字段', '出现时机', '含义'],
           rows: [
-            ['id', '始终返回', 'sub2api 生成的本地任务 ID；后续查询必须原样使用。'],
+            ['id', '始终返回', '任务 ID；后续查询必须原样使用。'],
             ['object', '始终返回', '固定为 video。'],
-            ['model', '始终返回', '创建时请求的下游模型名，不暴露具体上游账号或模型映射。'],
+            ['model', '始终返回', '创建任务时请求的模型名。'],
             ['status', '始终返回', 'queued / processing / completed / failed / cancelled。'],
-            ['video_url', 'completed', '本站转存后的 /media/* 结果地址；不会返回供应商原始 URL。其他状态不返回，客户端应在 expires_at 对应的 File Service 留存期内持久化。'],
-            ['error', 'failed', '只包含对下游安全的 code 和 message，不透传上游内部响应。'],
+            ['video_url', 'completed', '生成结果地址；其他状态不返回。客户端应及时下载并按业务需要持久化。'],
+            ['error', 'failed', '失败时返回 code 和 message。'],
             ['refund_status', '始终返回', 'not-applicable / pending / refunded；失败后应等到 refunded 再决定是否创建新任务。'],
             ['created_at / completed_at', '创建时间始终返回；完成时间仅 completed 返回', 'Unix 秒级时间戳。'],
           ],
@@ -916,14 +874,14 @@ async function fileToBase64(file) {
             ['invalid_video_prompt / invalid_video_content', '400', '检查 prompt、content 数量、类型和 role 组合。'],
             ['reference_video_duration_required', '400', '为每个 reference_video 补充 duration_seconds。'],
             ['invalid_reference_video_duration', '400', '单个参考视频至少 2 秒；2.0/fast 总时长不得超过 15 秒，2.5 总时长不得超过 30 秒。'],
-            ['video_pricing_rule_not_found', '400', '管理员尚未为当前分组、模型和分辨率启用单价。'],
+            ['video_pricing_rule_not_found', '400', '当前分组、模型和分辨率暂不支持计费。'],
             ['invalid_api_key', '401', '检查 Authorization Bearer API Key 是否存在、启用且未撤销。'],
             ['INSUFFICIENT_BALANCE / SUBSCRIPTION_NOT_FOUND', '403', '补充余额，或使用具有有效订阅的密钥。'],
             ['video_endpoint_not_available', '404', '当前 API Key 分组不是 seedance，也不是具备视频能力的 Agent 分组。'],
             ['VIDEO_TASK_NOT_FOUND', '404', '确认任务 ID，并使用创建任务时的同一用户和 API Key 查询。'],
             ['API_KEY_QUOTA_EXHAUSTED / API_KEY_RATE_5H_EXCEEDED / API_KEY_RATE_1D_EXCEEDED / API_KEY_RATE_7D_EXCEEDED / USAGE_LIMIT_EXCEEDED', '429', '等待额度窗口恢复或调整密钥、订阅额度。'],
             ['video_service_busy / video_generation_failed', '200（status=failed）', '读取任务内的 error 和 refund_status；退款完成后再按业务幂等键创建新任务。'],
-            ['video_service_unavailable', '503 或 200（status=failed）', '没有兼容账号时创建请求直接失败；异步生命周期故障则写入失败任务。指数退避，且不要因一次查询失败重复创建。'],
+            ['video_service_unavailable', '503 或 200（status=failed）', '视频服务暂时不可用。按响应状态和 error 处理并指数退避，不要因一次查询失败重复创建。'],
           ],
         },
       ],
@@ -1159,7 +1117,7 @@ const enContent: DocsContent = {
   copySuccess: 'Markdown copied',
   tocTitle: 'Contents',
   highlights: [
-    { label: 'Base URL', value: baseUrl, description: 'Replace this with your deployed domain or reverse proxy URL.' },
+    { label: 'Base URL', value: baseUrl, description: 'Replace this with the API service address provided by your site.' },
     { label: 'Auth', value: 'Bearer / x-api-key / x-goog-api-key', description: 'Every endpoint authenticates with your {{SITE_NAME}} API key.' },
     { label: 'Billing', value: 'By API key group', description: 'Each endpoint must be called with a key assigned to the matching platform group.' },
     { label: 'Copy Format', value: 'Markdown + code samples', description: 'Ready to paste into an AI coding assistant.' },
@@ -1171,7 +1129,7 @@ const enContent: DocsContent = {
       title: 'Quick Start And Common Rules',
       protocol: 'All APIs',
       description:
-        'Requests are processed through {{SITE_NAME}} user, API key, group, quota, billing, and account scheduling layers. Request bodies follow the native protocol shape as closely as possible.',
+        'Every request uses a {{SITE_NAME}} API key and follows the quota and billing rules of its assigned group. Request bodies follow the native protocol shape as closely as possible.',
       bullets: [
         {
           title: 'Do not put API keys in query parameters',
@@ -1187,7 +1145,7 @@ const enContent: DocsContent = {
         },
         {
           title: 'Usage and billing records',
-          text: 'Text, image, and video requests are recorded by {{SITE_NAME}}. Async video create, completion, failure, and refund records are handled by background workers.',
+          text: 'Text, image, and video requests are recorded by {{SITE_NAME}}. Async video creation, completion, failure, and refunds produce corresponding records.',
         },
       ],
       table: {
@@ -1198,7 +1156,6 @@ const enContent: DocsContent = {
           ['/v1/images/edits', 'openai', 'OpenAI-compatible image editing with multipart/form-data, without mask.'],
           ['/v1/messages', 'anthropic', 'Claude-compatible Messages API.'],
           ['/v1beta/models/{model}:generateContent', 'gemini', 'Gemini-compatible text, text-to-image, and image-to-image API.'],
-          ['/api/v1/agent/assets', 'Every authenticated group', 'Uploads a local image, video, or audio file and returns a public {{SITE_NAME}} URL.'],
           ['/v1/videos', 'seedance / agent', 'Seedance 2.0, 2.0 Fast, and 2.5 async video create and query API.'],
         ],
       },
@@ -1219,7 +1176,7 @@ export SUB2API_API_KEY="${apiKey}"`,
       description:
         'The Responses API uses the standard OpenAI request shape and is suitable for text, tools, continuation, and multimodal input. These examples use gpt-5.5.',
       items: [
-        { title: 'Model', text: 'Set model to gpt-5.5. Availability depends on the openai group and upstream accounts configured by the administrator.' },
+        { title: 'Model', text: 'Set model to gpt-5.5 and confirm that it appears in the model list available to the current API key.' },
         { title: 'Input', text: 'input may be a string or a standard OpenAI Responses input array.' },
         { title: 'Streaming', text: 'Set stream: true for SSE streaming; otherwise the endpoint returns one complete JSON object.' },
       ],
@@ -1328,7 +1285,7 @@ console.log(data.data?.[0]?.url ?? data);`,
       title: 'Claude-Compatible Messages API',
       protocol: 'POST /v1/messages',
       description:
-        'The Claude endpoint keeps the Anthropic Messages API shape. Use a {{SITE_NAME}} key assigned to an anthropic group. Model availability is controlled by administrator configuration.',
+        'The Claude endpoint keeps the Anthropic Messages API shape. Use a {{SITE_NAME}} key assigned to an anthropic group and select a model available to that key.',
       bullets: [
         { title: 'Request shape', text: 'Use standard Claude fields such as model, max_tokens, system, and messages.' },
         { title: 'Streaming', text: 'Set stream: true to receive Anthropic-style event streams.' },
@@ -1485,68 +1442,60 @@ async function fileToBase64(file) {
     {
       id: 'media-uploads',
       kicker: 'Media Upload',
-      title: 'Local Media Upload And Automatic Request Rewriting',
-      protocol: 'POST /api/v1/agent/assets · POST /v1/videos',
+      title: 'Local Media In A Video Request',
+      protocol: 'POST /v1/videos · multipart/form-data',
       description:
-        'A downstream client may upload local images, videos, or audio first, or send the JSON request and files together as one multipart request. In one-shot mode, {{SITE_NAME}} stores files in order, replaces attachment://N with public File Service URLs, and then submits the rewritten body to the Seedance provider.',
+        'Local images, videos, and audio must be submitted with the video JSON in one multipart request. Reference file fields in the JSON with attachment://N in their insertion order.',
       notice:
-        'Upload is available to every authenticated API key, regardless of Yingzo Agent, Seedance, OpenAI, or another group. Existing http:// or https:// input URLs are forwarded unchanged; {{SITE_NAME}} does not download, cache, or re-upload those public inputs.',
+        'Existing http:// or https:// input URLs are forwarded unchanged. {{SITE_NAME}} does not download, cache, or re-upload those public inputs.',
       bullets: [
-        { title: 'Standalone upload', text: 'POST /api/v1/agent/assets accepts one file field as multipart/form-data and returns HTTP 201 with a public /media/* URL, SHA-256, trusted media metadata, and expiration time.' },
-        { title: 'One-shot automatic rewrite', text: 'POST /v1/videos accepts a request, json, or body JSON field plus repeated file fields. The client submits once; {{SITE_NAME}} uploads, replaces URL leaves, and then calls the provider.' },
+        { title: 'One request', text: 'POST /v1/videos accepts a request, json, or body JSON field plus repeated file fields. The client submits only once.' },
         { title: 'File order is strict', text: 'attachment://0 maps to the first file, attachment://1 to the second, and so on. Mapping uses multipart insertion order only and never sorts by filename, media type, or content position.' },
         { title: 'Public inputs stay unchanged', text: 'Existing public image, video, and audio URLs do not consume attachment indexes and are not rewritten. Public URLs and local attachments may be mixed in one request.' },
-        { title: 'Public base URL', text: 'Configure Admin -> File Service -> Public Base URL. The database setting applies immediately without an .env change. The reverse proxy must expose /media/*.' },
-        { title: 'Generated results are rehosted too', text: 'After the provider completes generation, {{SITE_NAME}} downloads and rehosts the result. A completed task returns only a {{SITE_NAME}} /media/* URL and does not expose the supplier URL.' },
       ],
       tables: [
         {
-          title: 'Upload And Access Endpoints',
-          headers: ['Endpoint', 'Authentication', 'Purpose'],
+          title: 'Multipart Fields',
+          headers: ['Field', 'Type', 'Purpose'],
           rows: [
-            ['POST /api/v1/agent/assets', 'Any valid API key', 'Uploads one local image, video, or audio file. The multipart field name is file.'],
-            ['GET /api/v1/agent/assets/{id}', 'The same API key used for upload', 'Returns filename, type, size, SHA-256, metadata, expiration, and active state.'],
-            ['GET /media/{id}/{filename}', 'Public read', 'Serves media to Seedance and downstream clients; HEAD and Range are supported until expiration.'],
-            ['POST /v1/videos (multipart)', 'Seedance or video-capable Agent key', 'Uploads multiple local attachments, rewrites JSON, and creates the video task in one request.'],
+            ['request / json / body', 'JSON string', 'The complete video creation request; use any one of the three field names.'],
+            ['file', 'Repeatable file', 'A local image, video, or audio file, numbered from zero by multipart insertion order.'],
           ],
         },
         {
           title: 'attachment://N Order Mapping',
           headers: ['file order', 'Example file', 'URL in JSON', 'Result'],
           rows: [
-            ['0', 'character.png', 'attachment://0', 'Replaced with the uploaded {{SITE_NAME}} image /media/* URL.'],
-            ['1', 'motion.mp4', 'attachment://1', 'Replaced with the uploaded {{SITE_NAME}} video /media/* URL.'],
-            ['2', 'music.mp3', 'attachment://2', 'Replaced with the uploaded {{SITE_NAME}} audio /media/* URL.'],
-            ['Not numbered', 'https://cdn.example.com/public.png', 'Original http(s) URL', 'Kept unchanged and sent directly to the provider.'],
+            ['0', 'character.png', 'attachment://0', 'Used as the first local attachment.'],
+            ['1', 'motion.mp4', 'attachment://1', 'Used as the second local attachment.'],
+            ['2', 'music.mp3', 'attachment://2', 'Used as the third local attachment.'],
+            ['Not numbered', 'https://cdn.example.com/public.png', 'Original http(s) URL', 'Kept unchanged.'],
           ],
         },
         {
           title: 'Supported Formats And Per-file Limits',
-          headers: ['Media', 'Formats', 'Limit', 'Upload response metadata'],
+          headers: ['Media', 'Formats', 'Limit', 'Validation'],
           rows: [
-            ['Image', 'JPEG / PNG / WebP / GIF / BMP / TIFF / HEIC / HEIF', '30 MiB', 'width, height, probe.'],
-            ['Video', 'MP4 / MOV', '200 MiB', 'width, height, duration_seconds, fps, container, video_codec, audio_codec, probe.'],
-            ['Audio', 'MP3 / WAV', '15 MiB', 'duration_seconds, encoding, probe.'],
+            ['Image', 'JPEG / PNG / WebP / GIF / BMP / TIFF / HEIC / HEIF', '30 MiB', 'Extension, MIME type, and file content must agree.'],
+            ['Video', 'MP4 / MOV', '200 MiB', 'The file must be readable; MP4/H.264/AAC is recommended.'],
+            ['Audio', 'MP3 / WAV', '15 MiB', 'The file must be readable and use a valid encoding.'],
           ],
         },
         {
           title: 'Common Upload And Multipart Errors',
           headers: ['HTTP / error.code', 'Cause', 'Action'],
           rows: [
-            ['400 file_required', 'Standalone upload omitted the file field.', 'Send one file with -F file=@... per standalone request.'],
             ['400 video_request_part_required', 'One-shot request omitted request, json, or body.', 'Add a normal form field containing the complete video request JSON.'],
             ['400 invalid_attachment_reference / attachment_reference_out_of_range', 'attachment://N is malformed or N exceeds the number of files.', 'Fix indexes using the actual zero-based file insertion order.'],
             ['400 unsupported_media', 'Extension, declared MIME, and content disagree, or the format is unsupported.', 'Send a supported real media file with the correct Content-Type.'],
             ['413 media_too_large', 'A file exceeds its media limit.', 'Compress or transcode the file before retrying.'],
             ['422 media_probe_failed', 'The server could not decode the media with a trusted probe.', 'Re-encode it; prefer MP4/H.264/AAC for video.'],
-            ['429 temporary_asset_quota_exceeded', 'The key reached its rolling 24-hour file or byte quota.', 'Wait for the window or ask an administrator to update File Service quotas.'],
-            ['503 file_storage_unavailable / media_upload_unavailable', 'File Service or the video upload component is unavailable.', 'Check File Service, shared storage, and the /media/* reverse proxy.'],
+            ['429 temporary_asset_quota_exceeded', 'The key reached its rolling 24-hour file or byte quota.', 'Wait for the rolling window before retrying.'],
+            ['503 file_storage_unavailable / media_upload_unavailable', 'Media processing is temporarily unavailable.', 'Retry later; contact the administrator if the error persists.'],
           ],
         },
       ],
       codeBlocks: [
-        { title: 'Standalone Video Upload And URL/Duration Extraction', language: 'bash', code: standaloneMediaUploadCurl },
-        { title: 'Successful Standalone Upload Response', language: 'json', code: mediaUploadResponse },
         { title: 'One Request: Local Image + Video + Audio + Public Image', language: 'bash', code: oneShotMultipartVideoCurl },
         { title: 'Node.js 20+: One-shot Upload And Rewrite', language: 'javascript', code: oneShotMultipartVideoNode },
         { title: 'Python requests: One-shot Upload And Rewrite', language: 'python', code: oneShotMultipartVideoPython },
@@ -1558,7 +1507,7 @@ async function fileToBase64(file) {
       title: 'Seedance 2.0 / 2.5 Async Video API',
       protocol: 'POST /v1/videos · GET /v1/videos/{id}',
       description:
-        'The Seedance video API is an OpenAI-style async task protocol. POST creates a local task and returns an id; GET polls the task status. Downstream clients only receive {{SITE_NAME}} task ids, status, video URLs, and normalized errors.',
+        'The Seedance video API is an OpenAI-style async task protocol. POST creates a task and returns an id; GET returns task status, a video URL, or error details.',
       notice:
         'The content array defines reference order. Prompts must refer to Image 1, Image 2, Video 1, Video 2, Audio 1, and Audio 2 by same-media appearance order, never by filename. Every reference_video requires duration_seconds. When omitted, subject_type defaults to person for images and videos.',
       bullets: [
@@ -1569,7 +1518,6 @@ async function fileToBase64(file) {
         { title: 'Ability inference', text: 'ability_code may be omitted and inferred from content. Production clients should send it explicitly so an incorrect role cannot silently select another mode.' },
         { title: 'Billing', text: 'Generated duration and each reference video duration are rounded up. Base formula: (generated seconds x resolution price + reference seconds x resolution price x reference multiplier) x group multiplier. The reference multiplier is 1 for standard seedance groups.' },
         { title: 'Statuses and refunds', text: 'queued, processing, completed, failed, cancelled. Creation is precharged; on failure or cancellation refund_status moves from pending to refunded. completed responses include video_url.' },
-        { title: 'Result rehosting and Jingyu callback', text: 'After generation succeeds, {{SITE_NAME}} downloads and rehosts the provider video in File Service, so video_url contains only a {{SITE_NAME}} /media/* URL. Signed callbacks are internal to Jingyu tasks; Aigod remains polled, and downstream clients always query GET /v1/videos/{id}.' },
         { title: 'Reference mode limits', text: '2.0/fast allow up to 9 images, 3 videos, and 3 audio files, and audio cannot be the only reference. Seedance 2.5 allows up to 30 images, 10 videos, 10 audio files, 50 total media items, and audio-only reference input.' },
         { title: 'Video editing and extension', text: 'The unified route uses video_reference_to_video. Put the source to edit or extend first as Video 1, then state what to preserve, what to change, and where to continue. A new video task is created; the source is never modified in place.' },
         { title: 'Polling and retries', text: 'Poll the same task id every 3-5 seconds. A failed GET may be retried. POST creation is not an idempotent retry endpoint; do not blindly resubmit after a network timeout because that may create and precharge another task.' },
@@ -1590,12 +1538,12 @@ async function fileToBase64(file) {
           rows: [
             ['model', 'string, required', 'seedance-2.0, seedance-2.0-fast, or seedance-2.5.'],
             ['prompt', 'string, conditionally required', 'Required for text-to-video and strongly recommended for other modes. If empty, the first non-empty content text is used.'],
-            ['content', 'array, ability-dependent', 'Element order is preserved to the provider. See the next table for text, image, video, and audio shapes.'],
+            ['content', 'array, ability-dependent', 'Element order is preserved. See the next table for text, image, video, and audio shapes.'],
             ['ability_code', 'string, optional', 'Send one of the four ability codes, or omit it to infer the mode from content types and roles.'],
             ['ratio / aspect_ratio / aspectRatio', 'string, optional', 'The first non-empty alias in this order wins. Seedance 2.5 accepts auto, 16:9, 4:3, 1:1, 3:4, 9:16, and 21:9; adaptive becomes auto. Its image-to-video and start-end modes default to auto; other requests default to 16:9.'],
             ['duration', 'number, required', '2.0/fast require integer seconds from 4 through 15 and reject -1. Seedance 2.5 accepts integer seconds from 4 through 30 and converts -1 smart duration to 5 seconds.'],
             ['resolution', 'string, optional', 'Default: 720p. Values depend on model and are case-sensitive; 4K must use that exact casing.'],
-            ['generate_audio', 'boolean, optional', 'Requests model-generated audio. If omitted, provider defaults apply.'],
+            ['generate_audio', 'boolean, optional', 'Requests model-generated audio. If omitted, model defaults apply.'],
             ['safety_identifier', 'string, optional', 'Use a stable project or end-user identifier. Never put API keys or other secrets here.'],
           ],
         },
@@ -1632,23 +1580,23 @@ async function fileToBase64(file) {
           title: 'Task Status And Refund Fields',
           headers: ['status', 'Meaning', 'Response rule'],
           rows: [
-            ['queued', 'Local task created and waiting for submission or scheduling', 'Store id and start polling. refund_status is normally not-applicable.'],
-            ['processing', 'Provider accepted the task and generation is in progress', 'Keep polling; do not repeat POST for the same business task.'],
+            ['queued', 'Task created and waiting for processing', 'Store id and start polling. refund_status is normally not-applicable.'],
+            ['processing', 'Generation is in progress', 'Keep polling; do not repeat POST for the same business task.'],
             ['completed', 'Generation succeeded', 'Returns video_url and completed_at. refund_status is not-applicable.'],
             ['failed', 'Submission, polling, or generation failed', 'Returns error. If precharged, refund_status is pending or refunded.'],
-            ['cancelled', 'Provider cancelled the task', 'The current response has no error object. Refund state follows the failed rule when precharged.'],
+            ['cancelled', 'Task was cancelled', 'The current response has no error object. Refund state follows the failed rule when precharged.'],
           ],
         },
         {
           title: 'Task Response Fields',
           headers: ['Field', 'When present', 'Meaning'],
           rows: [
-            ['id', 'Always', 'Local task id generated by {{SITE_NAME}}. Use it unchanged for every poll.'],
+            ['id', 'Always', 'Task id. Use it unchanged for every poll.'],
             ['object', 'Always', 'Always video.'],
-            ['model', 'Always', 'The requested downstream model. Provider account and upstream model mapping are not exposed.'],
+            ['model', 'Always', 'The model requested when the task was created.'],
             ['status', 'Always', 'queued / processing / completed / failed / cancelled.'],
-            ['video_url', 'completed', 'The rehosted {{SITE_NAME}} /media/* result URL. The supplier URL is never returned. Persist the result within the configured File Service retention period.'],
-            ['error', 'failed', 'A downstream-safe code and message. Raw provider responses are never exposed.'],
+            ['video_url', 'completed', 'Generated video URL. It is omitted in other states; download and persist it according to your application requirements.'],
+            ['error', 'failed', 'Failure code and message.'],
             ['refund_status', 'Always', 'not-applicable / pending / refunded. After failure, wait for refunded before deciding whether to create another task.'],
             ['created_at / completed_at', 'Creation time is always present; completion time only on completed', 'Unix timestamps in seconds.'],
           ],
@@ -1661,14 +1609,14 @@ async function fileToBase64(file) {
             ['invalid_video_prompt / invalid_video_content', '400', 'Check prompt, content counts, types, and role combination.'],
             ['reference_video_duration_required', '400', 'Add duration_seconds to every reference_video.'],
             ['invalid_reference_video_duration', '400', 'Each reference video must be at least 2 seconds. Total duration is capped at 15 seconds for 2.0/fast and 30 seconds for 2.5.'],
-            ['video_pricing_rule_not_found', '400', 'The administrator has not enabled pricing for this group, model, and resolution.'],
+            ['video_pricing_rule_not_found', '400', 'Pricing is unavailable for this group, model, and resolution.'],
             ['invalid_api_key', '401', 'Check that the Authorization Bearer API key exists, is enabled, and has not been revoked.'],
             ['INSUFFICIENT_BALANCE / SUBSCRIPTION_NOT_FOUND', '403', 'Add balance or use a key with an active subscription.'],
             ['video_endpoint_not_available', '404', 'The API key group is neither seedance nor a video-capable Agent group.'],
             ['VIDEO_TASK_NOT_FOUND', '404', 'Check the id and query with the same user and API key that created the task.'],
             ['API_KEY_QUOTA_EXHAUSTED / API_KEY_RATE_5H_EXCEEDED / API_KEY_RATE_1D_EXCEEDED / API_KEY_RATE_7D_EXCEEDED / USAGE_LIMIT_EXCEEDED', '429', 'Wait for the quota window or adjust key or subscription limits.'],
             ['video_service_busy / video_generation_failed', '200 (status=failed)', 'Read error and refund_status from the task. Create a new task only after refund completion and under your business idempotency rule.'],
-            ['video_service_unavailable', '503 or 200 (status=failed)', 'Create fails directly when no compatible account exists; async lifecycle failures are stored on the task. Back off and never duplicate a task because one query failed.'],
+            ['video_service_unavailable', '503 or 200 (status=failed)', 'The video service is temporarily unavailable. Follow status and error, back off, and never duplicate a task because one query failed.'],
           ],
         },
       ],

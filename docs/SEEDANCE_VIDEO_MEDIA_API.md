@@ -30,11 +30,15 @@ POST /v1/videos
 GET  /v1/videos/{id}
 ```
 
-临时素材接口：
+本地素材随视频请求提交：
 
 ```text
-POST /api/v1/agent/assets
-GET  /api/v1/agent/assets/{id}
+POST /v1/videos (multipart/form-data)
+```
+
+任务结果媒体读取：
+
+```text
 GET  /media/{id}/{filename}
 HEAD /media/{id}/{filename}
 ```
@@ -47,14 +51,7 @@ Authorization: Bearer <API_KEY>
 
 ## 2. API Key 权限
 
-`POST /api/v1/agent/assets` 和 `GET /api/v1/agent/assets/{id}` 现在对所有已认证 API Key 开放，不再要求 API Key 属于 Yingzo Agent 分组。
-
-这意味着下列分组的 API Key 都可以上传素材：
-
-- Seedance 分组。
-- OpenAI 分组。
-- Gemini 分组。
-- 其他已经通过 API Key 认证的推理分组。
+本地媒体上传不提供独立接口，只能随 `POST /v1/videos` 的 multipart 请求提交，因此沿用视频接口本身的 API Key 和分组权限。客户端不能先上传文件换取公网 URL，也不能通过 Agent 路径查询素材元数据。
 
 Agent 专属的下列接口仍然保留 Agent 分组限制：
 
@@ -66,7 +63,7 @@ GET  /api/v1/agent/generation/estimates/{id}
 
 ## 3. 公网 URL 配置
 
-上传接口和视频生成结果返回的媒体 URL 都使用共享文件服务的公网根地址。推荐在管理后台配置：
+multipart 本地素材和视频生成结果使用共享文件服务的公网根地址。推荐在管理后台配置：
 
 ```text
 Admin → File Service → Public Base URL
@@ -113,7 +110,7 @@ X-Forwarded-Proto: https
 /media/*
 ```
 
-即使底层使用 S3、Cloudflare R2、MinIO 或其他对象存储，上传接口当前返回的仍然是 Sub2API 的 `/media/...` URL。Seedance 上游访问该 URL 时，Sub2API 会从配置的存储后端读取文件并响应。
+即使底层使用 S3、Cloudflare R2、MinIO 或其他对象存储，对外媒体地址仍使用 Sub2API 的 `/media/...` URL。Seedance 上游访问该 URL 时，Sub2API 会从配置的存储后端读取文件并响应。
 
 视频生成结果也使用同一路由。下游只看到 Sub2API 域名，不会得到对象存储直链或 Seedance 供应商的原始结果 URL。
 
@@ -540,97 +537,7 @@ curl -sS \
 
 如果 `first.png` 和 `last.png` 的顺序颠倒，Sub2API 也会按照实际 multipart 顺序生成 URL；因此必须同时调整 `attachment://N` 的引用，不能依赖文件名自动排序。
 
-## 6. 独立上传接口
-
-如果客户端需要缓存素材、重复使用素材，或者需要可靠重试，可以先独立上传，再使用返回的公网 URL 调用 JSON 视频接口。
-
-### 6.1 上传图片
-
-```bash
-UPLOAD_RESPONSE=$(curl -sS \
-  -X POST 'https://sub2api.example.com/api/v1/agent/assets' \
-  -H 'Authorization: Bearer <API_KEY>' \
-  -F 'file=@./character.png;type=image/png')
-
-echo "$UPLOAD_RESPONSE"
-IMAGE_URL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.url')
-```
-
-### 6.2 上传视频并读取时长
-
-```bash
-UPLOAD_RESPONSE=$(curl -sS \
-  -X POST 'https://sub2api.example.com/api/v1/agent/assets' \
-  -H 'Authorization: Bearer <API_KEY>' \
-  -F 'file=@./motion.mp4;type=video/mp4')
-
-VIDEO_URL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.url')
-VIDEO_DURATION=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.metadata.duration_seconds')
-
-printf 'video_url=%s\nduration_seconds=%s\n' "$VIDEO_URL" "$VIDEO_DURATION"
-```
-
-### 6.3 使用上传结果创建视频
-
-```bash
-curl -sS \
-  -X POST 'https://sub2api.example.com/v1/videos' \
-  -H 'Authorization: Bearer <API_KEY>' \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -n \
-    --arg image_url "$IMAGE_URL" \
-    --arg video_url "$VIDEO_URL" \
-    --argjson duration_seconds "$VIDEO_DURATION" \
-    '{
-      model: "seedance-2.0",
-      prompt: "参考人物和动作视频生成新镜头",
-      ability_code: "video_reference_to_video",
-      aspect_ratio: "16:9",
-      duration: 5,
-      resolution: "720p",
-      content: [
-        {type: "image_url", role: "reference_image", image_url: {url: $image_url}},
-        {type: "video_url", role: "reference_video", duration_seconds: $duration_seconds, video_url: {url: $video_url}}
-      ]
-    }')"
-```
-
-这种模式特别适合：
-
-- 客户端需要重复使用同一个素材。
-- 客户端需要在上传完成后检查 `metadata`。
-- 客户端需要在提交失败后只重试视频请求，不重复上传大文件。
-- 客户端需要使用同一个公网 URL 生成多个视频任务。
-
-## 7. 上传成功响应
-
-`POST /api/v1/agent/assets` 成功返回 HTTP `201 Created`：
-
-```json
-{
-  "id": "8db0d973-c281-4b6e-a6d7-550f2bcc2b31",
-  "url": "https://sub2api.example.com/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
-  "content_type": "video/mp4",
-  "size": 3820184,
-  "sha256": "9c52d3f1...",
-  "metadata": {
-    "width": 1920,
-    "height": 1080,
-    "duration_seconds": 5.04,
-    "fps": 30,
-    "video_codec": "h264",
-    "audio_codec": "aac",
-    "container": "mp4",
-    "probe": "ffprobe"
-  },
-  "created_at": "2026-08-11T08:00:00Z",
-  "expires_at": "2026-08-12T08:00:00Z"
-}
-```
-
-视频引用需要 `duration_seconds` 时，优先使用响应里的 `metadata.duration_seconds`，不要仅根据文件名或客户端估算。
-
-## 8. 视频任务响应和查询
+## 6. 视频任务响应和查询
 
 创建视频任务成功后返回任务 ID：
 
@@ -670,7 +577,7 @@ curl -sS \
 
 任务查询需要使用提交任务时的同一个 API Key。
 
-### 8.1 生成结果转存流程
+### 6.1 生成结果转存流程
 
 当上游任务报告 `completed` 时，Sub2API 不会立即把供应商 URL 写入任务。实际流程如下：
 
@@ -696,7 +603,7 @@ curl -sS \
 
 `/media/*` 路由支持 `GET`、`HEAD` 和 Range 请求，播放器和下载客户端应直接使用返回的 `video_url`。
 
-### 8.2 Jingyu 视频任务使用完成回调
+### 6.2 Jingyu 视频任务使用完成回调
 
 此调整**只作用于后台账号配置中 `video_provider = jingyu` 的视频任务**：
 
@@ -716,7 +623,7 @@ curl -sS \
   ```
 
 - Sub2API 使用原始 HTTP 请求体校验 `hex(HMAC-SHA256(callback_secret, raw_body))`，不会对 JSON 重新序列化后再验签。
-- 成功回调中的 `video_url`、`result_url` 或 `result_asset_url` 仍需先经过第 8.1 节的结果转存，完成后任务才变为 `completed`。
+- 成功回调中的 `video_url`、`result_url` 或 `result_asset_url` 仍需先经过第 6.1 节的结果转存，完成后任务才变为 `completed`。
 - 失败回调会把任务变为 `failed` 并执行现有退款流程；重复回调按任务终态幂等处理。
 - Jingyu 创建成功后，Sub2API 不再向 Jingyu 发送任务状态 GET 轮询。原 `poll_timeout_ms` 只作为等待回调的总超时看门狗；到期仍未收到有效终态回调时，任务失败并退款。
 
@@ -734,9 +641,9 @@ POST /api/v1/webhooks/jingyu/videos/*
 
 该路由不使用下游 API Key 鉴权，只接受每任务 HMAC 验签通过的 Jingyu 视频终态消息。回调处理返回任意 `2xx` 时 Jingyu 视为投递成功；验签或请求体无效返回 `4xx`，临时存储、下载或数据库处理失败返回 `5xx`，以触发 Jingyu 文档中的重试策略。
 
-## 9. Seedance 能力和输入规则
+## 7. Seedance 能力和输入规则
 
-### 9.1 能力代码
+### 7.1 能力代码
 
 ```text
 video_text_to_video       纯文本生成
@@ -747,7 +654,7 @@ video_reference_to_video  参考图片/视频/音频生成视频
 
 没有显式传 `ability_code` 时，Sub2API 会根据 `content` 中的媒体类型进行推断；生产客户端建议显式传递，避免请求意图不清晰。
 
-### 9.2 图生视频
+### 7.2 图生视频
 
 必须恰好包含一张：
 
@@ -761,7 +668,7 @@ video_reference_to_video  参考图片/视频/音频生成视频
 
 不能同时加入视频或音频引用。
 
-### 9.3 首尾帧
+### 7.3 首尾帧
 
 必须包含：
 
@@ -770,7 +677,7 @@ video_reference_to_video  参考图片/视频/音频生成视频
 
 不能同时加入视频或音频引用。
 
-### 9.4 参考视频
+### 7.4 参考视频
 
 Seedance 2.0 参考模式支持图片、视频和音频，但至少需要一张图片或一个视频。视频引用需要：
 
@@ -799,7 +706,7 @@ seedance-2.0-fast  480p / 720p
 seedance-2.5       480p / 720p
 ```
 
-## 10. 支持的上传格式和大小
+## 8. 支持的上传格式和大小
 
 | 媒体 | 推荐格式 | 当前支持格式 | 单文件上限 |
 | --- | --- | --- | ---: |
@@ -809,7 +716,7 @@ seedance-2.5       480p / 720p
 
 建议视频优先使用 MP4/H.264。部分上游会依赖文件扩展名，MOV、HEIC 等格式虽然可以上传，但统一转为 PNG/JPEG/MP4 后兼容性更好。
 
-## 11. 错误响应
+## 9. 错误响应
 
 错误统一使用：
 
@@ -839,24 +746,18 @@ seedance-2.5       480p / 720p
 | 503 | `media_upload_unavailable` | 视频 Handler 没有连接到共享素材存储 |
 | 503 | `file_storage_unavailable` | 文件存储配置或对象存储不可用 |
 
-## 12. 重试建议
+## 10. 重试建议
 
-一次性 multipart 请求中的本地文件每次都会创建新的临时素材 URL。如果提交失败后需要稳定重试，推荐采用两步模式：
+本地文件只能随一次性 multipart 请求提交。收到明确的 4xx 校验错误时，修正请求后再提交；遇到网络超时或连接中断时，任务是否已经创建可能不明确，不要自动重复 POST，以免产生重复任务和重复预扣费。
 
-```text
-1. POST /api/v1/agent/assets 上传并缓存 URL
-2. 使用返回的 https URL 调用 POST /v1/videos
-3. 失败时只重试 JSON 视频请求
-```
+需要复用素材时，应由客户端放在自己的公网对象存储或 CDN，然后使用普通 JSON 请求提交该公网 URL。Sub2API 会保持现有 `http://` 或 `https://` 输入地址不变。
 
-这样可以避免重复上传大文件，也更容易配合 `Idempotency-Key` 使用。
-
-## 13. 客户端实现要点
+## 11. 客户端实现要点
 
 1. 永远按照 multipart 文件添加顺序生成 `attachment://N`。
 2. 不要按文件名排序后再提交，除非请求体引用也同步重排。
 3. 已经是公网 `http(s)` URL 的媒体直接写入 JSON，不要包装成 `attachment://N`。
-4. 引用视频的 `duration_seconds` 使用上传响应中的 `metadata.duration_seconds`。
+4. 引用视频的 `duration_seconds` 由客户端在提交前探测，例如使用 `ffprobe` 读取真实时长。
 5. 公网 URL 必须允许 Seedance 上游服务通过无认证 HTTPS `GET` 访问。
-6. 需要支持 Range 或 HEAD 时，保留 Sub2API `/media/*` 路由的正常转发。
-7. 在客户端记录 `id`、`sha256` 和 `expires_at`，便于缓存、去重和过期清理。
+6. 保存视频任务 `id`，并使用创建任务时的同一 API Key 查询状态。
+7. `completed` 后及时下载并按业务需要持久化 `video_url`。

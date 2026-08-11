@@ -634,135 +634,6 @@ func (h *AgentHandler) fileStorageObjectStore(ctx context.Context) (service.Back
 	return runtime.Store, nil
 }
 
-func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
-	key, ok := middleware.GetAPIKeyFromContext(c)
-	if !ok {
-		c.JSON(401, gin.H{"error": gin.H{"code": "unauthorized"}})
-		return
-	}
-	runtime, err := h.temporaryAssetStorageRuntime(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "file_storage_unavailable"}})
-		return
-	}
-	requestOrigin, err := requestPublicOrigin(c)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "temporary_asset_public_url_invalid"}})
-		return
-	}
-	publicBaseURL := requestOrigin
-	if h.fileStorage != nil {
-		publicBaseURL, err = h.fileStorage.EffectivePublicBaseURL(c.Request.Context(), requestOrigin)
-		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "temporary_asset_public_url_invalid"}})
-			return
-		}
-	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (200<<20)+(1<<20))
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		c.JSON(400, gin.H{"error": gin.H{"code": "file_required"}})
-		return
-	}
-	defer func() { _ = file.Close() }()
-	policy, contentType, ok := inspectMedia(file, header)
-	if !ok {
-		c.JSON(400, gin.H{"error": gin.H{"code": "unsupported_media"}})
-		return
-	}
-	if header.Size <= 0 || header.Size > policy.limit {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "media_too_large", "limit_bytes": policy.limit}})
-		return
-	}
-	maxCount, maxBytes := runtime.Config.DailyMaxCount, runtime.Config.DailyMaxBytes
-	var currentCount, currentBytes int64
-	err = h.db.QueryRowContext(c, `SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM temporary_assets WHERE api_key_id=$1 AND user_id=$2 AND created_at>NOW()-INTERVAL '24 hours' AND deleted_at IS NULL`, key.ID, key.UserID).Scan(&currentCount, &currentBytes)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	if currentCount >= maxCount || currentBytes+header.Size > maxBytes {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
-			"code":             "temporary_asset_quota_exceeded",
-			"max_count_24h":    maxCount,
-			"max_bytes_24h":    maxBytes,
-			"retry_after_hint": "when prior uploads leave the rolling 24-hour window",
-		}})
-		return
-	}
-	id := uuid.New()
-	token, _ := randomToken(32)
-	dir := filepath.Join(h.dataDir, id.String())
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
-		return
-	}
-	target := filepath.Join(dir, "object")
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
-		return
-	}
-	hash := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(out, hash), io.LimitReader(file, policy.limit+1))
-	closeErr := out.Close()
-	if copyErr != nil || closeErr != nil || n > policy.limit {
-		_ = os.RemoveAll(dir)
-		c.JSON(400, gin.H{"error": gin.H{"code": "upload_failed"}})
-		return
-	}
-	metadata, probeErr := probeTrustedMedia(c.Request.Context(), target, policy, contentType)
-	if probeErr != nil {
-		_ = os.RemoveAll(dir)
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{
-			"code": "media_probe_failed", "message": probeErr.Error(),
-		}})
-		return
-	}
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "media_probe_failed", "message": "Failed to serialize trusted media metadata"}})
-		return
-	}
-	expires := time.Now().Add(time.Duration(runtime.Config.RetentionHours) * time.Hour)
-	backend, storageKey := "local", target
-	if runtime.Config.Backend == "s3" {
-		if runtime.Store == nil {
-			_ = os.RemoveAll(dir)
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "file_storage_unavailable"}})
-			return
-		}
-		f, openErr := os.Open(target)
-		if openErr != nil {
-			_ = os.RemoveAll(dir)
-			c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
-			return
-		}
-		storageKey = runtime.Config.S3.Prefix + id.String()
-		_, err = runtime.Store.Upload(c, storageKey, f, contentType)
-		_ = f.Close()
-		if err != nil {
-			_ = os.RemoveAll(dir)
-			c.JSON(500, gin.H{"error": gin.H{"code": "storage_error"}})
-			return
-		}
-		backend = "s3"
-		_ = os.RemoveAll(dir)
-	}
-	_, err = h.db.ExecContext(c, `INSERT INTO temporary_assets(id,user_id,api_key_id,group_id,public_token_hash,storage_backend,storage_key,original_filename,media_type,mime_type,size_bytes,sha256,metadata,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, key.UserID, key.ID, key.GroupID, hashToken(token), backend, storageKey, filepath.Base(header.Filename), policy.kind, contentType, n, hex.EncodeToString(hash.Sum(nil)), metadataJSON, expires)
-	if err != nil {
-		if backend == "s3" {
-			_ = runtime.Store.Delete(context.Background(), storageKey)
-		} else {
-			_ = os.RemoveAll(dir)
-		}
-		c.JSON(500, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	c.JSON(201, gin.H{"id": id, "url": temporaryAssetPublicURL(publicBaseURL, id, contentType), "content_type": contentType, "size": n, "sha256": hex.EncodeToString(hash.Sum(nil)), "metadata": metadata, "created_at": time.Now().UTC(), "expires_at": expires.UTC()})
-}
-
 func temporaryAssetPublicURL(publicBaseURL string, id uuid.UUID, contentType string) string {
 	return strings.TrimRight(publicBaseURL, "/") + "/media/" + id.String() + "/asset" + canonicalMediaExtension(contentType)
 }
@@ -795,9 +666,8 @@ func (e *temporaryAssetUploadError) Error() string {
 	return e.code
 }
 
-// uploadTemporaryAssetPart stores one already-parsed multipart part using the
-// same storage, quota, metadata, ownership, and expiry contract as the public
-// /api/v1/agent/assets endpoint. It is used by the one-shot video upload path.
+// uploadTemporaryAssetPart stores one multipart file for the one-shot video
+// request path. It is intentionally not exposed as a standalone upload API.
 func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.APIKey, file multipart.File, header *multipart.FileHeader) (*temporaryAssetUploadResult, error) {
 	if h == nil || key == nil || file == nil || header == nil {
 		return nil, &temporaryAssetUploadError{status: http.StatusBadRequest, code: "invalid_upload"}
@@ -910,50 +780,6 @@ func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.API
 		CreatedAt:   time.Now().UTC(),
 		ExpiresAt:   expires.UTC(),
 	}, nil
-}
-
-func (h *AgentHandler) GetTemporaryAsset(c *gin.Context) {
-	key, ok := middleware.GetAPIKeyFromContext(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized"}})
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "temporary_asset_not_found"}})
-		return
-	}
-	var filename, mediaType, mimeType, sha256sum string
-	var size int64
-	var metadataJSON []byte
-	var createdAt, expiresAt time.Time
-	var deletedAt sql.NullTime
-	err = h.db.QueryRowContext(c, `SELECT original_filename,media_type,mime_type,size_bytes,sha256,metadata,created_at,expires_at,deleted_at FROM temporary_assets WHERE id=$1 AND user_id=$2 AND api_key_id=$3`, id, key.UserID, key.ID).Scan(&filename, &mediaType, &mimeType, &size, &sha256sum, &metadataJSON, &createdAt, &expiresAt, &deletedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "temporary_asset_not_found"}})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "database_error"}})
-		return
-	}
-	var metadata trustedMediaMetadata
-	if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "media_metadata_invalid"}})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"id":                id,
-		"original_filename": filename,
-		"media_type":        mediaType,
-		"content_type":      mimeType,
-		"size":              size,
-		"sha256":            sha256sum,
-		"metadata":          metadata,
-		"created_at":        createdAt.UTC(),
-		"expires_at":        expiresAt.UTC(),
-		"active":            !deletedAt.Valid && time.Now().Before(expiresAt),
-	})
 }
 
 func (h *AgentHandler) ServeTemporaryAsset(c *gin.Context) {
