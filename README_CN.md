@@ -240,6 +240,10 @@ gunzip -c backups_*.sql.gz | docker exec -i sub2api-restore-check-pg \
 
 `/v1/videos` 同时接受普通 JSON 和 multipart 请求。已经是公网 `http(s)` URL 的媒体会原样保留并直接交给上游，不会被 sub2api 下载或重新上传。
 
+上述规则只针对下游提交的输入素材。视频任务完成后，上游返回的结果 URL 会由 sub2api 在服务端流式下载并转存到共享 File Service；任务结果和 usage log 只返回 `https://sub2api.example.com/media/{id}/asset.mp4`（或 `.mov`），不会暴露供应商原始 URL。转存完成前任务保持 `processing`，转存失败会在生命周期轮询期限内重试，不会回退为供应商 URL。
+
+仅当后台视频账号配置为 `video_provider = jingyu` 时，上游任务状态改为完成回调：创建请求自动携带每任务 `callback_url`/`callback_secret`，Sub2API 通过 `POST /api/v1/webhooks/jingyu/videos/{id}` 验证 `X-NewAPI-Signature` 并处理成功或失败终态，不再向 Jingyu 发送状态 GET 轮询。Aigod 视频轮询和所有图片接口保持原有行为。详细签名、超时退款和部署放行要求见视频接口文档第 8.2 节。
+
 如果下游需要在一次请求中上传本地文件，使用 multipart：
 
 - JSON 请求放在 `request` 字段，也支持字段名 `json` 或 `body`。
@@ -258,7 +262,7 @@ curl -X POST 'https://sub2api.example.com/v1/videos' \
   -F 'file=@./reference.mp4;type=video/mp4'
 ```
 
-上传生成的临时 URL 使用共享文件服务配置的公网根地址。推荐在后台 `File Service` 中配置 `Public Base URL`，例如 `https://sub2api.example.com`；也可以使用 `FILE_SERVICE_PUBLIC_BASE_URL` 作为部署启动回退配置。临时素材默认保留 24 小时，具体以响应中的 `expires_at` 为准。
+上传生成的临时 URL 和视频生成结果 URL 都使用共享文件服务配置的公网根地址。推荐在后台 `File Service` 中配置 `Public Base URL`，例如 `https://sub2api.example.com`；也可以使用 `FILE_SERVICE_PUBLIC_BASE_URL` 作为部署启动回退配置。临时素材和转存结果沿用 File Service 的留存期、每日数量及字节配额。多实例或 API/worker 分离部署使用 local 后端时必须共享 `agent-assets` 目录，否则应配置 S3/R2 等共享存储。
 
 素材上传接口也可以单独调用：
 

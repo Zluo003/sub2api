@@ -192,6 +192,145 @@ func TestTemporaryAssetPublisherStoresGeneratedPNG(t *testing.T) {
 	require.Equal(t, pngBytes, stored)
 }
 
+func TestTemporaryAssetPublisherRehostsGeneratedMP4(t *testing.T) {
+	clearTemporaryAssetStorageEnv(t)
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	storage := NewFileStorageService(
+		db,
+		nil,
+		nil,
+		nil,
+		&config.Config{Pricing: config.PricingConfig{DataDir: t.TempDir()}},
+	)
+	publisher := NewTemporaryAssetPublisher(db, storage)
+	publisher.allowPrivateVideoURLs = true
+	videoBytes := minimalMP4Bytes()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(videoBytes)
+	}))
+	t.Cleanup(upstream.Close)
+	publisher.videoHTTPClient = upstream.Client()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\), COALESCE\\(SUM\\(size_bytes\\), 0\\)").
+		WithArgs(int64(22), int64(11)).
+		WillReturnRows(sqlmock.NewRows([]string{"count", "bytes"}).AddRow(0, 0))
+	mock.ExpectExec("INSERT INTO temporary_assets").
+		WithArgs(
+			sqlmock.AnyArg(), int64(11), int64(22), int64(33), sqlmock.AnyArg(),
+			"local", sqlmock.AnyArg(), "generated-video.mp4", "video", "video/mp4",
+			int64(len(videoBytes)), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	resultURL, err := publisher.PublishGeneratedVideo(
+		context.Background(),
+		TemporaryAssetOwner{UserID: 11, APIKeyID: 22, GroupID: 33},
+		"https://api.example.com",
+		upstream.URL+"/supplier-result.mp4?signature=secret",
+	)
+	require.NoError(t, err)
+	require.Regexp(t, `^https://api\.example\.com/media/[0-9a-f-]+/asset\.mp4$`, resultURL)
+	require.NotContains(t, resultURL, upstream.URL)
+	require.NotContains(t, resultURL, "signature")
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	entries, err := os.ReadDir(storage.LocalPath())
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	stored, err := os.ReadFile(filepath.Join(storage.LocalPath(), entries[0].Name(), "object"))
+	require.NoError(t, err)
+	require.Equal(t, videoBytes, stored)
+}
+
+func TestTemporaryAssetPublisherRejectsOversizedGeneratedVideo(t *testing.T) {
+	clearTemporaryAssetStorageEnv(t)
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	storage := NewFileStorageService(
+		db,
+		nil,
+		nil,
+		nil,
+		&config.Config{Pricing: config.PricingConfig{DataDir: t.TempDir()}},
+	)
+	publisher := NewTemporaryAssetPublisher(db, storage)
+	publisher.allowPrivateVideoURLs = true
+	publisher.maxGeneratedVideoBytes = 16
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(minimalMP4Bytes())
+	}))
+	t.Cleanup(upstream.Close)
+	publisher.videoHTTPClient = upstream.Client()
+
+	resultURL, err := publisher.PublishGeneratedVideo(
+		context.Background(),
+		TemporaryAssetOwner{UserID: 11, APIKeyID: 22, GroupID: 33},
+		"https://api.example.com",
+		upstream.URL+"/result.mp4",
+	)
+	require.ErrorContains(t, err, "size limit")
+	require.Empty(t, resultURL)
+	entries, readErr := os.ReadDir(storage.LocalPath())
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+}
+
+func TestTemporaryAssetPublisherRejectsNonVideoPayload(t *testing.T) {
+	clearTemporaryAssetStorageEnv(t)
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	storage := NewFileStorageService(
+		db,
+		nil,
+		nil,
+		nil,
+		&config.Config{Pricing: config.PricingConfig{DataDir: t.TempDir()}},
+	)
+	publisher := NewTemporaryAssetPublisher(db, storage)
+	publisher.allowPrivateVideoURLs = true
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<html>not a video</html>")
+	}))
+	t.Cleanup(upstream.Close)
+	publisher.videoHTTPClient = upstream.Client()
+
+	resultURL, err := publisher.PublishGeneratedVideo(
+		context.Background(),
+		TemporaryAssetOwner{UserID: 11, APIKeyID: 22, GroupID: 33},
+		"https://api.example.com",
+		upstream.URL+"/result.mp4",
+	)
+	require.ErrorContains(t, err, "unsupported media type")
+	require.Empty(t, resultURL)
+}
+
+func clearTemporaryAssetStorageEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"FILE_SERVICE_PUBLIC_BASE_URL", "FILE_SERVICE_RETENTION_HOURS",
+		"FILE_SERVICE_DAILY_MAX_COUNT", "FILE_SERVICE_DAILY_MAX_BYTES",
+		"FILE_SERVICE_S3_BUCKET", "AGENT_ASSETS_S3_BUCKET",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func minimalMP4Bytes() []byte {
+	return []byte{
+		0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p',
+		'i', 's', 'o', 'm', 0x00, 0x00, 0x02, 0x00,
+		'i', 's', 'o', 'm', 'i', 's', 'o', '2',
+	}
+}
+
 func onePixelPNG(t *testing.T) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

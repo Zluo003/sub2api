@@ -290,7 +290,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	openAIGatewayHandler := handler.ProvideOpenAIGatewayHandler(openAIGatewayService, concurrencyService, billingCacheService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, grokQuotaService, temporaryAssetPublisher, configConfig, coordinator)
 	videoAccountRepository := service.ProvideVideoAccountRepository(accountRepository)
 	videoTaskRepository := repository.NewVideoTaskRepository(client)
-	videoService := service.ProvideVideoService(videoAccountRepository, videoTaskRepository, videoGroupPricingRuleRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, apiKeyService, billingCacheService, deferredService, balanceNotifyService, serviceUserPlatformQuotaRepository, httpUpstream, configConfig, agentModelCatalogService)
+	videoService := service.ProvideVideoService(videoAccountRepository, videoTaskRepository, videoGroupPricingRuleRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, apiKeyService, billingCacheService, deferredService, balanceNotifyService, serviceUserPlatformQuotaRepository, httpUpstream, configConfig, agentModelCatalogService, temporaryAssetPublisher)
 	agentHandler := handler.NewAgentHandler(db, configConfig, fileStorageService, billingService, videoService, agentModelCatalogService)
 	videoHandler := handler.ProvideVideoHandler(videoService, agentHandler, contentModerationService, coordinator)
 	handlerSettingHandler := handler.ProvideSettingHandler(settingService, buildInfo, notificationEmailService)

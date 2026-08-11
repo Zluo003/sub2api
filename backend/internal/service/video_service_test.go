@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,12 +12,60 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+type recordingVideoResultPublisher struct {
+	returnedURL string
+	err         error
+	owner       TemporaryAssetOwner
+	baseURL     string
+	upstreamURL string
+}
+
+func (p *recordingVideoResultPublisher) PublishGeneratedVideo(
+	_ context.Context,
+	owner TemporaryAssetOwner,
+	fallbackPublicBaseURL string,
+	upstreamURL string,
+) (string, error) {
+	p.owner = owner
+	p.baseURL = fallbackPublicBaseURL
+	p.upstreamURL = upstreamURL
+	if p.err != nil {
+		return "", p.err
+	}
+	return p.returnedURL, nil
+}
+
+func TestVideoServicePublishesUpstreamResultWithoutFallback(t *testing.T) {
+	groupID := int64(33)
+	apiKey := &APIKey{ID: 22, User: &User{ID: 11}, Group: &Group{ID: groupID}}
+	publisher := &recordingVideoResultPublisher{returnedURL: "https://sub2api.example.com/media/result/asset.mp4"}
+	service := &VideoService{videoResultPublisher: publisher}
+	input := VideoTaskLifecycleInput{
+		APIKey:              apiKey,
+		ResultPublicBaseURL: "https://sub2api.example.com",
+	}
+
+	resultURL, err := service.publishVideoResult(context.Background(), input, "https://supplier.example.com/original.mp4?token=secret")
+	require.NoError(t, err)
+	require.Equal(t, publisher.returnedURL, resultURL)
+	require.Equal(t, TemporaryAssetOwner{UserID: 11, APIKeyID: 22, GroupID: 33}, publisher.owner)
+	require.Equal(t, input.ResultPublicBaseURL, publisher.baseURL)
+	require.Equal(t, "https://supplier.example.com/original.mp4?token=secret", publisher.upstreamURL)
+	require.NotContains(t, resultURL, "supplier.example.com")
+
+	publisher.err = errors.New("storage failed")
+	resultURL, err = service.publishVideoResult(context.Background(), input, publisher.upstreamURL)
+	require.Error(t, err)
+	require.Empty(t, resultURL)
+}
 
 func TestNormalizeVideoCreateRequestBuildsSeedancePayloadAndBillingSeconds(t *testing.T) {
 	generateAudio := true
@@ -885,7 +936,8 @@ func TestVideoServiceForwardsLargeDataURLWithoutPersistingIt(t *testing.T) {
 				ImageURL: &VideoContentURL{URL: dataURL},
 			}},
 		},
-		RequestPayloadHash: "large-reference-hash",
+		RequestPayloadHash:  "large-reference-hash",
+		ResultPublicBaseURL: "https://sub2api.example.com",
 	})
 
 	require.NoError(t, err)
@@ -893,6 +945,7 @@ func TestVideoServiceForwardsLargeDataURLWithoutPersistingIt(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, content, 2)
 	require.Equal(t, map[string]any{"url": dataURL}, content[1]["image_url"])
+	require.Equal(t, "https://sub2api.example.com", lifecycle.ResultPublicBaseURL)
 
 	task, err := taskRepo.GetByPublicID(context.Background(), resp.ID)
 	require.NoError(t, err)
@@ -1131,14 +1184,12 @@ func TestVideoAccountEndpointUsesJingyuDefaults(t *testing.T) {
 	require.Equal(t, "https://api.jingyuapi.art/v1/video/generations", endpoint)
 }
 
-func TestVideoServiceParsesJingyuTaskIDAndResultURL(t *testing.T) {
+func TestVideoServiceParsesJingyuTaskID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == videoDefaultJingyuAPIPath:
 			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","id":"legacy-id-must-not-win","status":"queued"}`))
-		case r.Method == http.MethodGet && r.URL.Path == videoDefaultJingyuAPIPath+"/jingyu-task-1":
-			_, _ = w.Write([]byte(`{"task_id":"jingyu-task-1","status":"succeeded","metadata":{"url":"https://cdn.example.com/result.mp4"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -1159,11 +1210,176 @@ func TestVideoServiceParsesJingyuTaskIDAndResultURL(t *testing.T) {
 	created, err := service.createUpstreamTask(context.Background(), account, map[string]any{"model": videoJingyuSeedance20Model})
 	require.NoError(t, err)
 	require.Equal(t, "jingyu-task-1", created.ID)
+}
 
-	polled, err := service.pollUpstreamTask(context.Background(), account, created.ID)
+func TestVideoServiceConfiguresCallbackOnlyForJingyuVideo(t *testing.T) {
+	service := &VideoService{cfg: &config.Config{JWT: config.JWTConfig{Secret: "jingyu-callback-test-secret-32bytes"}}}
+	jingyuBody := map[string]any{"model": videoJingyuSeedance20Model}
+	input := VideoTaskLifecycleInput{
+		PublicID:            "video_callback_1",
+		Account:             &Account{Extra: map[string]any{"video_provider": videoProviderJingyu}},
+		UpstreamBody:        jingyuBody,
+		ResultPublicBaseURL: "https://sub2api.example.com",
+	}
+	require.NoError(t, service.configureJingyuVideoCallback(context.Background(), input))
+	require.Equal(t, "https://sub2api.example.com/api/v1/webhooks/jingyu/videos/video_callback_1", jingyuBody["callback_url"])
+	require.NotEmpty(t, jingyuBody["callback_secret"])
+
+	aigodBody := map[string]any{"model": "seedance-2.0-720p"}
+	require.NoError(t, service.configureJingyuVideoCallback(context.Background(), VideoTaskLifecycleInput{
+		PublicID:            "video_aigod_1",
+		Account:             &Account{Extra: map[string]any{"video_provider": videoProviderAigod}},
+		UpstreamBody:        aigodBody,
+		ResultPublicBaseURL: "https://sub2api.example.com",
+	}))
+	require.NotContains(t, aigodBody, "callback_url")
+	require.NotContains(t, aigodBody, "callback_secret")
+}
+
+func TestJingyuVideoLifecycleSubmitsCallbackWithoutPolling(t *testing.T) {
+	var getCount atomic.Int64
+	postBody := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			postBody <- body
+			_, _ = w.Write([]byte(`{"task_id":"jingyu-callback-task","status":"queued"}`))
+		case http.MethodGet:
+			getCount.Add(1)
+			http.Error(w, "polling must not be used", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	groupID := int64(20)
+	account := &Account{
+		ID:       30,
+		Platform: PlatformSeedance,
+		Extra: map[string]any{
+			"video_provider":  videoProviderJingyu,
+			"base_url":        server.URL,
+			"poll_timeout_ms": 40,
+		},
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+	taskRepo := newVideoTaskMemoryRepo()
+	_, err := taskRepo.Create(context.Background(), &VideoTaskCreateInput{
+		PublicID: "video_callback_lifecycle", UserID: 11, APIKeyID: 22, GroupID: groupID,
+		AccountID: account.ID, Model: VideoModelSeedance20, UpstreamModel: videoJingyuSeedance20Model,
+		Resolution: VideoResolution720P, Status: VideoTaskStatusQueued,
+	})
 	require.NoError(t, err)
-	require.Equal(t, VideoTaskStatusCompleted, polled.Status)
-	require.Equal(t, "https://cdn.example.com/result.mp4", polled.VideoURL)
+	service := &VideoService{
+		taskRepo:             taskRepo,
+		accountRepo:          &videoAccountRepoStub{accounts: []Account{*account}},
+		cfg:                  &config.Config{JWT: config.JWTConfig{Secret: "jingyu-callback-test-secret-32bytes"}},
+		videoResultPublisher: &recordingVideoResultPublisher{returnedURL: "https://sub2api.example.com/media/result/asset.mp4"},
+	}
+	service.startLifecycle(VideoTaskLifecycleInput{
+		PublicID: "video_callback_lifecycle",
+		Account:  account,
+		APIKey: &APIKey{
+			ID: 22, UserID: 11, User: &User{ID: 11}, GroupID: &groupID,
+			Group: &Group{ID: groupID, Platform: PlatformSeedance},
+		},
+		UpstreamBody:        map[string]any{"model": videoJingyuSeedance20Model},
+		ResultPublicBaseURL: "https://sub2api.example.com",
+	})
+
+	select {
+	case body := <-postBody:
+		require.Contains(t, body, "callback_url")
+		require.Contains(t, body, "callback_secret")
+	case <-time.After(time.Second):
+		t.Fatal("Jingyu create request was not submitted")
+	}
+	time.Sleep(80 * time.Millisecond)
+	require.Equal(t, int64(0), getCount.Load())
+}
+
+func TestHandleJingyuVideoCallbackRehostsResultAndCompletesTask(t *testing.T) {
+	groupID := int64(33)
+	account := Account{ID: 44, Platform: PlatformSeedance, Extra: map[string]any{"video_provider": videoProviderJingyu}}
+	taskRepo := newVideoTaskMemoryRepo()
+	_, err := taskRepo.Create(context.Background(), &VideoTaskCreateInput{
+		PublicID: "video_callback_success", UserID: 11, APIKeyID: 22, GroupID: groupID,
+		AccountID: account.ID, Model: VideoModelSeedance20, UpstreamModel: videoJingyuSeedance20Model,
+		Resolution: VideoResolution720P, Status: VideoTaskStatusProcessing,
+		UpstreamTaskID: stringPtr("jingyu-task-success"),
+	})
+	require.NoError(t, err)
+	publisher := &recordingVideoResultPublisher{returnedURL: "https://sub2api.example.com/media/local/asset.mp4"}
+	service := &VideoService{
+		taskRepo:             taskRepo,
+		accountRepo:          &videoAccountRepoStub{accounts: []Account{account}},
+		cfg:                  &config.Config{JWT: config.JWTConfig{Secret: "jingyu-callback-test-secret-32bytes"}},
+		videoResultPublisher: publisher,
+	}
+	rawBody := []byte(`{"task_id":"jingyu-task-success","status":"SUCCESS","video_url":"https://supplier.example.com/original.mp4?token=secret"}`)
+	secret, err := service.jingyuVideoCallbackSecret("video_callback_success")
+	require.NoError(t, err)
+	signature := signJingyuVideoCallbackForTest(secret, rawBody)
+	require.ErrorIs(t, service.HandleJingyuVideoCallback(
+		context.Background(),
+		"video_callback_success",
+		"task.completed",
+		strings.Repeat("0", sha256.Size*2),
+		rawBody,
+		"https://sub2api.example.com",
+	), ErrJingyuCallbackUnauthorized)
+
+	err = service.HandleJingyuVideoCallback(
+		context.Background(),
+		"video_callback_success",
+		"task.completed",
+		signature,
+		rawBody,
+		"https://sub2api.example.com",
+	)
+	require.NoError(t, err)
+	task, err := taskRepo.GetByPublicID(context.Background(), "video_callback_success")
+	require.NoError(t, err)
+	require.Equal(t, VideoTaskStatusCompleted, task.Status)
+	require.NotNil(t, task.ResultVideoURL)
+	require.Equal(t, publisher.returnedURL, *task.ResultVideoURL)
+	require.NotContains(t, *task.ResultVideoURL, "supplier.example.com")
+	require.Equal(t, "https://supplier.example.com/original.mp4?token=secret", publisher.upstreamURL)
+}
+
+func TestHandleJingyuVideoCallbackRejectsAigodTask(t *testing.T) {
+	account := Account{ID: 44, Platform: PlatformSeedance, Extra: map[string]any{"video_provider": videoProviderAigod}}
+	taskRepo := newVideoTaskMemoryRepo()
+	_, err := taskRepo.Create(context.Background(), &VideoTaskCreateInput{
+		PublicID: "video_aigod_callback", UserID: 11, APIKeyID: 22, GroupID: 33,
+		AccountID: account.ID, Model: VideoModelSeedance20, UpstreamModel: VideoModelSeedance20,
+		Resolution: VideoResolution720P, Status: VideoTaskStatusProcessing,
+		UpstreamTaskID: stringPtr("aigod-task"),
+	})
+	require.NoError(t, err)
+	service := &VideoService{
+		taskRepo:    taskRepo,
+		accountRepo: &videoAccountRepoStub{accounts: []Account{account}},
+		cfg:         &config.Config{JWT: config.JWTConfig{Secret: "jingyu-callback-test-secret-32bytes"}},
+	}
+	rawBody := []byte(`{"task_id":"aigod-task","status":"SUCCESS","video_url":"https://supplier.example.com/result.mp4"}`)
+	secret, err := service.jingyuVideoCallbackSecret("video_aigod_callback")
+	require.NoError(t, err)
+	err = service.HandleJingyuVideoCallback(
+		context.Background(), "video_aigod_callback", "task.completed",
+		signJingyuVideoCallbackForTest(secret, rawBody), rawBody, "https://sub2api.example.com",
+	)
+	require.ErrorIs(t, err, ErrJingyuCallbackInvalid)
+}
+
+func signJingyuVideoCallbackForTest(secret string, rawBody []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(rawBody)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestJingyuContractUsesNewWauleFieldPrecedenceAndDefaults(t *testing.T) {
@@ -1578,6 +1794,51 @@ func (r *videoTaskMemoryRepo) UpdateByPublicID(ctx context.Context, publicID str
 	return cloneVideoTaskForTest(task), nil
 }
 
+func (r *videoTaskMemoryRepo) TransitionTerminalByPublicID(ctx context.Context, publicID string, update VideoTaskUpdate) (*VideoTask, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	task, ok := r.tasks[publicID]
+	if !ok {
+		return nil, false, ErrVideoTaskNotFound
+	}
+	if task.Status != VideoTaskStatusQueued && task.Status != VideoTaskStatusProcessing {
+		return cloneVideoTaskForTest(task), false, nil
+	}
+	if update.Status != nil {
+		task.Status = *update.Status
+	}
+	if update.UpstreamTaskID != nil {
+		task.UpstreamTaskID = update.UpstreamTaskID
+	}
+	if update.ErrorJSON != nil {
+		task.ErrorJSON = cloneMap(update.ErrorJSON)
+	}
+	if update.ResultVideoURL != nil {
+		task.ResultVideoURL = update.ResultVideoURL
+	}
+	if update.CompletedAt != nil {
+		task.CompletedAt = update.CompletedAt
+	}
+	task.UpdatedAt = time.Now().UTC()
+	return cloneVideoTaskForTest(task), true, nil
+}
+
+func (r *videoTaskMemoryRepo) MarkProcessingByPublicID(ctx context.Context, publicID string, upstreamTaskID string) (*VideoTask, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	task, ok := r.tasks[publicID]
+	if !ok {
+		return nil, false, ErrVideoTaskNotFound
+	}
+	if task.Status != VideoTaskStatusQueued && task.Status != VideoTaskStatusProcessing {
+		return cloneVideoTaskForTest(task), false, nil
+	}
+	task.Status = VideoTaskStatusProcessing
+	task.UpstreamTaskID = &upstreamTaskID
+	task.UpdatedAt = time.Now().UTC()
+	return cloneVideoTaskForTest(task), true, nil
+}
+
 func (r *videoTaskMemoryRepo) MarkBilled(ctx context.Context, publicID string, billedAt time.Time) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1649,6 +1910,16 @@ func (r *videoPricingMemoryRepo) GetEnabledRule(ctx context.Context, groupID int
 
 type videoAccountRepoStub struct {
 	accounts []Account
+}
+
+func (r *videoAccountRepoStub) GetByID(ctx context.Context, id int64) (*Account, error) {
+	for i := range r.accounts {
+		if r.accounts[i].ID == id {
+			account := r.accounts[i]
+			return &account, nil
+		}
+	}
+	return nil, ErrAccountNotFound
 }
 
 func (r *videoAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {

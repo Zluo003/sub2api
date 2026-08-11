@@ -49,8 +49,9 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 		"/videos":                   {"video_handler.go"},
 	}
 	excluded := map[string]string{
-		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
-		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
+		"/messages/count_tokens":             "tokenization only; it does not execute a model request",
+		"/images/batches/:id/cancel":         "control-plane cancellation with no user prompt",
+		"/api/v1/webhooks/jingyu/videos/:id": "signed Jingyu video terminal callback with no user prompt",
 	}
 
 	unclassified := make([]string, 0)

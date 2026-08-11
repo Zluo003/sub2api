@@ -52,6 +52,10 @@ var (
 	ErrReferenceVideoDurationMiss = infraerrors.BadRequest("reference_video_duration_required", "Reference video duration is required")
 	ErrVideoInvalidRequest        = infraerrors.BadRequest("invalid_video_request", "Invalid video request")
 	ErrVideoAccountNotFound       = infraerrors.ServiceUnavailable("video_service_unavailable", "Video service is temporarily unavailable. Please retry later.")
+	ErrJingyuCallbackUnauthorized = infraerrors.Unauthorized("jingyu_callback_unauthorized", "Invalid Jingyu video callback signature")
+	ErrJingyuCallbackInvalid      = infraerrors.BadRequest("jingyu_callback_invalid", "Invalid Jingyu video callback")
+	ErrJingyuCallbackNotFound     = infraerrors.NotFound("jingyu_callback_task_not_found", "Jingyu video callback task not found")
+	ErrJingyuCallbackFailed       = infraerrors.InternalServer("jingyu_callback_processing_failed", "Jingyu video callback processing failed")
 )
 
 type VideoGroupPricingRule struct {
@@ -145,6 +149,7 @@ type VideoCreateInput struct {
 	IPAddress           string
 	InboundEndpoint     string
 	UpstreamEndpoint    string
+	ResultPublicBaseURL string
 }
 
 type VideoResponse struct {
@@ -182,16 +187,17 @@ type VideoTaskUpdateInput struct {
 }
 
 type VideoTaskLifecycleInput struct {
-	PublicID           string
-	Account            *Account
-	APIKey             *APIKey
-	Subscription       *UserSubscription
-	UpstreamBody       map[string]any
-	RequestPayloadHash string
-	UserAgent          string
-	IPAddress          string
-	InboundEndpoint    string
-	UpstreamEndpoint   string
+	PublicID            string
+	Account             *Account
+	APIKey              *APIKey
+	Subscription        *UserSubscription
+	UpstreamBody        map[string]any
+	RequestPayloadHash  string
+	UserAgent           string
+	IPAddress           string
+	InboundEndpoint     string
+	UpstreamEndpoint    string
+	ResultPublicBaseURL string
 }
 
 type VideoTaskCreateInput struct {
@@ -228,6 +234,8 @@ type VideoTaskRepository interface {
 	Create(ctx context.Context, input *VideoTaskCreateInput) (*VideoTask, error)
 	GetByPublicID(ctx context.Context, publicID string) (*VideoTask, error)
 	UpdateByPublicID(ctx context.Context, publicID string, update VideoTaskUpdate) (*VideoTask, error)
+	MarkProcessingByPublicID(ctx context.Context, publicID string, upstreamTaskID string) (*VideoTask, bool, error)
+	TransitionTerminalByPublicID(ctx context.Context, publicID string, update VideoTaskUpdate) (*VideoTask, bool, error)
 	MarkBilled(ctx context.Context, publicID string, billedAt time.Time) (bool, error)
 	MarkRefunded(ctx context.Context, publicID string, refundedAt time.Time) (bool, error)
 }
@@ -239,6 +247,7 @@ type VideoGroupPricingRuleRepository interface {
 }
 
 type VideoAccountRepository interface {
+	GetByID(ctx context.Context, id int64) (*Account, error)
 	ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error)
 	SetError(ctx context.Context, id int64, errorMsg string) error
 	SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error

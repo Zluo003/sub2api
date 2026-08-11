@@ -41,6 +41,11 @@ func RegisterGatewayRoutes(
 	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver)
 	compositeGeminiTarget := compositeGeminiTargetPlatformMiddleware(compositeResolver)
 
+	// Jingyu video completion webhook. This route intentionally has no API-key
+	// middleware; VideoHandler verifies the per-task HMAC signature. It is not
+	// shared by Aigod video tasks or any image endpoint.
+	r.POST("/api/v1/webhooks/jingyu/videos/:id", clientRequestID, h.Video.JingyuCallback)
+
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 	requireGroupOpenAI := middleware.RequireGroupAssignment(settingService, middleware.OpenAIErrorWriter)

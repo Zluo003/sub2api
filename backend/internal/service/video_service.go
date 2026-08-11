@@ -3,7 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -50,24 +53,28 @@ const (
 	videoAbilityImageToVideo     = "video_image_to_video"
 	videoAbilityStartEndToVideo  = "video_start_end_to_video"
 	videoAbilityReferenceToVideo = "video_reference_to_video"
+	jingyuVideoCallbackPath      = "/api/v1/webhooks/jingyu/videos/"
 )
 
 type VideoService struct {
-	accountRepo      VideoAccountRepository
-	taskRepo         VideoTaskRepository
-	pricingRepo      VideoGroupPricingRuleRepository
-	usageLogRepo     UsageLogRepository
-	usageBillingRepo UsageBillingRepository
-	userRepo         UserRepository
-	userSubRepo      UserSubscriptionRepository
-	apiKeyService    APIKeyQuotaUpdater
-	billingCache     *BillingCacheService
-	deferredService  *DeferredService
-	balanceNotify    *BalanceNotifyService
-	quotaRepo        UserPlatformQuotaRepository
-	httpUpstream     HTTPUpstream
-	cfg              *config.Config
-	agentModels      *AgentModelCatalogService
+	accountRepo          VideoAccountRepository
+	taskRepo             VideoTaskRepository
+	pricingRepo          VideoGroupPricingRuleRepository
+	usageLogRepo         UsageLogRepository
+	usageBillingRepo     UsageBillingRepository
+	userRepo             UserRepository
+	userSubRepo          UserSubscriptionRepository
+	apiKeyService        APIKeyQuotaUpdater
+	billingCache         *BillingCacheService
+	deferredService      *DeferredService
+	balanceNotify        *BalanceNotifyService
+	quotaRepo            UserPlatformQuotaRepository
+	httpUpstream         HTTPUpstream
+	cfg                  *config.Config
+	agentModels          *AgentModelCatalogService
+	videoResultPublisher VideoResultPublisher
+	apiKeyLoader         *APIKeyService
+	jingyuCallbackGroup  singleflight.Group
 
 	startLifecycleFunc func(VideoTaskLifecycleInput)
 }
@@ -75,6 +82,12 @@ type VideoService struct {
 func (s *VideoService) SetAgentModelCatalog(catalog *AgentModelCatalogService) {
 	if s != nil {
 		s.agentModels = catalog
+	}
+}
+
+func (s *VideoService) SetVideoResultPublisher(publisher VideoResultPublisher) {
+	if s != nil {
+		s.videoResultPublisher = publisher
 	}
 }
 
@@ -103,6 +116,7 @@ func NewVideoService(
 		userRepo:         userRepo,
 		userSubRepo:      userSubRepo,
 		apiKeyService:    apiKeyService,
+		apiKeyLoader:     apiKeyService,
 		billingCache:     billingCache,
 		deferredService:  deferredService,
 		balanceNotify:    balanceNotify,
@@ -205,16 +219,17 @@ func (s *VideoService) createTask(ctx context.Context, input *VideoCreateInput) 
 	}
 
 	lifecycleInput := VideoTaskLifecycleInput{
-		PublicID:           task.PublicID,
-		Account:            account,
-		APIKey:             input.APIKey,
-		Subscription:       input.Subscription,
-		UpstreamBody:       upstreamBody,
-		RequestPayloadHash: input.RequestPayloadHash,
-		UserAgent:          input.UserAgent,
-		IPAddress:          input.IPAddress,
-		InboundEndpoint:    inboundEndpoint,
-		UpstreamEndpoint:   upstreamEndpoint,
+		PublicID:            task.PublicID,
+		Account:             account,
+		APIKey:              input.APIKey,
+		Subscription:        input.Subscription,
+		UpstreamBody:        upstreamBody,
+		RequestPayloadHash:  input.RequestPayloadHash,
+		UserAgent:           input.UserAgent,
+		IPAddress:           input.IPAddress,
+		InboundEndpoint:     inboundEndpoint,
+		UpstreamEndpoint:    upstreamEndpoint,
+		ResultPublicBaseURL: input.ResultPublicBaseURL,
 	}
 	if s.startLifecycleFunc != nil {
 		s.startLifecycleFunc(lifecycleInput)
@@ -480,6 +495,9 @@ func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account,
 }
 
 func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, upstreamTaskID string) (*videoPollResult, error) {
+	if videoAccountProvider(account) == videoProviderJingyu {
+		return nil, errors.New("jingyu video tasks use completion callbacks")
+	}
 	endpoint, err := videoAccountEndpoint(account)
 	if err != nil {
 		return nil, err
@@ -507,13 +525,6 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 	}
 	rawStatus := stringFromMap(payload, "status")
 	status := normalizeVideoUpstreamStatus(rawStatus)
-	if videoAccountProvider(account) == videoProviderJingyu {
-		var known bool
-		status, known = normalizeJingyuVideoUpstreamStatus(rawStatus)
-		if !known {
-			return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: fmt.Errorf("unknown jingyu task status: %s", strings.TrimSpace(rawStatus))}
-		}
-	}
 	result := &videoPollResult{Status: status}
 	if status == VideoTaskStatusCompleted {
 		result.VideoURL = videoResultURLFromPayload(payload)
@@ -550,6 +561,19 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 			}
 		}()
 
+		if videoAccountProvider(input.Account) == videoProviderJingyu {
+			if err := s.configureJingyuVideoCallback(context.Background(), input); err != nil {
+				clientErr := videoClientError("video_service_unavailable", "Video service is temporarily unavailable. Please retry later.")
+				task, _, _ := s.taskRepo.TransitionTerminalByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
+					Status:    stringPtr(VideoTaskStatusFailed),
+					ErrorJSON: videoErrorJSON(clientErr),
+				})
+				_ = s.refundFailedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
+				slog.Warn("jingyu video callback configuration failed", "task_id", input.PublicID, "error", err)
+				return
+			}
+		}
+
 		created, err := s.createUpstreamTask(context.Background(), input.Account, input.UpstreamBody)
 		if err != nil {
 			clientErr := mapVideoUpstreamError(err, false)
@@ -562,6 +586,19 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 			return
 		}
 
+		if videoAccountProvider(input.Account) == videoProviderJingyu {
+			_, changed, err := s.taskRepo.MarkProcessingByPublicID(context.Background(), input.PublicID, created.ID)
+			if err != nil {
+				slog.Warn("video task submit state update failed", "task_id", input.PublicID, "error", err)
+				return
+			}
+			if !changed {
+				return
+			}
+			s.waitForJingyuVideoCallback(input)
+			return
+		}
+
 		processingStatus := VideoTaskStatusProcessing
 		if _, err := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
 			Status:         &processingStatus,
@@ -570,9 +607,268 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 			slog.Warn("video task submit state update failed", "task_id", input.PublicID, "error", err)
 			return
 		}
-
 		s.pollLifecycle(input, created.ID)
 	}()
+}
+
+type videoPublicBaseURLResolver interface {
+	ResolvePublicBaseURL(ctx context.Context, fallback string) (string, error)
+}
+
+func (s *VideoService) configureJingyuVideoCallback(ctx context.Context, input VideoTaskLifecycleInput) error {
+	if input.Account == nil || videoAccountProvider(input.Account) != videoProviderJingyu {
+		return nil
+	}
+	if input.UpstreamBody == nil {
+		return errors.New("jingyu video request body is unavailable")
+	}
+	baseURL := input.ResultPublicBaseURL
+	if resolver, ok := s.videoResultPublisher.(videoPublicBaseURLResolver); ok {
+		resolved, err := resolver.ResolvePublicBaseURL(ctx, baseURL)
+		if err != nil {
+			return err
+		}
+		baseURL = resolved
+	}
+	normalizedBaseURL, err := normalizeFileStoragePublicBaseURL(baseURL)
+	if err != nil {
+		return fmt.Errorf("resolve jingyu callback public URL: %w", err)
+	}
+	secret, err := s.jingyuVideoCallbackSecret(input.PublicID)
+	if err != nil {
+		return err
+	}
+	input.UpstreamBody["callback_url"] = strings.TrimRight(normalizedBaseURL, "/") + jingyuVideoCallbackPath + url.PathEscape(input.PublicID)
+	input.UpstreamBody["callback_secret"] = secret
+	return nil
+}
+
+func (s *VideoService) jingyuVideoCallbackSecret(publicID string) (string, error) {
+	if s == nil || s.cfg == nil || strings.TrimSpace(s.cfg.JWT.Secret) == "" || strings.TrimSpace(publicID) == "" {
+		return "", errors.New("jingyu video callback signing secret is unavailable")
+	}
+	key := sha256.Sum256([]byte("sub2api/jingyu-video-callback/v1\x00" + s.cfg.JWT.Secret))
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write([]byte(strings.TrimSpace(publicID)))
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (s *VideoService) waitForJingyuVideoCallback(input VideoTaskLifecycleInput) {
+	timeout := videoAccountDuration(input.Account, "poll_timeout_ms", videoAccountDefaultDuration(input.Account, "poll_timeout_ms"))
+	if timeout <= 0 {
+		timeout = videoAccountDefaultDuration(input.Account, "poll_timeout_ms")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	<-timer.C
+
+	task, err := s.taskRepo.GetByPublicID(context.Background(), input.PublicID)
+	if err != nil || task == nil || isTerminalVideoTaskStatus(task.Status) {
+		return
+	}
+	clientErr := videoClientError("video_service_unavailable", "Video service is temporarily unavailable. Please retry later.")
+	task, changed, err := s.taskRepo.TransitionTerminalByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
+		Status:    stringPtr(VideoTaskStatusFailed),
+		ErrorJSON: videoErrorJSON(clientErr),
+	})
+	if err != nil || !changed {
+		return
+	}
+	_ = s.refundFailedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
+}
+
+func isTerminalVideoTaskStatus(status string) bool {
+	switch status {
+	case VideoTaskStatusCompleted, VideoTaskStatusFailed, VideoTaskStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// HandleJingyuVideoCallback processes only Jingyu video task callbacks. Aigod
+// video tasks and every image task remain on their existing lifecycle paths.
+func (s *VideoService) HandleJingyuVideoCallback(
+	ctx context.Context,
+	publicID string,
+	event string,
+	signature string,
+	rawBody []byte,
+	fallbackPublicBaseURL string,
+) error {
+	publicID = strings.TrimSpace(publicID)
+	if s == nil || publicID == "" || len(rawBody) == 0 || strings.TrimSpace(event) != "task.completed" {
+		return ErrJingyuCallbackInvalid
+	}
+	secret, err := s.jingyuVideoCallbackSecret(publicID)
+	if err != nil || !verifyJingyuVideoCallbackSignature(secret, rawBody, signature) {
+		return ErrJingyuCallbackUnauthorized
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return ErrJingyuCallbackInvalid
+	}
+	rawStatus := stringFromMap(payload, "status")
+	status, known := normalizeJingyuVideoUpstreamStatus(rawStatus)
+	if !known || (status != VideoTaskStatusCompleted && status != VideoTaskStatusFailed) {
+		return ErrJingyuCallbackInvalid
+	}
+	upstreamTaskID := strings.TrimSpace(stringFromMap(payload, "task_id"))
+	if upstreamTaskID == "" {
+		return ErrJingyuCallbackInvalid
+	}
+
+	processingCtx, cancel := context.WithTimeout(context.Background(), generatedVideoDownloadTimeout)
+	defer cancel()
+	_, err, _ = s.jingyuCallbackGroup.Do(publicID, func() (any, error) {
+		return nil, s.processJingyuVideoCallback(processingCtx, publicID, upstreamTaskID, status, payload, fallbackPublicBaseURL)
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyJingyuVideoCallbackSignature(secret string, rawBody []byte, signature string) bool {
+	provided, err := hex.DecodeString(strings.TrimSpace(signature))
+	if err != nil || len(provided) != sha256.Size {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(rawBody)
+	return hmac.Equal(mac.Sum(nil), provided)
+}
+
+func (s *VideoService) processJingyuVideoCallback(
+	ctx context.Context,
+	publicID string,
+	upstreamTaskID string,
+	status string,
+	payload map[string]any,
+	fallbackPublicBaseURL string,
+) error {
+	task, err := s.taskRepo.GetByPublicID(ctx, publicID)
+	if err != nil || task == nil {
+		return ErrJingyuCallbackNotFound
+	}
+	account, err := s.accountRepo.GetByID(ctx, task.AccountID)
+	if err != nil || account == nil {
+		return ErrJingyuCallbackFailed
+	}
+	if videoAccountProvider(account) != videoProviderJingyu {
+		return ErrJingyuCallbackInvalid
+	}
+	if task.UpstreamTaskID != nil && strings.TrimSpace(*task.UpstreamTaskID) != upstreamTaskID {
+		return ErrJingyuCallbackInvalid
+	}
+	if isTerminalVideoTaskStatus(task.Status) {
+		if task.Status == VideoTaskStatusFailed && status == VideoTaskStatusFailed {
+			return s.refundJingyuCallbackTask(ctx, task, account)
+		}
+		return nil
+	}
+
+	if status == VideoTaskStatusCompleted {
+		upstreamURL := videoResultURLFromPayload(payload)
+		if upstreamURL == "" || s.videoResultPublisher == nil {
+			return ErrJingyuCallbackFailed
+		}
+		publishedURL, err := s.videoResultPublisher.PublishGeneratedVideo(
+			ctx,
+			TemporaryAssetOwner{UserID: task.UserID, APIKeyID: task.APIKeyID, GroupID: task.GroupID},
+			fallbackPublicBaseURL,
+			upstreamURL,
+		)
+		if err != nil || strings.TrimSpace(publishedURL) == "" {
+			return ErrJingyuCallbackFailed.WithCause(err)
+		}
+		now := time.Now().UTC()
+		completedTask, changed, err := s.taskRepo.TransitionTerminalByPublicID(ctx, publicID, VideoTaskUpdate{
+			Status:         stringPtr(VideoTaskStatusCompleted),
+			UpstreamTaskID: &upstreamTaskID,
+			ResultVideoURL: &publishedURL,
+			CompletedAt:    &now,
+		})
+		if err != nil {
+			return ErrJingyuCallbackFailed.WithCause(err)
+		}
+		if changed {
+			_ = s.recordCompletedTask(context.Background(), completedTask, &APIKey{ID: task.APIKeyID}, nil, account, "", "", videoDefaultAPIPath, videoAccountAPIPath(account))
+		}
+		return nil
+	}
+
+	clientErr := videoClientError("video_generation_failed", "Video generation failed. Please retry with a different prompt or input.")
+	apiKey, subscription, err := s.loadJingyuCallbackBillingContext(ctx, task)
+	if err != nil {
+		return ErrJingyuCallbackFailed.WithCause(err)
+	}
+	failedTask, changed, err := s.taskRepo.TransitionTerminalByPublicID(ctx, publicID, VideoTaskUpdate{
+		Status:         stringPtr(VideoTaskStatusFailed),
+		UpstreamTaskID: &upstreamTaskID,
+		ErrorJSON:      videoErrorJSON(clientErr),
+	})
+	if err != nil {
+		return ErrJingyuCallbackFailed.WithCause(err)
+	}
+	if !changed {
+		return nil
+	}
+	if err := s.refundFailedTask(
+		context.Background(),
+		failedTask,
+		apiKey,
+		subscription,
+		account,
+		"video:"+publicID,
+		"",
+		"",
+		videoDefaultAPIPath,
+		videoAccountAPIPath(account),
+	); err != nil {
+		return ErrJingyuCallbackFailed.WithCause(err)
+	}
+	return nil
+}
+
+func (s *VideoService) refundJingyuCallbackTask(ctx context.Context, task *VideoTask, account *Account) error {
+	apiKey, subscription, err := s.loadJingyuCallbackBillingContext(ctx, task)
+	if err != nil {
+		return ErrJingyuCallbackFailed.WithCause(err)
+	}
+	if err := s.refundFailedTask(
+		context.Background(),
+		task,
+		apiKey,
+		subscription,
+		account,
+		"video:"+task.PublicID,
+		"",
+		"",
+		videoDefaultAPIPath,
+		videoAccountAPIPath(account),
+	); err != nil {
+		return ErrJingyuCallbackFailed.WithCause(err)
+	}
+	return nil
+}
+
+func (s *VideoService) loadJingyuCallbackBillingContext(ctx context.Context, task *VideoTask) (*APIKey, *UserSubscription, error) {
+	if s == nil || s.apiKeyLoader == nil || task == nil {
+		return nil, nil, errors.New("jingyu callback billing context is unavailable")
+	}
+	apiKey, err := s.apiKeyLoader.GetByID(ctx, task.APIKeyID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var subscription *UserSubscription
+	if s.userSubRepo != nil {
+		subscription, err = s.userSubRepo.GetByUserIDAndGroupID(ctx, task.UserID, task.GroupID)
+		if err != nil && !errors.Is(err, ErrSubscriptionNotFound) {
+			return nil, nil, err
+		}
+	}
+	return apiKey, subscription, nil
 }
 
 func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTaskID string) {
@@ -622,10 +918,15 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 					Status: &result.Status,
 				})
 			case VideoTaskStatusCompleted:
+				publishedURL, publishErr := s.publishVideoResult(ctx, input, result.VideoURL)
+				if publishErr != nil {
+					slog.Warn("video result publication failed", "task_id", input.PublicID, "error", publishErr)
+					continue
+				}
 				now := time.Now().UTC()
 				task, updateErr := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
 					Status:         &result.Status,
-					ResultVideoURL: &result.VideoURL,
+					ResultVideoURL: &publishedURL,
 					CompletedAt:    &now,
 				})
 				if updateErr == nil {
@@ -647,6 +948,32 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 			}
 		}
 	}
+}
+
+func (s *VideoService) publishVideoResult(ctx context.Context, input VideoTaskLifecycleInput, upstreamURL string) (string, error) {
+	if s == nil || s.videoResultPublisher == nil {
+		return "", errors.New("video result publisher is unavailable")
+	}
+	if input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil {
+		return "", errors.New("video result owner is unavailable")
+	}
+	publishedURL, err := s.videoResultPublisher.PublishGeneratedVideo(
+		ctx,
+		TemporaryAssetOwner{
+			UserID:   input.APIKey.User.ID,
+			APIKeyID: input.APIKey.ID,
+			GroupID:  input.APIKey.Group.ID,
+		},
+		input.ResultPublicBaseURL,
+		upstreamURL,
+	)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(publishedURL) == "" {
+		return "", errors.New("video result publisher returned an empty URL")
+	}
+	return publishedURL, nil
 }
 
 func (s *VideoService) billCreatedTask(ctx context.Context, task *VideoTask, apiKey *APIKey, subscription *UserSubscription, account *Account, payloadHash, userAgent, ipAddress, inboundEndpoint, upstreamEndpoint string) error {
@@ -1526,7 +1853,7 @@ func normalizeJingyuVideoUpstreamStatus(status string) (string, bool) {
 		return VideoTaskStatusProcessing, true
 	case "completed", "succeeded", "success":
 		return VideoTaskStatusCompleted, true
-	case "failed":
+	case "failed", "failure":
 		return VideoTaskStatusFailed, true
 	default:
 		return "", false
@@ -1756,6 +2083,7 @@ func videoResultURLFromPayload(payload map[string]any) string {
 		stringFromMap(payload, "result_asset_url"),
 		stringFromMap(payload, "url"),
 		stringFromMap(payload, "video_url"),
+		stringFromMap(payload, "result_url"),
 	)
 	if resultURL != "" {
 		return resultURL

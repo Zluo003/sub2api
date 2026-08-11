@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,18 +99,20 @@ func (h *VideoHandler) Create(c *gin.Context) {
 	upstreamEndpoint := GetUpstreamEndpoint(c, service.PlatformSeedance)
 
 	requestID, _ := c.Request.Context().Value(ctxkey.RequestID).(string)
+	resultPublicBaseURL, _ := requestPublicOrigin(c)
 	createInput := &service.VideoCreateInput{
-		APIKey:             apiKey,
-		Subscription:       subscription,
-		Request:            &req,
-		RawBody:            body,
-		IdempotencyKey:     c.GetHeader("Idempotency-Key"),
-		RequestID:          requestID,
-		RequestPayloadHash: service.HashUsageRequestPayload(body),
-		UserAgent:          c.GetHeader("User-Agent"),
-		IPAddress:          ip.GetClientIP(c),
-		InboundEndpoint:    inboundEndpoint,
-		UpstreamEndpoint:   upstreamEndpoint,
+		APIKey:              apiKey,
+		Subscription:        subscription,
+		Request:             &req,
+		RawBody:             body,
+		IdempotencyKey:      c.GetHeader("Idempotency-Key"),
+		RequestID:           requestID,
+		RequestPayloadHash:  service.HashUsageRequestPayload(body),
+		UserAgent:           c.GetHeader("User-Agent"),
+		IPAddress:           ip.GetClientIP(c),
+		InboundEndpoint:     inboundEndpoint,
+		UpstreamEndpoint:    upstreamEndpoint,
+		ResultPublicBaseURL: resultPublicBaseURL,
 	}
 	resp, err := h.videoService.CreateTask(c.Request.Context(), createInput)
 	if err != nil {
@@ -354,6 +357,39 @@ func (h *VideoHandler) Get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// JingyuCallback is an unauthenticated provider webhook secured by the
+// per-task HMAC secret sent only in Jingyu video create requests.
+func (h *VideoHandler) JingyuCallback(c *gin.Context) {
+	if h == nil || h.videoService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false})
+		return
+	}
+	const maxCallbackBodyBytes int64 = 2 << 20
+	rawBody, err := io.ReadAll(io.LimitReader(c.Request.Body, maxCallbackBodyBytes+1))
+	if err != nil || len(rawBody) == 0 || int64(len(rawBody)) > maxCallbackBodyBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "invalid_callback"})
+		return
+	}
+	publicOrigin, _ := requestPublicOrigin(c)
+	err = h.videoService.HandleJingyuVideoCallback(
+		c.Request.Context(),
+		c.Param("id"),
+		c.GetHeader("X-NewAPI-Event"),
+		c.GetHeader("X-NewAPI-Signature"),
+		rawBody,
+		publicOrigin,
+	)
+	if err != nil {
+		status, body := infraerrors.ToHTTP(err)
+		c.JSON(status, gin.H{
+			"ok":    false,
+			"error": body.Reason,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (h *VideoHandler) errorFrom(c *gin.Context, err error) {

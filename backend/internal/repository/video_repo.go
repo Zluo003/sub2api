@@ -67,6 +67,51 @@ func (r *videoTaskRepository) GetByPublicID(ctx context.Context, publicID string
 func (r *videoTaskRepository) UpdateByPublicID(ctx context.Context, publicID string, update service.VideoTaskUpdate) (*service.VideoTask, error) {
 	builder := r.client.VideoTask.Update().
 		Where(dbvideotask.PublicIDEQ(publicID))
+	applyVideoTaskUpdate(builder, update)
+	if _, err := builder.Save(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetByPublicID(ctx, publicID)
+}
+
+func (r *videoTaskRepository) TransitionTerminalByPublicID(ctx context.Context, publicID string, update service.VideoTaskUpdate) (*service.VideoTask, bool, error) {
+	builder := r.client.VideoTask.Update().
+		Where(
+			dbvideotask.PublicIDEQ(publicID),
+			dbvideotask.StatusIn(service.VideoTaskStatusQueued, service.VideoTaskStatusProcessing),
+		)
+	applyVideoTaskUpdate(builder, update)
+	affected, err := builder.Save(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	task, err := r.GetByPublicID(ctx, publicID)
+	if err != nil {
+		return nil, false, err
+	}
+	return task, affected > 0, nil
+}
+
+func (r *videoTaskRepository) MarkProcessingByPublicID(ctx context.Context, publicID string, upstreamTaskID string) (*service.VideoTask, bool, error) {
+	affected, err := r.client.VideoTask.Update().
+		Where(
+			dbvideotask.PublicIDEQ(publicID),
+			dbvideotask.StatusIn(service.VideoTaskStatusQueued, service.VideoTaskStatusProcessing),
+		).
+		SetStatus(service.VideoTaskStatusProcessing).
+		SetUpstreamTaskID(upstreamTaskID).
+		Save(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	task, err := r.GetByPublicID(ctx, publicID)
+	if err != nil {
+		return nil, false, err
+	}
+	return task, affected > 0, nil
+}
+
+func applyVideoTaskUpdate(builder *dbent.VideoTaskUpdate, update service.VideoTaskUpdate) {
 	if update.Status != nil {
 		builder.SetStatus(*update.Status)
 	}
@@ -88,10 +133,6 @@ func (r *videoTaskRepository) UpdateByPublicID(ctx context.Context, publicID str
 	if update.RefundedAt != nil {
 		builder.SetRefundedAt(*update.RefundedAt)
 	}
-	if _, err := builder.Save(ctx); err != nil {
-		return nil, err
-	}
-	return r.GetByPublicID(ctx, publicID)
 }
 
 func (r *videoTaskRepository) MarkBilled(ctx context.Context, publicID string, billedAt time.Time) (bool, error) {

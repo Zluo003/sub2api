@@ -8,8 +8,12 @@
 | --- | --- | --- |
 | JSON + 公网 URL | 素材已经在 CDN、对象存储或其他公网服务上 | 保留原始 URL，直接提交上游，不下载、不重新上传 |
 | multipart + `attachment://N` | 下游只有本地图片、视频或音频 | 按 multipart 文件顺序上传，替换对应 URL，再提交上游 |
+| 上游生成结果 URL | Seedance 任务已经生成完成 | Sub2API 强制下载并转存，只向下游返回 Sub2API `/media/*` URL |
 
-核心原则是：**只有明确使用 `attachment://N` 的本地文件会被上传；已经是 `http://` 或 `https://` 的 URL 永远直接进入上游请求。**
+这里必须区分输入和输出：
+
+- **输入素材**：只有明确使用 `attachment://N` 的本地文件会被上传；下游提交的 `http://` 或 `https://` URL 原样进入上游请求。
+- **生成结果**：上游返回的视频 URL 不会直接暴露给下游。Sub2API 会先下载到共享文件存储，再把自己的 `/media/{id}/asset.mp4` 或 `/media/{id}/asset.mov` URL 写入任务结果。
 
 ## 1. 基础信息
 
@@ -62,7 +66,7 @@ GET  /api/v1/agent/generation/estimates/{id}
 
 ## 3. 公网 URL 配置
 
-上传接口返回的媒体 URL 使用共享文件服务的公网根地址。推荐在管理后台配置：
+上传接口和视频生成结果返回的媒体 URL 都使用共享文件服务的公网根地址。推荐在管理后台配置：
 
 ```text
 Admin → File Service → Public Base URL
@@ -94,14 +98,14 @@ FILE_SERVICE_DAILY_MAX_BYTES=2147483648
 
 管理后台中保存的 File Service 配置优先于环境变量，并且保存后立即生效。
 
-如果没有配置 `FILE_SERVICE_PUBLIC_BASE_URL`，服务会根据上传请求的 `Host` 和 `X-Forwarded-Proto` 推导地址。因此反向代理至少需要正确转发：
+如果后台和环境变量都没有配置公网根地址，服务会根据上传请求的 `Host` 和 `X-Forwarded-Proto` 推导地址。因此反向代理至少需要正确转发：
 
 ```http
 Host: sub2api.example.com
 X-Forwarded-Proto: https
 ```
 
-生产环境建议显式配置 `FILE_SERVICE_PUBLIC_BASE_URL`，避免生成容器内部 Host 或 HTTP URL。
+生产环境建议在后台 `File Service` 中显式保存 `Public Base URL`，避免生成容器内部 Host 或 HTTP URL。在线升级部署只需修改后台配置，不需要修改 `.env` 或重启服务。
 
 反向代理还必须把以下路径转发到 Sub2API API：
 
@@ -110,6 +114,14 @@ X-Forwarded-Proto: https
 ```
 
 即使底层使用 S3、Cloudflare R2、MinIO 或其他对象存储，上传接口当前返回的仍然是 Sub2API 的 `/media/...` URL。Seedance 上游访问该 URL 时，Sub2API 会从配置的存储后端读取文件并响应。
+
+视频生成结果也使用同一路由。下游只看到 Sub2API 域名，不会得到对象存储直链或 Seedance 供应商的原始结果 URL。
+
+如果 API 服务与视频任务 worker 分开部署，或运行多个 Sub2API 实例：
+
+- 使用 `local` 后端时，所有实例必须挂载同一份 `agent-assets` 目录。
+- 无法共享本地目录时，应在 File Service 中配置 S3、Cloudflare R2、MinIO 等共享对象存储。
+- 所有实例应连接同一配置数据库，并在后台保存统一的外部 HTTPS `Public Base URL`；环境变量仅作为数据库未配置时的启动回退。还需确保 `/media/*` 可由下游访问。
 
 ## 4. 模式一：已有公网 URL，直接提交
 
@@ -649,7 +661,7 @@ curl -sS \
   "object": "video",
   "model": "seedance-2.0",
   "status": "completed",
-  "video_url": "https://provider.example.com/result.mp4",
+  "video_url": "https://sub2api.example.com/media/8db0d973-c281-4b6e-a6d7-550f2bcc2b31/asset.mp4",
   "refund_status": "not-applicable",
   "created_at": 1784102400,
   "completed_at": 1784102475
@@ -657,6 +669,70 @@ curl -sS \
 ```
 
 任务查询需要使用提交任务时的同一个 API Key。
+
+### 8.1 生成结果转存流程
+
+当上游任务报告 `completed` 时，Sub2API 不会立即把供应商 URL 写入任务。实际流程如下：
+
+```text
+上游 completed + 原始视频 URL
+  → Sub2API 使用服务端 HTTP 客户端流式下载
+  → 校验 MP4/QuickTime 的 ISO-BMFF 文件头和 200 MiB 大小上限
+  → 写入 File Service 配置的 local 或 S3/R2 存储
+  → 在 temporary_assets 中记录生命周期
+  → 将 https://sub2api.example.com/media/{id}/asset.mp4 写入 video_tasks
+  → 下游轮询得到 completed
+```
+
+安全和可见性规则：
+
+- 上游原始 URL 只用于服务端下载，不写入 `video_tasks.result_video_url`、`temporary_assets.metadata` 或 usage log。
+- 下游创建响应、轮询响应和完成后的 usage log 都只包含 Sub2API URL。
+- 下载会拒绝非 HTTP(S) 地址、内网/loopback/link-local/云元数据目标、非视频内容以及超过 200 MiB 的结果。
+- 支持 `video/mp4` 和 `video/quicktime`；返回扩展名分别为 `.mp4` 和 `.mov`。
+- 转存尚未完成时，任务保持 `processing`，下游不会看到临时的供应商 URL。
+- 下载、存储或数据库记录失败时，生命周期轮询会继续重试；如果超过该上游账号配置的总轮询超时，任务按现有失败和退款流程处理，并返回脱敏错误。
+- 生成结果沿用 File Service 的 `Retention Hours`、每日文件数量和每日总字节配额。过期后由现有临时资产清理机制删除。
+
+`/media/*` 路由支持 `GET`、`HEAD` 和 Range 请求，播放器和下载客户端应直接使用返回的 `video_url`。
+
+### 8.2 Jingyu 视频任务使用完成回调
+
+此调整**只作用于后台账号配置中 `video_provider = jingyu` 的视频任务**：
+
+- Sub2API 向 Jingyu `POST /v1/video/generations` 创建任务时，会自动增加 `callback_url` 和 `callback_secret`。
+- `callback_url` 形如：
+
+  ```text
+  https://sub2api.example.com/api/v1/webhooks/jingyu/videos/{sub2api-video-id}
+  ```
+
+- `callback_secret` 由 Sub2API 使用服务端 JWT secret 和当前视频任务 ID 派生，每个任务不同，不会写入任务查询响应。
+- Jingyu 回调请求必须包含：
+
+  ```http
+  X-NewAPI-Event: task.completed
+  X-NewAPI-Signature: <hex hmac sha256>
+  ```
+
+- Sub2API 使用原始 HTTP 请求体校验 `hex(HMAC-SHA256(callback_secret, raw_body))`，不会对 JSON 重新序列化后再验签。
+- 成功回调中的 `video_url`、`result_url` 或 `result_asset_url` 仍需先经过第 8.1 节的结果转存，完成后任务才变为 `completed`。
+- 失败回调会把任务变为 `failed` 并执行现有退款流程；重复回调按任务终态幂等处理。
+- Jingyu 创建成功后，Sub2API 不再向 Jingyu 发送任务状态 GET 轮询。原 `poll_timeout_ms` 只作为等待回调的总超时看门狗；到期仍未收到有效终态回调时，任务失败并退款。
+
+范围边界：
+
+- Aigod 视频任务继续使用原有上游状态轮询。
+- 下游客户端仍然通过 `GET /v1/videos/{id}` 查询 Sub2API 任务状态，不需要接收 Jingyu 回调。
+- OpenAI 图片、异步图片、批量图片以及其他图片接口没有接入此回调路由，行为保持不变。
+
+部署要求：Jingyu 必须能从公网访问上述 HTTPS 回调地址。推荐在后台 `Admin -> File Service -> Public Base URL` 保存 `https://sub2api.example.com`，无需修改 `.env`；同时在反向代理或 WAF 中放行：
+
+```text
+POST /api/v1/webhooks/jingyu/videos/*
+```
+
+该路由不使用下游 API Key 鉴权，只接受每任务 HMAC 验签通过的 Jingyu 视频终态消息。回调处理返回任意 `2xx` 时 Jingyu 视为投递成功；验签或请求体无效返回 `4xx`，临时存储、下载或数据库处理失败返回 `5xx`，以触发 Jingyu 文档中的重试策略。
 
 ## 9. Seedance 能力和输入规则
 

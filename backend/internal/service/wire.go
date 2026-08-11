@@ -757,6 +757,7 @@ func ProvideVideoService(
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	agentModels *AgentModelCatalogService,
+	videoResultPublisher VideoResultPublisher,
 ) *VideoService {
 	videoService := NewVideoService(
 		accountRepo,
@@ -775,6 +776,7 @@ func ProvideVideoService(
 		cfg,
 	)
 	videoService.SetAgentModelCatalog(agentModels)
+	videoService.SetVideoResultPublisher(videoResultPublisher)
 	return videoService
 }
 
@@ -841,6 +843,7 @@ var ProviderSet = wire.NewSet(
 	NewFileStorageService,
 	NewTemporaryAssetPublisher,
 	wire.Bind(new(OpenAIImageResultPublisher), new(*TemporaryAssetPublisher)),
+	wire.Bind(new(VideoResultPublisher), new(*TemporaryAssetPublisher)),
 	ProvideBackupService,
 	ProvideOpsSystemLogSink,
 	ProvideOpsService,
