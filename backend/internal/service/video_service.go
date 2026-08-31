@@ -26,34 +26,43 @@ import (
 )
 
 const (
-	videoProviderAigod           = "aigod"
-	videoProviderJingyu          = "jingyu"
-	videoDefaultBaseURL          = "https://api.aigod.one"
-	videoDefaultAPIPath          = "/v1/videos"
-	videoDefaultJingyuBaseURL    = "https://api.jingyuapi.art"
-	videoDefaultJingyuAPIPath    = "/v1/video/generations"
-	videoJingyuSeedance20Model   = "yu-video-2-pro"
-	videoJingyuSeedance25Model   = "yu-video-2.5-pro"
-	videoDefaultPollInterval     = 2 * time.Second
-	videoDefaultPollTimeout      = 5 * time.Minute
-	videoDefaultRequestTimeout   = 60 * time.Second
-	videoDefaultConnectTimeout   = 15 * time.Second
-	videoJingyuPollInterval      = 5 * time.Second
-	videoJingyuPollTimeout       = 30 * time.Minute
-	videoJingyuRequestTimeout    = 30 * time.Minute
-	videoJingyuConnectTimeout    = 60 * time.Second
-	videoMinDurationSeconds      = 4
-	videoMaxDurationSeconds      = 15
-	videoSeedance25MaxDuration   = 30
-	videoMaxReferenceVideoTotal  = 15
-	videoSeedance25MaxReferences = 50
-	videoPublicIDPrefix          = "video_"
-	videoObject                  = "video"
-	videoAbilityTextToVideo      = "video_text_to_video"
-	videoAbilityImageToVideo     = "video_image_to_video"
-	videoAbilityStartEndToVideo  = "video_start_end_to_video"
-	videoAbilityReferenceToVideo = "video_reference_to_video"
-	jingyuVideoCallbackPath      = "/api/v1/webhooks/jingyu/videos/"
+	videoProviderAigod             = "aigod"
+	videoProviderJingyu            = "jingyu"
+	videoProviderYCYAPI            = "ycyapi"
+	videoDefaultBaseURL            = "https://api.aigod.one"
+	videoDefaultYCYAPIBaseURL      = "https://ycyapi.cn"
+	videoDefaultAPIPath            = "/v1/videos"
+	videoDefaultJingyuBaseURL      = "https://api.jingyuapi.art"
+	videoDefaultJingyuAPIPath      = "/v1/video/generations"
+	videoJingyuSeedance20Model     = "yu-video-2-pro"
+	videoJingyuSeedance25Model     = "yu-video-2.5-pro"
+	videoYCYAPISeedance20Model     = "firefly-video-v2"
+	videoYCYAPISeedance20FastModel = "firefly-video-v2-fast"
+	videoYCYAPISeedance25Model     = "leonardo-seedance-2.5"
+	videoDefaultPollInterval       = 2 * time.Second
+	videoDefaultPollTimeout        = 5 * time.Minute
+	videoDefaultRequestTimeout     = 60 * time.Second
+	videoDefaultConnectTimeout     = 15 * time.Second
+	videoJingyuPollInterval        = 5 * time.Second
+	videoJingyuPollTimeout         = 30 * time.Minute
+	videoJingyuRequestTimeout      = 30 * time.Minute
+	videoJingyuConnectTimeout      = 60 * time.Second
+	videoYCYAPIPollInterval        = 5 * time.Second
+	videoYCYAPIPollTimeout         = 60 * time.Minute
+	videoYCYAPIRequestTimeout      = 5 * time.Minute
+	videoYCYAPIConnectTimeout      = 15 * time.Second
+	videoMinDurationSeconds        = 4
+	videoMaxDurationSeconds        = 15
+	videoSeedance25MaxDuration     = 30
+	videoMaxReferenceVideoTotal    = 15
+	videoSeedance25MaxReferences   = 50
+	videoPublicIDPrefix            = "video_"
+	videoObject                    = "video"
+	videoAbilityTextToVideo        = "video_text_to_video"
+	videoAbilityImageToVideo       = "video_image_to_video"
+	videoAbilityStartEndToVideo    = "video_start_end_to_video"
+	videoAbilityReferenceToVideo   = "video_reference_to_video"
+	jingyuVideoCallbackPath        = "/api/v1/webhooks/jingyu/videos/"
 )
 
 type VideoService struct {
@@ -73,6 +82,7 @@ type VideoService struct {
 	cfg                  *config.Config
 	agentModels          *AgentModelCatalogService
 	videoResultPublisher VideoResultPublisher
+	videoReferenceClient *http.Client
 	apiKeyLoader         *APIKeyService
 	jingyuCallbackGroup  singleflight.Group
 
@@ -177,7 +187,7 @@ func (s *VideoService) createTask(ctx context.Context, input *VideoCreateInput) 
 		return nil, err
 	}
 
-	account, err := s.selectAccount(ctx, input.APIKey.Group.ID, normalized.Model, normalized.Resolution, input.APIKey.Group.IsAgent())
+	account, err := s.selectAccountForRequest(ctx, input.APIKey.Group.ID, normalized, input.APIKey.Group.IsAgent())
 	if err != nil {
 		return nil, err
 	}
@@ -402,6 +412,14 @@ func (s *VideoService) GetTask(ctx context.Context, publicID string, apiKey *API
 }
 
 func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model string, resolution string, agentGroup bool) (*Account, error) {
+	return s.selectAccountForRequest(ctx, groupID, &normalizedVideoRequest{Model: model, Resolution: resolution}, agentGroup)
+}
+
+func (s *VideoService) selectAccountForRequest(ctx context.Context, groupID int64, normalized *normalizedVideoRequest, agentGroup bool) (*Account, error) {
+	if normalized == nil {
+		return nil, ErrVideoAccountNotFound
+	}
+	model := normalized.Model
 	accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, groupID, PlatformSeedance)
 	if err != nil {
 		return nil, err
@@ -422,7 +440,10 @@ func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model s
 			if _, supported := current[agentModelKey(PlatformSeedance, model)]; !supported {
 				continue
 			}
-		} else if !isVideoAccountCompatible(&account, model, resolution) {
+			if videoAccountProvider(&account) == videoProviderYCYAPI && !isVideoAccountCompatibleForRequest(&account, normalized) {
+				continue
+			}
+		} else if !isVideoAccountCompatibleForRequest(&account, normalized) {
 			continue
 		}
 		candidates = append(candidates, account)
@@ -454,6 +475,9 @@ func (s *VideoService) selectAccount(ctx context.Context, groupID int64, model s
 }
 
 func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account, body map[string]any) (*videoUpstreamCreateResult, error) {
+	if videoAccountProvider(account) == videoProviderYCYAPI {
+		return s.createYCYAPIUpstreamTask(ctx, account, body)
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1758,6 +1782,10 @@ func isVideoAccountCompatible(account *Account, model string, resolution string)
 	return videoProviderAdapterForAccount(account).Compatible(model, resolution)
 }
 
+func isVideoAccountCompatibleForRequest(account *Account, normalized *normalizedVideoRequest) bool {
+	return videoProviderAdapterForAccount(account).CompatibleRequest(normalized)
+}
+
 type videoUpstreamCreateResult struct {
 	ID string
 }
@@ -1923,6 +1951,8 @@ func SanitizeVideoClientError(code, message string) (string, string) {
 	forbidden := []string{
 		"aigod",
 		"api.aigod.one",
+		"ycyapi",
+		"ycyapi.cn",
 		"jingyu",
 		"jingyuapi",
 		"api.jingyuapi.art",
@@ -1980,6 +2010,8 @@ func videoAccountAPIPath(account *Account) string {
 func videoAccountProvider(account *Account) string {
 	provider := strings.ToLower(strings.TrimSpace(accountExtraString(account, "video_provider")))
 	switch provider {
+	case videoProviderYCYAPI:
+		return videoProviderYCYAPI
 	case videoProviderJingyu:
 		return videoProviderJingyu
 	default:
@@ -2004,6 +2036,18 @@ func videoAccountDuration(account *Account, key string, fallback time.Duration) 
 }
 
 func videoAccountDefaultDuration(account *Account, key string) time.Duration {
+	if videoAccountProvider(account) == videoProviderYCYAPI {
+		switch key {
+		case "poll_interval_ms":
+			return videoYCYAPIPollInterval
+		case "poll_timeout_ms":
+			return videoYCYAPIPollTimeout
+		case "request_timeout_ms":
+			return videoYCYAPIRequestTimeout
+		case "connect_timeout_ms":
+			return videoYCYAPIConnectTimeout
+		}
+	}
 	if videoAccountProvider(account) == videoProviderJingyu {
 		switch key {
 		case "poll_interval_ms":
@@ -2080,6 +2124,7 @@ func firstNonEmptyVideoString(values ...string) string {
 
 func videoResultURLFromPayload(payload map[string]any) string {
 	resultURL := firstNonEmptyVideoString(
+		stringFromMap(payload, "download_url"),
 		stringFromMap(payload, "result_asset_url"),
 		stringFromMap(payload, "url"),
 		stringFromMap(payload, "video_url"),

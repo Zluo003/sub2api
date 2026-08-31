@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -395,6 +398,143 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testi
 	require.Equal(t, "first_frame", references[0]["role"])
 }
 
+func TestYCYAPIVideoProviderMapsModelsAndFiltersProviderSpecificLimits(t *testing.T) {
+	adapter := ycyapiVideoProviderAdapter{}
+	require.Equal(t, videoYCYAPISeedance20Model, adapter.UpstreamModel(nil, &normalizedVideoRequest{Model: VideoModelSeedance20}))
+	require.Equal(t, videoYCYAPISeedance20FastModel, adapter.UpstreamModel(nil, &normalizedVideoRequest{Model: VideoModelSeedance20Fast}))
+	require.Equal(t, videoYCYAPISeedance25Model, adapter.UpstreamModel(nil, &normalizedVideoRequest{Model: VideoModelSeedance25}))
+	require.True(t, adapter.Compatible(VideoModelSeedance20, VideoResolution1080P))
+	require.False(t, adapter.Compatible(VideoModelSeedance20, VideoResolution4K))
+
+	standard := &normalizedVideoRequest{
+		Model: VideoModelSeedance20, Resolution: VideoResolution720P,
+		GeneratedSeconds: 10, Ratio: "21:9", RatioProvided: true,
+	}
+	require.True(t, adapter.CompatibleRequest(standard))
+	standard.GeneratedSeconds = 8
+	require.False(t, adapter.CompatibleRequest(standard))
+
+	leonardo := &normalizedVideoRequest{
+		Model: VideoModelSeedance25, Resolution: VideoResolution720P,
+		GeneratedSeconds: 19, Ratio: "16:9", RatioProvided: true,
+		Content: []VideoContent{{
+			Type: "video_url", Role: "reference_video", VideoURL: &VideoContentURL{URL: "https://cdn.example.com/ref.mp4"},
+			DurationSeconds: videoFloat64Ptr(5),
+		}},
+	}
+	require.False(t, adapter.CompatibleRequest(leonardo))
+	leonardo.GeneratedSeconds = 18
+	require.True(t, adapter.CompatibleRequest(leonardo))
+	leonardo.Content = []VideoContent{{Type: "audio_url", Role: "reference_audio", AudioURL: &VideoContentURL{URL: "https://cdn.example.com/ref.mp3"}}}
+	require.False(t, adapter.CompatibleRequest(leonardo))
+}
+
+func TestYCYAPIAdapterBuildsJSONWithoutChangingCanonicalRequest(t *testing.T) {
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelSeedance20Fast, Prompt: "move", Duration: 10,
+		Resolution: VideoResolution720P, AspectRatio: "9:16", GenerateAudio: boolPtr(true),
+		Raw: map[string]any{"seed": float64(42), "negative_prompt": "watermark"},
+	})
+	require.NoError(t, err)
+	adapter := ycyapiVideoProviderAdapter{}
+	body := adapter.BuildCreateBody(normalized, adapter.UpstreamModel(nil, normalized))
+	require.Equal(t, videoYCYAPISeedance20FastModel, body["model"])
+	require.Equal(t, 10, body["duration"])
+	require.Equal(t, VideoResolution720P, body["resolution"])
+	require.Equal(t, "9:16", body["aspect_ratio"])
+	require.Equal(t, "watermark", body["negative_prompt"])
+	require.NotContains(t, body, "content")
+	require.NotContains(t, body, ycyapiContentBodyKey)
+
+	reader, contentType, done, err := (&VideoService{}).buildYCYAPICreateRequest(context.Background(), body)
+	require.NoError(t, err)
+	require.Nil(t, done)
+	require.Equal(t, "application/json", contentType)
+	raw, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(raw, &payload))
+	require.Equal(t, videoYCYAPISeedance20FastModel, payload["model"])
+	require.NotContains(t, payload, ycyapiContentBodyKey)
+}
+
+func TestYCYAPIAdapterMaterializesCanonicalMediaAsMultipart(t *testing.T) {
+	assetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nreference"))
+	}))
+	t.Cleanup(assetServer.Close)
+
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelSeedance25, Prompt: "move", Duration: 10,
+		Resolution: VideoResolution720P, AspectRatio: "16:9",
+		Content: []VideoContent{{
+			Type: "image_url", Role: "first_frame", ImageURL: &VideoContentURL{URL: assetServer.URL + "/first.png"},
+		}},
+	})
+	require.NoError(t, err)
+	adapter := ycyapiVideoProviderAdapter{}
+	body := adapter.BuildCreateBody(normalized, adapter.UpstreamModel(nil, normalized))
+	service := &VideoService{videoReferenceClient: assetServer.Client()}
+	reader, contentType, done, err := service.buildYCYAPICreateRequest(context.Background(), body)
+	require.NoError(t, err)
+	raw, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, <-done)
+
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	require.Equal(t, "multipart/form-data", mediaType)
+	form, err := multipart.NewReader(strings.NewReader(string(raw)), params["boundary"]).ReadForm(1 << 20)
+	require.NoError(t, err)
+	defer form.RemoveAll()
+	require.Equal(t, []string{videoYCYAPISeedance25Model}, form.Value["model"])
+	require.Equal(t, []string{"10"}, form.Value["duration"])
+	require.Len(t, form.File["first_frame"], 1)
+	require.Equal(t, "image/png", form.File["first_frame"][0].Header.Get("Content-Type"))
+	require.Empty(t, form.Value[ycyapiContentBodyKey])
+}
+
+func TestYCYAPIUpstreamLifecycleUsesBearerCreateAndDownloadURLPolling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer sk-ycy-test", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/videos":
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, videoYCYAPISeedance20Model, payload["model"])
+			_, _ = w.Write([]byte(`{"id":"task-ycy-1","status":"queued"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/task-ycy-1":
+			_, _ = w.Write([]byte(`{"id":"task-ycy-1","status":"completed","download_url":"https://ycyapi.cn/v1/videos/task-ycy-1/content"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	account := &Account{
+		ID: 42,
+		Extra: map[string]any{
+			"video_provider": videoProviderYCYAPI,
+			"base_url":       server.URL,
+			"api_path":       videoDefaultAPIPath,
+		},
+		Credentials: map[string]any{"api_key": "sk-ycy-test"},
+	}
+	service := &VideoService{}
+	created, err := service.createUpstreamTask(context.Background(), account, map[string]any{
+		"model": videoYCYAPISeedance20Model, "prompt": "move", "duration": 5, "resolution": VideoResolution720P,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "task-ycy-1", created.ID)
+
+	polled, err := service.pollUpstreamTask(context.Background(), account, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, VideoTaskStatusCompleted, polled.Status)
+	require.Equal(t, "https://ycyapi.cn/v1/videos/task-ycy-1/content", polled.VideoURL)
+}
+
 func TestNormalizeVideoCreateRequestSupportsSeedance25DurationAndRatioLimits(t *testing.T) {
 	for _, duration := range []float64{4, 30} {
 		normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
@@ -683,6 +823,12 @@ func TestSanitizeVideoClientErrorHidesJingyuProvider(t *testing.T) {
 	require.Equal(t, "video_service_unavailable", code)
 	require.NotContains(t, strings.ToLower(message), "jingyu")
 	require.NotContains(t, strings.ToLower(message), "upstream")
+}
+
+func TestSanitizeVideoClientErrorHidesYCYAPIProvider(t *testing.T) {
+	code, message := SanitizeVideoClientError("raw_ycyapi_code", "ycyapi.cn returned an error")
+	require.Equal(t, "video_service_unavailable", code)
+	require.NotContains(t, strings.ToLower(message), "ycyapi")
 }
 
 func TestMapVideoUpstreamErrorStatusCodes(t *testing.T) {
@@ -1390,11 +1536,12 @@ func TestJingyuContractUsesNewWauleFieldPrecedenceAndDefaults(t *testing.T) {
 	require.Equal(t, 60*time.Second, videoAccountDefaultDuration(account, "connect_timeout_ms"))
 
 	payload := map[string]any{
+		"download_url":     "https://cdn.example.com/download.mp4",
 		"result_asset_url": "https://cdn.example.com/asset.mp4",
 		"url":              "https://cdn.example.com/url.mp4",
 		"video_url":        "https://cdn.example.com/video.mp4",
 	}
-	require.Equal(t, "https://cdn.example.com/asset.mp4", videoResultURLFromPayload(payload))
+	require.Equal(t, "https://cdn.example.com/download.mp4", videoResultURLFromPayload(payload))
 
 	status, known := normalizeJingyuVideoUpstreamStatus("running")
 	require.False(t, known)

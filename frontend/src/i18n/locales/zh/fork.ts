@@ -157,9 +157,11 @@ export default {
         providerHint: '选择该视频账号调用的上游平台，仅管理端可见。',
         providers: {
           aigod: 'aigod',
+          ycyapi: 'YCYAPI',
           jingyu: 'jingyu',
         },
         seedanceAdapter: 'Seedance 视频',
+        ycyapiAdapter: 'Seedance 2.0 / Fast / 2.5',
         jingyuAdapter: 'Seedance 2.0 (480p / 720p / 1080p / 4K)',
         baseUrlHint: '按所选上游平台自动填充默认地址，仅管理端可见',
         apiKeyHint: '上游平台 API Key，仅保存到站内账号凭证',

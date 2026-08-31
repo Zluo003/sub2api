@@ -32,6 +32,7 @@
           <label class="input-label">{{ t('admin.accounts.video.provider') }}</label>
           <select v-model="editVideoProvider" class="input">
             <option value="aigod">{{ t('admin.accounts.video.providers.aigod') }}</option>
+            <option value="ycyapi">{{ t('admin.accounts.video.providers.ycyapi') }}</option>
             <option value="jingyu">{{ t('admin.accounts.video.providers.jingyu') }}</option>
           </select>
           <p class="input-hint">{{ t('admin.accounts.video.providerHint') }}</p>
@@ -2818,17 +2819,24 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
-const editVideoProvider = ref<'aigod' | 'jingyu'>('aigod')
+type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu'
+
+const editVideoProvider = ref<VideoProvider>('aigod')
 const editVideoAPIPath = ref('/v1/videos')
 const editVideoPollIntervalMs = ref(2000)
 const editVideoPollTimeoutMs = ref(300000)
 const editVideoRequestTimeoutMs = ref(60000)
 const editVideoConnectTimeoutMs = ref(15000)
-const editVideoProviderDefaults = computed(() =>
-  editVideoProvider.value === 'jingyu'
-    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
-    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
-)
+const editVideoDefaultsFor = (provider: VideoProvider) => {
+  if (provider === 'jingyu') {
+    return { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations', pollIntervalMs: 5000, pollTimeoutMs: 1800000, requestTimeoutMs: 1800000, connectTimeoutMs: 60000 }
+  }
+  if (provider === 'ycyapi') {
+    return { baseUrl: 'https://ycyapi.cn', apiPath: '/v1/videos', pollIntervalMs: 5000, pollTimeoutMs: 3600000, requestTimeoutMs: 300000, connectTimeoutMs: 15000 }
+  }
+  return { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos', pollIntervalMs: 2000, pollTimeoutMs: 300000, requestTimeoutMs: 60000, connectTimeoutMs: 15000 }
+}
+const editVideoProviderDefaults = computed(() => editVideoDefaultsFor(editVideoProvider.value))
 const resolvedEditVideoAPIPath = computed(() => {
   const path = editVideoAPIPath.value.trim()
   if (editVideoProvider.value === 'jingyu' && (!path || path === '/v1/videos')) {
@@ -3321,14 +3329,45 @@ const expiresAtInput = computed({
 
 // Watchers
 watch(editVideoProvider, (_newProvider, oldProvider) => {
-  const previousDefaults = oldProvider === 'jingyu'
-    ? { baseUrl: 'https://api.jingyuapi.art', apiPath: '/v1/video/generations' }
-    : { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos' }
+  const previousDefaults = editVideoDefaultsFor(oldProvider)
   if (!editBaseUrl.value.trim() || editBaseUrl.value.trim() === previousDefaults.baseUrl) {
     editBaseUrl.value = editVideoProviderDefaults.value.baseUrl
   }
   if (!editVideoAPIPath.value.trim() || editVideoAPIPath.value.trim() === previousDefaults.apiPath) {
     editVideoAPIPath.value = editVideoProviderDefaults.value.apiPath
+  }
+  if (editVideoPollIntervalMs.value === previousDefaults.pollIntervalMs) {
+    editVideoPollIntervalMs.value = editVideoProviderDefaults.value.pollIntervalMs
+  }
+  if (editVideoPollTimeoutMs.value === previousDefaults.pollTimeoutMs) {
+    editVideoPollTimeoutMs.value = editVideoProviderDefaults.value.pollTimeoutMs
+  }
+  if (editVideoRequestTimeoutMs.value === previousDefaults.requestTimeoutMs) {
+    editVideoRequestTimeoutMs.value = editVideoProviderDefaults.value.requestTimeoutMs
+  }
+  if (editVideoConnectTimeoutMs.value === previousDefaults.connectTimeoutMs) {
+    editVideoConnectTimeoutMs.value = editVideoProviderDefaults.value.connectTimeoutMs
+  }
+  if (props.account?.platform !== 'seedance') return
+  if (editVideoProvider.value === 'jingyu') {
+    modelRestrictionMode.value = 'mapping'
+    allowedModels.value = []
+    modelMappings.value = [
+      { from: 'seedance-2.0', to: 'yu-video-2-pro' },
+      { from: 'seedance-2.5', to: 'yu-video-2.5-pro' }
+    ]
+  } else if (editVideoProvider.value === 'ycyapi') {
+    modelRestrictionMode.value = 'mapping'
+    allowedModels.value = []
+    modelMappings.value = [
+      { from: 'seedance-2.0', to: 'firefly-video-v2' },
+      { from: 'seedance-2.0-fast', to: 'firefly-video-v2-fast' },
+      { from: 'seedance-2.5', to: 'leonardo-seedance-2.5' }
+    ]
+  } else {
+    modelRestrictionMode.value = 'whitelist'
+    allowedModels.value = ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.5']
+    modelMappings.value = []
   }
 })
 
@@ -3617,6 +3656,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Initialize API Key fields for apikey type
   if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
+    const storedVideoProvider: VideoProvider = extra?.video_provider === 'jingyu'
+      ? 'jingyu'
+      : extra?.video_provider === 'ycyapi'
+        ? 'ycyapi'
+        : 'aigod'
     const platformDefaultUrl =
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
@@ -3625,10 +3669,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           : newAccount.platform === 'grok'
             ? 'https://api.x.ai/v1'
             : newAccount.platform === 'seedance'
-              ? (extra?.video_provider === 'jingyu' ? 'https://api.jingyuapi.art' : 'https://api.aigod.one')
+              ? editVideoDefaultsFor(storedVideoProvider).baseUrl
               : 'https://api.anthropic.com'
     if (newAccount.platform === 'seedance') {
-      editVideoProvider.value = extra?.video_provider === 'jingyu' ? 'jingyu' : 'aigod'
+      editVideoProvider.value = storedVideoProvider
     }
     // Seedance 账号的 base_url 存在 extra 里，优先于 credentials
     editBaseUrl.value = newAccount.platform === 'seedance'
@@ -3636,10 +3680,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       : ((credentials.base_url as string) || platformDefaultUrl)
     if (newAccount.platform === 'seedance') {
       editVideoAPIPath.value = (extra?.api_path as string) || editVideoProviderDefaults.value.apiPath
-      editVideoPollIntervalMs.value = Number(extra?.poll_interval_ms ?? 2000)
-      editVideoPollTimeoutMs.value = Number(extra?.poll_timeout_ms ?? 300000)
-      editVideoRequestTimeoutMs.value = Number(extra?.request_timeout_ms ?? 60000)
-      editVideoConnectTimeoutMs.value = Number(extra?.connect_timeout_ms ?? 15000)
+      editVideoPollIntervalMs.value = Number(extra?.poll_interval_ms ?? editVideoProviderDefaults.value.pollIntervalMs)
+      editVideoPollTimeoutMs.value = Number(extra?.poll_timeout_ms ?? editVideoProviderDefaults.value.pollTimeoutMs)
+      editVideoRequestTimeoutMs.value = Number(extra?.request_timeout_ms ?? editVideoProviderDefaults.value.requestTimeoutMs)
+      editVideoConnectTimeoutMs.value = Number(extra?.connect_timeout_ms ?? editVideoProviderDefaults.value.connectTimeoutMs)
     }
 
     // Load model mappings and detect mode
@@ -4336,10 +4380,10 @@ const handleSubmit = async () => {
           video_provider: editVideoProvider.value,
           base_url: newBaseUrl || editVideoProviderDefaults.value.baseUrl,
           api_path: resolvedEditVideoAPIPath.value,
-          poll_interval_ms: Number(editVideoPollIntervalMs.value) || 2000,
-          poll_timeout_ms: Number(editVideoPollTimeoutMs.value) || 300000,
-          request_timeout_ms: Number(editVideoRequestTimeoutMs.value) || 60000,
-          connect_timeout_ms: Number(editVideoConnectTimeoutMs.value) || 15000,
+          poll_interval_ms: Number(editVideoPollIntervalMs.value) || editVideoProviderDefaults.value.pollIntervalMs,
+          poll_timeout_ms: Number(editVideoPollTimeoutMs.value) || editVideoProviderDefaults.value.pollTimeoutMs,
+          request_timeout_ms: Number(editVideoRequestTimeoutMs.value) || editVideoProviderDefaults.value.requestTimeoutMs,
+          connect_timeout_ms: Number(editVideoConnectTimeoutMs.value) || editVideoProviderDefaults.value.connectTimeoutMs,
         }
       }
     } else if (props.account.type === 'upstream') {

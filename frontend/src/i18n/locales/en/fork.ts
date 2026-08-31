@@ -158,9 +158,11 @@ export default {
         providerHint: 'Select the upstream platform used by this video account. Admin-visible only.',
         providers: {
           aigod: 'aigod',
+          ycyapi: 'YCYAPI',
           jingyu: 'jingyu',
         },
         seedanceAdapter: 'Seedance Video',
+        ycyapiAdapter: 'Seedance 2.0 / Fast / 2.5',
         jingyuAdapter: 'Seedance 2.0 (480p / 720p / 1080p / 4K)',
         baseUrlHint: 'Default endpoint is filled from the selected upstream platform. Admin-visible only.',
         apiKeyHint: 'Upstream platform API key, stored only in the local account credentials',

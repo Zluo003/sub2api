@@ -65,7 +65,7 @@ func TestYingzoAgentContractFixtureMatchesService(t *testing.T) {
 	require.NotContains(t, fixture.Endpoints, "GET /api/v1/agent/models/:id/capabilities")
 	require.NotContains(t, fixture.Endpoints, "POST /api/v1/agent/media/preflight")
 	require.NotContains(t, fixture.Endpoints, "DELETE /api/v1/agent/installation")
-	require.NotContains(t, fixture.Endpoints, "POST /api/v1/agent/assets")
+	require.Contains(t, fixture.Endpoints, "POST /api/v1/agent/assets")
 	require.NotContains(t, fixture.Endpoints, "GET /api/v1/agent/assets/:id")
 
 	encodedVideo, err := json.Marshal(videoResponseFromTask(&VideoTask{

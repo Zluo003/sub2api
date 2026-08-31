@@ -32,6 +32,10 @@ func (j jingyuVideoProviderAdapter) Compatible(model, resolution string) bool {
 	}
 }
 
+func (j jingyuVideoProviderAdapter) CompatibleRequest(normalized *normalizedVideoRequest) bool {
+	return normalized != nil && j.Compatible(normalized.Model, normalized.Resolution)
+}
+
 func (j jingyuVideoProviderAdapter) UpstreamModel(account *Account, normalized *normalizedVideoRequest) string {
 	if normalized == nil {
 		return ""

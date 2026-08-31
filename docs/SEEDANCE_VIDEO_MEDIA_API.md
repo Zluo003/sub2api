@@ -10,6 +10,8 @@
 | multipart + `attachment://N` | 下游只有本地图片、视频或音频 | 按 multipart 文件顺序上传，替换对应 URL，再提交上游 |
 | 上游生成结果 URL | Seedance 任务已经生成完成 | Sub2API 强制下载并转存，只向下游返回 Sub2API `/media/*` URL |
 
+下游请求协议不随上游账号变化。选择 YCYAPI 视频账号时，Sub2API 会在上游适配层读取规范化请求中的图片、视频和音频 URL，并转换为 YCYAPI 要求的真实 `multipart/form-data` 文件字段；下游仍按本文的 JSON URL 或 `attachment://N` 协议提交。
+
 这里必须区分输入和输出：
 
 - **输入素材**：只有明确使用 `attachment://N` 的本地文件会被上传；下游提交的 `http://` 或 `https://` URL 原样进入上游请求。
@@ -49,16 +51,34 @@ HEAD /media/{id}/{filename}
 Authorization: Bearer <API_KEY>
 ```
 
-## 2. API Key 权限
+## 2. API Key 权限与参考素材上传
 
-本地媒体上传不提供独立接口，只能随 `POST /v1/videos` 的 multipart 请求提交，因此沿用视频接口本身的 API Key 和分组权限。客户端不能先上传文件换取公网 URL，也不能通过 Agent 路径查询素材元数据。
+客户端可先将本地参考素材上传到 Agent 专属接口，再将返回的公网 URL 作为 JSON 参考素材提交给 `POST /v1/videos`：
 
-Agent 专属的下列接口仍然保留 Agent 分组限制：
+```text
+POST /api/v1/agent/assets
+```
+
+该接口使用 `Authorization: Bearer <AGENT_API_KEY>`，且只接受 Agent 分组 API Key。普通 API Key 返回 `403 agent_credential_required`。请求为 `multipart/form-data`，文件字段固定为 `file`；成功时返回 `201`，包含 `id`、`url`、`content_type`、`size`、`sha256`、`metadata` 与 `expires_at`。
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/api/v1/agent/assets' \
+  -H 'Authorization: Bearer <AGENT_API_KEY>' \
+  -F 'file=@./reference.png'
+```
+
+返回的 `url` 是由 Sub2API 托管的临时公网地址，可直接用于后续 `/v1/videos` JSON 请求中的 `image_url`、`video_url` 或 `audio_url`。资产受 File Service 的保留时长和单个 API Key 的每日上传配额限制。
+
+视频接口仍支持把本地文件和 `attachment://N` 一起作为 multipart 请求提交；两种方式共用相同的媒体检查、存储、配额和过期清理逻辑。
+
+Agent 专属的下列接口保留 Agent 分组限制：
 
 ```text
 GET  /api/v1/agent/pricing
 POST /api/v1/agent/generation/estimates
 GET  /api/v1/agent/generation/estimates/{id}
+POST /api/v1/agent/assets
 ```
 
 ## 3. 公网 URL 配置
@@ -242,7 +262,7 @@ curl -sS \
   }'
 ```
 
-在这种模式下，Sub2API 不会下载上述三个公网 URL。它们会保留在规范化请求中，并由当前 Seedance 上游适配器直接发送。
+在这种模式下，URL 会保留在规范化请求中。Aigod/Jingyu 适配器按各自的 URL 引用协议直接发送；YCYAPI 适配器会在上游边界读取素材并转换为 YCYAPI 要求的 multipart 文件字段。
 
 ## 5. 模式二：一次 multipart 请求上传本地文件
 

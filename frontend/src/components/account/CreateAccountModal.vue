@@ -427,7 +427,7 @@
       <!-- Upstream Platform Selection (Video) -->
       <div v-if="form.platform === 'seedance'">
         <label class="input-label">{{ t('admin.accounts.video.upstreamPlatform') }}</label>
-        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3" data-tour="account-form-type">
           <button
             type="button"
             @click="videoProvider = 'aigod'"
@@ -454,6 +454,35 @@
               </span>
               <span class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.accounts.video.seedanceAdapter') }}
+              </span>
+            </div>
+          </button>
+          <button
+            type="button"
+            @click="videoProvider = 'ycyapi'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              videoProvider === 'ycyapi'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                videoProvider === 'ycyapi'
+                  ? 'bg-cyan-600 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="key" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">
+                {{ t('admin.accounts.video.providers.ycyapi') }}
+              </span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.video.ycyapiAdapter') }}
               </span>
             </div>
           </button>
@@ -3844,14 +3873,16 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
-const videoProvider = ref<'aigod' | 'jingyu'>('aigod')
+type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu'
+
+const videoProvider = ref<VideoProvider>('aigod')
 const videoAPIPath = ref('/v1/videos')
 const videoPollIntervalMs = ref(2000)
 const videoPollTimeoutMs = ref(300000)
 const videoRequestTimeoutMs = ref(60000)
 const videoConnectTimeoutMs = ref(15000)
-const videoProviderDefaults = computed(() =>
-  videoProvider.value === 'jingyu'
+const videoDefaultsFor = (provider: VideoProvider) =>
+  provider === 'jingyu'
     ? {
         baseUrl: 'https://api.jingyuapi.art',
         apiPath: '/v1/video/generations',
@@ -3860,7 +3891,16 @@ const videoProviderDefaults = computed(() =>
         requestTimeoutMs: 1800000,
         connectTimeoutMs: 60000
       }
-    : {
+    : provider === 'ycyapi'
+      ? {
+          baseUrl: 'https://ycyapi.cn',
+          apiPath: '/v1/videos',
+          pollIntervalMs: 5000,
+          pollTimeoutMs: 3600000,
+          requestTimeoutMs: 300000,
+          connectTimeoutMs: 15000
+        }
+      : {
         baseUrl: 'https://api.aigod.one',
         apiPath: '/v1/videos',
         pollIntervalMs: 2000,
@@ -3868,7 +3908,8 @@ const videoProviderDefaults = computed(() =>
         requestTimeoutMs: 60000,
         connectTimeoutMs: 15000
       }
-)
+
+const videoProviderDefaults = computed(() => videoDefaultsFor(videoProvider.value))
 
 const resolvedVideoAPIPath = computed(() => {
   const path = videoAPIPath.value.trim()
@@ -3912,6 +3953,16 @@ const applyVideoProviderModelDefaults = () => {
     modelMappings.value = [
       { from: 'seedance-2.0', to: 'yu-video-2-pro' },
       { from: 'seedance-2.5', to: 'yu-video-2.5-pro' }
+    ]
+    return
+  }
+  if (videoProvider.value === 'ycyapi') {
+    modelRestrictionMode.value = 'mapping'
+    allowedModels.value = []
+    modelMappings.value = [
+      { from: 'seedance-2.0', to: 'firefly-video-v2' },
+      { from: 'seedance-2.0-fast', to: 'firefly-video-v2-fast' },
+      { from: 'seedance-2.5', to: 'leonardo-seedance-2.5' }
     ]
     return
   }
@@ -4489,23 +4540,7 @@ watch(
 )
 
 watch(videoProvider, (_newProvider, oldProvider) => {
-  const previousDefaults = oldProvider === 'jingyu'
-    ? {
-        baseUrl: 'https://api.jingyuapi.art',
-        apiPath: '/v1/video/generations',
-        pollIntervalMs: 5000,
-        pollTimeoutMs: 1800000,
-        requestTimeoutMs: 1800000,
-        connectTimeoutMs: 60000
-      }
-    : {
-        baseUrl: 'https://api.aigod.one',
-        apiPath: '/v1/videos',
-        pollIntervalMs: 2000,
-        pollTimeoutMs: 300000,
-        requestTimeoutMs: 60000,
-        connectTimeoutMs: 15000
-      }
+  const previousDefaults = videoDefaultsFor(oldProvider)
   if (!apiKeyBaseUrl.value.trim() || apiKeyBaseUrl.value.trim() === previousDefaults.baseUrl) {
     apiKeyBaseUrl.value = videoProviderDefaults.value.baseUrl
   }

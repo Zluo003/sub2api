@@ -23,6 +23,10 @@ func (a aigodVideoProviderAdapter) Compatible(model, resolution string) bool {
 	return IsSupportedVideoResolution(strings.TrimSpace(model), strings.TrimSpace(resolution))
 }
 
+func (a aigodVideoProviderAdapter) CompatibleRequest(normalized *normalizedVideoRequest) bool {
+	return normalized != nil && a.Compatible(normalized.Model, normalized.Resolution)
+}
+
 func (a aigodVideoProviderAdapter) UpstreamModel(account *Account, normalized *normalizedVideoRequest) string {
 	if normalized == nil {
 		return ""

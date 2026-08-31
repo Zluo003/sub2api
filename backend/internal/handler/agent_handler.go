@@ -666,8 +666,54 @@ func (e *temporaryAssetUploadError) Error() string {
 	return e.code
 }
 
-// uploadTemporaryAssetPart stores one multipart file for the one-shot video
-// request path. It is intentionally not exposed as a standalone upload API.
+// UploadTemporaryAsset publishes one trusted multipart asset for later use as
+// a public reference URL in a video generation request.
+func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{
+			"code":    "invalid_api_key",
+			"message": "Invalid API key",
+		}})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"code":    "file_required",
+			"message": "Multipart field 'file' is required",
+		}})
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	result, err := h.uploadTemporaryAssetPart(c, apiKey, file, header)
+	if err != nil {
+		if uploadErr, ok := err.(*temporaryAssetUploadError); ok {
+			message := uploadErr.message
+			if message == "" {
+				message = uploadErr.code
+			}
+			body := gin.H{"code": uploadErr.code, "message": message}
+			for key, value := range uploadErr.extra {
+				body[key] = value
+			}
+			c.JSON(uploadErr.status, gin.H{"error": body})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+			"code":    "media_upload_failed",
+			"message": "Failed to upload media",
+		}})
+		return
+	}
+
+	c.JSON(http.StatusCreated, result)
+}
+
+// uploadTemporaryAssetPart stores one multipart file for the standalone Agent
+// upload endpoint and the one-shot multipart video request path.
 func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.APIKey, file multipart.File, header *multipart.FileHeader) (*temporaryAssetUploadResult, error) {
 	if h == nil || key == nil || file == nil || header == nil {
 		return nil, &temporaryAssetUploadError{status: http.StatusBadRequest, code: "invalid_upload"}
