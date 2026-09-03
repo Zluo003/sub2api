@@ -16,6 +16,8 @@ func videoProviderAdapterForAccount(account *Account) videoProviderAdapter {
 	switch videoAccountProvider(account) {
 	case videoProviderYCYAPI:
 		return ycyapiVideoProviderAdapter{}
+	case videoProviderNewtoken:
+		return newtokenVideoProviderAdapter{}
 	case videoProviderJingyu:
 		return jingyuVideoProviderAdapter{}
 	default:
@@ -27,6 +29,8 @@ func videoProviderAdapterByName(provider string) videoProviderAdapter {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case videoProviderYCYAPI:
 		return ycyapiVideoProviderAdapter{}
+	case videoProviderNewtoken:
+		return newtokenVideoProviderAdapter{}
 	case videoProviderJingyu:
 		return jingyuVideoProviderAdapter{}
 	default:

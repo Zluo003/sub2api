@@ -535,6 +535,180 @@ func TestYCYAPIUpstreamLifecycleUsesBearerCreateAndDownloadURLPolling(t *testing
 	require.Equal(t, "https://ycyapi.cn/v1/videos/task-ycy-1/content", polled.VideoURL)
 }
 
+func TestNewtokenVideoProviderMapsModelsByResolution(t *testing.T) {
+	adapter := newtokenVideoProviderAdapter{}
+	for _, supported := range []struct {
+		model      string
+		resolution string
+		upstream   string
+	}{
+		{VideoModelSeedance20, VideoResolution720P, videoNewtokenSeedance20720PModel},
+		{VideoModelSeedance20, VideoResolution1080P, videoNewtokenSeedance201080PModel},
+		{VideoModelSeedance20Fast, VideoResolution720P, videoNewtokenSeedance20Fast720PModel},
+		{VideoModelSeedance25, VideoResolution720P, videoNewtokenSeedance25720PModel},
+	} {
+		normalized := &normalizedVideoRequest{Model: supported.model, Resolution: supported.resolution}
+		require.True(t, adapter.Compatible(supported.model, supported.resolution), "%s@%s", supported.model, supported.resolution)
+		require.Equal(t, supported.upstream, adapter.UpstreamModel(nil, normalized), "%s@%s", supported.model, supported.resolution)
+	}
+
+	// newtoken publishes no 480p or 4K variants, and no 1080p model outside the
+	// base 2.0 family, so those accounts must drop out of scheduling entirely.
+	for _, unsupported := range [][2]string{
+		{VideoModelSeedance20, VideoResolution480P},
+		{VideoModelSeedance20, VideoResolution4K},
+		{VideoModelSeedance20Fast, VideoResolution480P},
+		{VideoModelSeedance20Fast, VideoResolution1080P},
+		{VideoModelSeedance25, VideoResolution480P},
+		{VideoModelSeedance25, VideoResolution1080P},
+	} {
+		require.False(t, adapter.Compatible(unsupported[0], unsupported[1]), "%s@%s", unsupported[0], unsupported[1])
+		require.Empty(t, adapter.UpstreamModel(nil, &normalizedVideoRequest{Model: unsupported[0], Resolution: unsupported[1]}))
+	}
+}
+
+func TestNewtokenAdapterBuildsJSONBodyWithMediaReferences(t *testing.T) {
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelSeedance20, Prompt: "move", Duration: 5,
+		Resolution: VideoResolution1080P,
+		Content: []VideoContent{
+			{Type: "image_url", Role: "first_frame", ImageURL: &VideoContentURL{URL: "https://cdn.example.com/first.png"}},
+			{Type: "image_url", Role: "last_frame", ImageURL: &VideoContentURL{URL: "https://cdn.example.com/last.png"}},
+		},
+	})
+	require.NoError(t, err)
+
+	adapter := newtokenVideoProviderAdapter{}
+	body := adapter.BuildCreateBody(normalized, adapter.UpstreamModel(nil, normalized))
+	require.Equal(t, videoNewtokenSeedance201080PModel, body["model"])
+	require.Equal(t, "move", body["prompt"])
+	require.Equal(t, 5, body["duration"])
+	require.Equal(t, "1080p", body["resolution"])
+	require.Equal(t, "https://cdn.example.com/first.png", body["first_frame"])
+	require.Equal(t, "https://cdn.example.com/last.png", body["last_frame"])
+	require.NotContains(t, body, "extra_images")
+	// aspect_ratio is only forwarded when the downstream request set it explicitly.
+	require.NotContains(t, body, "aspect_ratio")
+
+	referenced, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelSeedance25, Prompt: "remix", Duration: 8,
+		Resolution: VideoResolution720P, AspectRatio: "9:16",
+		Content: []VideoContent{
+			{Type: "image_url", Role: "reference_image", SubjectType: "person", ImageURL: &VideoContentURL{URL: "https://cdn.example.com/person.png"}},
+			{Type: "video_url", Role: "reference_video", DurationSeconds: videoFloat64Ptr(5), VideoURL: &VideoContentURL{URL: "https://cdn.example.com/motion.mp4"}},
+			{Type: "audio_url", Role: "reference_audio", AudioURL: &VideoContentURL{URL: "https://cdn.example.com/music.mp3"}},
+		},
+	})
+	require.NoError(t, err)
+	referencedBody := adapter.BuildCreateBody(referenced, adapter.UpstreamModel(nil, referenced))
+	require.Equal(t, videoNewtokenSeedance25720PModel, referencedBody["model"])
+	require.Equal(t, "720p", referencedBody["resolution"])
+	require.Equal(t, "9:16", referencedBody["aspect_ratio"])
+	require.Equal(t, []string{"https://cdn.example.com/person.png"}, referencedBody["extra_images"])
+	require.Equal(t, []string{"https://cdn.example.com/motion.mp4"}, referencedBody["extra_videos"])
+	require.Equal(t, []string{"https://cdn.example.com/music.mp3"}, referencedBody["extra_audios"])
+	require.NotContains(t, referencedBody, "first_frame")
+	require.NotContains(t, referencedBody, "content")
+}
+
+func TestNewtokenAdapterRejectsIncompatibleRequests(t *testing.T) {
+	adapter := newtokenVideoProviderAdapter{}
+	base := func() *normalizedVideoRequest {
+		return &normalizedVideoRequest{
+			Model: VideoModelSeedance20, Resolution: VideoResolution720P,
+			GeneratedSeconds: 10, Ratio: "16:9", RatioProvided: true,
+		}
+	}
+	require.True(t, adapter.CompatibleRequest(base()))
+
+	tooLong := base()
+	tooLong.GeneratedSeconds = 20
+	require.False(t, adapter.CompatibleRequest(tooLong))
+
+	// seedance-2.5 accepts the same duration that seedance-2.0 rejects.
+	longer := base()
+	longer.Model = VideoModelSeedance25
+	longer.GeneratedSeconds = 20
+	require.True(t, adapter.CompatibleRequest(longer))
+
+	badRatio := base()
+	badRatio.Ratio = "auto"
+	require.False(t, adapter.CompatibleRequest(badRatio))
+
+	referenceVideo := VideoContent{
+		Type: "video_url", Role: "reference_video", DurationSeconds: videoFloat64Ptr(5),
+		VideoURL: &VideoContentURL{URL: "https://cdn.example.com/motion.mp4"},
+	}
+	tooManyVideos := base()
+	tooManyVideos.Content = []VideoContent{referenceVideo, referenceVideo, referenceVideo, referenceVideo}
+	require.False(t, adapter.CompatibleRequest(tooManyVideos))
+	// seedance-2.5 allows up to ten reference videos, so the same content passes.
+	tooManyVideos.Model = VideoModelSeedance25
+	require.True(t, adapter.CompatibleRequest(tooManyVideos))
+
+	framesWithVideo := base()
+	framesWithVideo.Content = []VideoContent{
+		{Type: "image_url", Role: "first_frame", ImageURL: &VideoContentURL{URL: "https://cdn.example.com/first.png"}},
+		referenceVideo,
+	}
+	require.False(t, adapter.CompatibleRequest(framesWithVideo))
+
+	danglingLastFrame := base()
+	danglingLastFrame.Content = []VideoContent{
+		{Type: "image_url", Role: "last_frame", ImageURL: &VideoContentURL{URL: "https://cdn.example.com/last.png"}},
+	}
+	require.False(t, adapter.CompatibleRequest(danglingLastFrame))
+
+	require.False(t, adapter.CompatibleRequest(nil))
+}
+
+func TestNewtokenUpstreamLifecycleUsesSharedJSONCreateAndPolling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer sk-newtoken-test", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/videos":
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, videoNewtokenSeedance201080PModel, payload["model"])
+			_, _ = w.Write([]byte(`{"id":"task-newtoken-1","status":"queued"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/task-newtoken-1":
+			_, _ = w.Write([]byte(`{"id":"task-newtoken-1","status":"completed","video_url":"https://cdn.newtoken.club/result.mp4"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	account := &Account{
+		ID: 77,
+		Extra: map[string]any{
+			"video_provider": videoProviderNewtoken,
+			"base_url":       server.URL,
+			"api_path":       videoDefaultAPIPath,
+		},
+		Credentials: map[string]any{"api_key": "sk-newtoken-test"},
+	}
+	require.Equal(t, videoProviderNewtoken, videoAccountProvider(account))
+
+	normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelSeedance20, Prompt: "move", Duration: 5, Resolution: VideoResolution1080P,
+	})
+	require.NoError(t, err)
+	adapter := videoProviderAdapterForAccount(account)
+	require.IsType(t, newtokenVideoProviderAdapter{}, adapter)
+
+	service := &VideoService{}
+	created, err := service.createUpstreamTask(context.Background(), account, adapter.BuildCreateBody(normalized, adapter.UpstreamModel(account, normalized)))
+	require.NoError(t, err)
+	require.Equal(t, "task-newtoken-1", created.ID)
+
+	polled, err := service.pollUpstreamTask(context.Background(), account, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, VideoTaskStatusCompleted, polled.Status)
+	require.Equal(t, "https://cdn.newtoken.club/result.mp4", polled.VideoURL)
+}
+
 func TestNormalizeVideoCreateRequestSupportsSeedance25DurationAndRatioLimits(t *testing.T) {
 	for _, duration := range []float64{4, 30} {
 		normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
@@ -829,6 +1003,17 @@ func TestSanitizeVideoClientErrorHidesYCYAPIProvider(t *testing.T) {
 	code, message := SanitizeVideoClientError("raw_ycyapi_code", "ycyapi.cn returned an error")
 	require.Equal(t, "video_service_unavailable", code)
 	require.NotContains(t, strings.ToLower(message), "ycyapi")
+}
+
+func TestSanitizeVideoClientErrorHidesNewtokenProvider(t *testing.T) {
+	code, message := SanitizeVideoClientError("raw_newtoken_code", "newtoken.club returned an error")
+	require.Equal(t, "video_service_unavailable", code)
+	require.NotContains(t, strings.ToLower(message), "newtoken")
+
+	// The upstream model ids leak the vendor's naming scheme too.
+	code, message = SanitizeVideoClientError("upstream_error", "sd2.0-720p-official upstream query failed")
+	require.Equal(t, "video_service_unavailable", code)
+	require.NotContains(t, strings.ToLower(message), "official")
 }
 
 func TestMapVideoUpstreamErrorStatusCodes(t *testing.T) {

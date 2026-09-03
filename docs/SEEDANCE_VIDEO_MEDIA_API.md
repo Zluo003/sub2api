@@ -10,7 +10,7 @@
 | multipart + `attachment://N` | 下游只有本地图片、视频或音频 | 按 multipart 文件顺序上传，替换对应 URL，再提交上游 |
 | 上游生成结果 URL | Seedance 任务已经生成完成 | Sub2API 强制下载并转存，只向下游返回 Sub2API `/media/*` URL |
 
-下游请求协议不随上游账号变化。选择 YCYAPI 视频账号时，Sub2API 会在上游适配层读取规范化请求中的图片、视频和音频 URL，并转换为 YCYAPI 要求的真实 `multipart/form-data` 文件字段；下游仍按本文的 JSON URL 或 `attachment://N` 协议提交。
+下游请求协议不随上游账号变化。选择 YCYAPI 视频账号时，Sub2API 会在上游适配层读取规范化请求中的图片、视频和音频 URL，并转换为 YCYAPI 要求的真实 `multipart/form-data` 文件字段；下游仍按本文的 JSON URL 或 `attachment://N` 协议提交。选择 newtoken 视频账号时，Sub2API 在上游适配层沿用 JSON URL 协议，把素材 URL 拆分到 newtoken 的 `first_frame`、`last_frame`、`extra_images`、`extra_videos`、`extra_audios` 字段，同样不改变下游请求格式。
 
 这里必须区分输入和输出：
 
@@ -262,7 +262,9 @@ curl -sS \
   }'
 ```
 
-在这种模式下，URL 会保留在规范化请求中。Aigod/Jingyu 适配器按各自的 URL 引用协议直接发送；YCYAPI 适配器会在上游边界读取素材并转换为 YCYAPI 要求的 multipart 文件字段。
+在这种模式下，URL 会保留在规范化请求中。Aigod/Jingyu/newtoken 适配器按各自的 URL 引用协议直接发送；YCYAPI 适配器会在上游边界读取素材并转换为 YCYAPI 要求的 multipart 文件字段。
+
+newtoken 适配器的字段拆分规则：`role: "first_frame"` 和 `role: "last_frame"` 的图片分别写入同名的字符串字段，其余图片、视频、音频依次收集到 `extra_images`、`extra_videos`、`extra_audios` 三个 URL 数组。
 
 ## 5. 模式二：一次 multipart 请求上传本地文件
 
@@ -725,6 +727,17 @@ seedance-2.0       480p / 720p / 1080p / 4K
 seedance-2.0-fast  480p / 720p
 seedance-2.5       480p / 720p
 ```
+
+newtoken 上游把输出分辨率编码进了模型 ID 本身，因此该上游只按下面的组合路由，下游请求格式不变：
+
+| 下游 `model` | `resolution` | newtoken 上游模型 |
+| --- | --- | --- |
+| `seedance-2.0` | `720p` | `sd2.0-720p-official` |
+| `seedance-2.0` | `1080p` | `sd2.0-1080p-official` |
+| `seedance-2.0-fast` | `720p` | `sd2.0-720p-fast-official` |
+| `seedance-2.5` | `720p` | `sd2.5-720p-official` |
+
+表外的组合（例如任何 `480p` 请求、`seedance-2.0` 的 `4K`）在 newtoken 上没有对应模型，调度时会跳过 newtoken 账号并回落到其他已配置的上游；只有在没有任何上游支持该组合时才会返回错误。
 
 ## 8. 支持的上传格式和大小
 

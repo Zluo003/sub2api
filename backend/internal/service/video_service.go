@@ -29,8 +29,10 @@ const (
 	videoProviderAigod             = "aigod"
 	videoProviderJingyu            = "jingyu"
 	videoProviderYCYAPI            = "ycyapi"
+	videoProviderNewtoken          = "newtoken"
 	videoDefaultBaseURL            = "https://api.aigod.one"
 	videoDefaultYCYAPIBaseURL      = "https://ycyapi.cn"
+	videoDefaultNewtokenBaseURL    = "https://newtoken.club"
 	videoDefaultAPIPath            = "/v1/videos"
 	videoDefaultJingyuBaseURL      = "https://api.jingyuapi.art"
 	videoDefaultJingyuAPIPath      = "/v1/video/generations"
@@ -39,6 +41,12 @@ const (
 	videoYCYAPISeedance20Model     = "firefly-video-v2"
 	videoYCYAPISeedance20FastModel = "firefly-video-v2-fast"
 	videoYCYAPISeedance25Model     = "leonardo-seedance-2.5"
+	// newtoken encodes the output resolution into the upstream model id, so the
+	// adapter routes on (downstream model, resolution) instead of a static map.
+	videoNewtokenSeedance20720PModel     = "sd2.0-720p-official"
+	videoNewtokenSeedance201080PModel    = "sd2.0-1080p-official"
+	videoNewtokenSeedance20Fast720PModel = "sd2.0-720p-fast-official"
+	videoNewtokenSeedance25720PModel     = "sd2.5-720p-official"
 	videoDefaultPollInterval       = 2 * time.Second
 	videoDefaultPollTimeout        = 5 * time.Minute
 	videoDefaultRequestTimeout     = 60 * time.Second
@@ -51,6 +59,10 @@ const (
 	videoYCYAPIPollTimeout         = 60 * time.Minute
 	videoYCYAPIRequestTimeout      = 5 * time.Minute
 	videoYCYAPIConnectTimeout      = 15 * time.Second
+	videoNewtokenPollInterval      = 5 * time.Second
+	videoNewtokenPollTimeout       = 60 * time.Minute
+	videoNewtokenRequestTimeout    = 5 * time.Minute
+	videoNewtokenConnectTimeout    = 15 * time.Second
 	videoMinDurationSeconds        = 4
 	videoMaxDurationSeconds        = 15
 	videoSeedance25MaxDuration     = 30
@@ -440,7 +452,7 @@ func (s *VideoService) selectAccountForRequest(ctx context.Context, groupID int6
 			if _, supported := current[agentModelKey(PlatformSeedance, model)]; !supported {
 				continue
 			}
-			if videoAccountProvider(&account) == videoProviderYCYAPI && !isVideoAccountCompatibleForRequest(&account, normalized) {
+			if videoProviderNeedsRequestCompatibility(videoAccountProvider(&account)) && !isVideoAccountCompatibleForRequest(&account, normalized) {
 				continue
 			}
 		} else if !isVideoAccountCompatibleForRequest(&account, normalized) {
@@ -1786,6 +1798,20 @@ func isVideoAccountCompatibleForRequest(account *Account, normalized *normalized
 	return videoProviderAdapterForAccount(account).CompatibleRequest(normalized)
 }
 
+// videoProviderNeedsRequestCompatibility reports whether a provider constrains
+// requests beyond the (model, resolution) pair the agent discovery set already
+// checks — duration, aspect ratio and reference-media limits. Those providers
+// must still run CompatibleRequest during agent-group scheduling so an
+// unsupported request is routed to another upstream instead of failing there.
+func videoProviderNeedsRequestCompatibility(provider string) bool {
+	switch provider {
+	case videoProviderYCYAPI, videoProviderNewtoken:
+		return true
+	default:
+		return false
+	}
+}
+
 type videoUpstreamCreateResult struct {
 	ID string
 }
@@ -1953,6 +1979,10 @@ func SanitizeVideoClientError(code, message string) (string, string) {
 		"api.aigod.one",
 		"ycyapi",
 		"ycyapi.cn",
+		"newtoken",
+		"newtoken.club",
+		// Covers every newtoken upstream model id (sd2.0-720p-official, ...).
+		"-official",
 		"jingyu",
 		"jingyuapi",
 		"api.jingyuapi.art",
@@ -2012,6 +2042,8 @@ func videoAccountProvider(account *Account) string {
 	switch provider {
 	case videoProviderYCYAPI:
 		return videoProviderYCYAPI
+	case videoProviderNewtoken:
+		return videoProviderNewtoken
 	case videoProviderJingyu:
 		return videoProviderJingyu
 	default:
@@ -2046,6 +2078,18 @@ func videoAccountDefaultDuration(account *Account, key string) time.Duration {
 			return videoYCYAPIRequestTimeout
 		case "connect_timeout_ms":
 			return videoYCYAPIConnectTimeout
+		}
+	}
+	if videoAccountProvider(account) == videoProviderNewtoken {
+		switch key {
+		case "poll_interval_ms":
+			return videoNewtokenPollInterval
+		case "poll_timeout_ms":
+			return videoNewtokenPollTimeout
+		case "request_timeout_ms":
+			return videoNewtokenRequestTimeout
+		case "connect_timeout_ms":
+			return videoNewtokenConnectTimeout
 		}
 	}
 	if videoAccountProvider(account) == videoProviderJingyu {

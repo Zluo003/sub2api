@@ -34,6 +34,7 @@
             <option value="aigod">{{ t('admin.accounts.video.providers.aigod') }}</option>
             <option value="ycyapi">{{ t('admin.accounts.video.providers.ycyapi') }}</option>
             <option value="jingyu">{{ t('admin.accounts.video.providers.jingyu') }}</option>
+            <option value="newtoken">{{ t('admin.accounts.video.providers.newtoken') }}</option>
           </select>
           <p class="input-hint">{{ t('admin.accounts.video.providerHint') }}</p>
         </div>
@@ -2819,7 +2820,7 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
-type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu'
+type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken'
 
 const editVideoProvider = ref<VideoProvider>('aigod')
 const editVideoAPIPath = ref('/v1/videos')
@@ -2833,6 +2834,9 @@ const editVideoDefaultsFor = (provider: VideoProvider) => {
   }
   if (provider === 'ycyapi') {
     return { baseUrl: 'https://ycyapi.cn', apiPath: '/v1/videos', pollIntervalMs: 5000, pollTimeoutMs: 3600000, requestTimeoutMs: 300000, connectTimeoutMs: 15000 }
+  }
+  if (provider === 'newtoken') {
+    return { baseUrl: 'https://newtoken.club', apiPath: '/v1/videos', pollIntervalMs: 5000, pollTimeoutMs: 3600000, requestTimeoutMs: 300000, connectTimeoutMs: 15000 }
   }
   return { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos', pollIntervalMs: 2000, pollTimeoutMs: 300000, requestTimeoutMs: 60000, connectTimeoutMs: 15000 }
 }
@@ -3365,6 +3369,10 @@ watch(editVideoProvider, (_newProvider, oldProvider) => {
       { from: 'seedance-2.5', to: 'leonardo-seedance-2.5' }
     ]
   } else {
+    // aigod and newtoken both accept the canonical downstream model ids. newtoken
+    // in particular must NOT get a static mapping: its upstream model id encodes
+    // the resolution (sd2.0-720p-official vs sd2.0-1080p-official), and a static
+    // mapping would take precedence over the adapter's resolution routing.
     modelRestrictionMode.value = 'whitelist'
     allowedModels.value = ['seedance-2.0', 'seedance-2.0-fast', 'seedance-2.5']
     modelMappings.value = []
@@ -3660,7 +3668,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       ? 'jingyu'
       : extra?.video_provider === 'ycyapi'
         ? 'ycyapi'
-        : 'aigod'
+        : extra?.video_provider === 'newtoken'
+          ? 'newtoken'
+          : 'aigod'
     const platformDefaultUrl =
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
