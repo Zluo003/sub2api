@@ -341,3 +341,115 @@ func TestAccountHandlerSyncUpstreamModels_UpstreamErrorDoesNotExposeBody(t *test
 	require.Contains(t, rec.Body.String(), "Upstream model list request failed with HTTP 502")
 	require.NotContains(t, rec.Body.String(), "SECRET_TOKEN")
 }
+
+func TestAccountHandlerSyncUpstreamModels_SeedanceMikuapiSuccess(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       50,
+			Name:     "seedance-mikuapi",
+			Platform: service.PlatformSeedance,
+			Type:     service.AccountTypeAPIKey,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"api_key":  "sk-test-key",
+				"provider": "mikuapi",
+			},
+		},
+	}
+	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"data": [
+				{"id": "minimax-h3", "object": "model"},
+				{"id": "minimax-h3-max", "object": "model"},
+				{"id": "wan-3", "object": "model"},
+				{"id": "seedance-2-pro", "object": "model"}
+			]
+		}`)),
+	}}
+	router := setupSyncUpstreamModelsRouter(svc, upstream)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/50/models/sync-upstream", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "Response body: %s", rec.Body.String())
+
+	var resp struct {
+		Models []string `json:"models"`
+		Data   struct {
+			Models []string `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	models := resp.Models
+	if len(models) == 0 {
+		models = resp.Data.Models
+	}
+
+	require.Contains(t, models, "minimax-h3", "Full response: %s", rec.Body.String())
+	require.Contains(t, models, "minimax-h3-max")
+	require.Contains(t, models, "wan-3")
+	require.Contains(t, models, "seedance-2-pro")
+}
+
+func TestAccountHandlerSyncUpstreamModels_SeedanceWithExplicitBaseURL(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       51,
+			Name:     "seedance-custom-url",
+			Platform: service.PlatformSeedance,
+			Type:     service.AccountTypeAPIKey,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"api_key":  "sk-test-key",
+				"base_url": "https://custom.api.example.com",
+			},
+		},
+	}
+	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"data": [
+				{"id": "model-1", "object": "model"},
+				{"id": "model-2", "object": "model"}
+			]
+		}`)),
+	}}
+	router := setupSyncUpstreamModelsRouter(svc, upstream)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/51/models/sync-upstream", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAccountHandlerSyncUpstreamModels_SeedanceMissingAPIKey(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       52,
+			Name:     "seedance-no-key",
+			Platform: service.PlatformSeedance,
+			Type:     service.AccountTypeAPIKey,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"provider": "mikuapi",
+			},
+		},
+	}
+	router := setupSyncUpstreamModelsRouter(svc, &syncUpstreamHTTPUpstream{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/52/models/sync-upstream", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "No Seedance API key is available")
+}

@@ -143,6 +143,8 @@ func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, acc
 		return s.buildGeminiUpstreamModelsRequest(ctx, account)
 	case account.IsAnthropic():
 		return s.buildAnthropicUpstreamModelsRequest(ctx, account)
+	case account.Platform == PlatformSeedance:
+		return s.buildSeedanceUpstreamModelsRequest(ctx, account)
 	default:
 		return nil, newUpstreamModelSyncUnsupportedError(
 			fmt.Sprintf("Unsupported platform for upstream model sync: %s", account.Platform), nil,
@@ -364,6 +366,52 @@ func (s *AccountTestService) buildOpenAIUpstreamModelsRequest(ctx context.Contex
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	// 账号级请求头覆写：模型列表探测与真实转发保持一致的最终头
+	account.ApplyHeaderOverrides(req.Header)
+	return req, nil
+}
+
+func (s *AccountTestService) buildSeedanceUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
+	if account.Type != AccountTypeAPIKey {
+		return nil, newUpstreamModelSyncUnsupportedError(
+			fmt.Sprintf("Unsupported Seedance account type for upstream model sync: %s", account.Type), nil,
+		)
+	}
+	apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+	if apiKey == "" {
+		return nil, newUpstreamModelSyncConfigError("No Seedance API key is available", nil)
+	}
+
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		// 根据上游平台设置默认 base URL
+		provider := strings.ToLower(strings.TrimSpace(account.GetCredential("provider")))
+		switch provider {
+		case "mikuapi":
+			baseURL = "https://mikuapi.org"
+		case "ycyapi":
+			baseURL = "https://api.ycyapi.com"
+		case "newtoken":
+			baseURL = "https://api.newtoken.app"
+		case "jingyu":
+			baseURL = "https://api.jingyu.ai"
+		case "aigod":
+			baseURL = "https://api.aigod.vip"
+		default:
+			return nil, newUpstreamModelSyncConfigError("Seedance base URL is required or unknown provider", nil)
+		}
+	}
+
+	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return nil, newUpstreamModelSyncConfigError("Invalid Seedance base URL", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, buildOpenAIModelsURL(normalizedBaseURL), nil)
+	if err != nil {
+		return nil, newUpstreamModelSyncConfigError("Invalid Seedance model list URL", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
 }
