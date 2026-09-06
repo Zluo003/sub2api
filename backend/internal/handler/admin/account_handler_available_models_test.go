@@ -365,7 +365,10 @@ func TestAccountHandlerSyncUpstreamModels_SeedanceMikuapiSuccess(t *testing.T) {
 				{"id": "minimax-h3", "object": "model"},
 				{"id": "minimax-h3-max", "object": "model"},
 				{"id": "wan-3", "object": "model"},
-				{"id": "seedance-2-pro", "object": "model"}
+				{"id": "seedance-2-pro", "object": "model"},
+				{"id": "kling-v3-pro", "object": "model"},
+				{"id": "flux2-pro", "object": "model"},
+				{"id": "flux2-turbo", "object": "model"}
 			]
 		}`)),
 	}}
@@ -378,22 +381,20 @@ func TestAccountHandlerSyncUpstreamModels_SeedanceMikuapiSuccess(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, "Response body: %s", rec.Body.String())
 
 	var resp struct {
-		Models []string `json:"models"`
-		Data   struct {
+		Data struct {
 			Models []string `json:"models"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 
-	models := resp.Models
-	if len(models) == 0 {
-		models = resp.Data.Models
-	}
-
-	require.Contains(t, models, "minimax-h3", "Full response: %s", rec.Body.String())
-	require.Contains(t, models, "minimax-h3-max")
-	require.Contains(t, models, "wan-3")
-	require.Contains(t, models, "seedance-2-pro")
+	// Should return all upstream models without filtering
+	require.Contains(t, resp.Data.Models, "minimax-h3")
+	require.Contains(t, resp.Data.Models, "minimax-h3-max")
+	require.Contains(t, resp.Data.Models, "wan-3")
+	require.Contains(t, resp.Data.Models, "seedance-2-pro")
+	require.Contains(t, resp.Data.Models, "kling-v3-pro")
+	require.Contains(t, resp.Data.Models, "flux2-pro")
+	require.Contains(t, resp.Data.Models, "flux2-turbo")
 }
 
 func TestAccountHandlerSyncUpstreamModels_SeedanceWithExplicitBaseURL(t *testing.T) {
@@ -416,8 +417,8 @@ func TestAccountHandlerSyncUpstreamModels_SeedanceWithExplicitBaseURL(t *testing
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body: io.NopCloser(strings.NewReader(`{
 			"data": [
-				{"id": "model-1", "object": "model"},
-				{"id": "model-2", "object": "model"}
+				{"id": "seedance-custom-1", "object": "model"},
+				{"id": "video-model-2", "object": "model"}
 			]
 		}`)),
 	}}
@@ -428,6 +429,15 @@ func TestAccountHandlerSyncUpstreamModels_SeedanceWithExplicitBaseURL(t *testing
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data struct {
+			Models []string `json:"models"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Contains(t, resp.Data.Models, "seedance-custom-1")
+	require.Contains(t, resp.Data.Models, "video-model-2")
 }
 
 func TestAccountHandlerSyncUpstreamModels_SeedanceMissingAPIKey(t *testing.T) {
