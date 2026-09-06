@@ -38,9 +38,13 @@ func IsSupportedVideoResolution(model, resolution string) bool {
 			resolution == VideoResolution720P ||
 			resolution == VideoResolution1080P ||
 			resolution == VideoResolution4K
-	case VideoModelSeedance20Fast, VideoModelSeedance25:
+	case VideoModelSeedance20Fast:
 		return resolution == VideoResolution480P ||
 			resolution == VideoResolution720P
+	case VideoModelSeedance25:
+		return resolution == VideoResolution480P ||
+			resolution == VideoResolution720P ||
+			resolution == VideoResolution1080P
 	default:
 		return false
 	}

@@ -30,9 +30,11 @@ const (
 	videoProviderJingyu            = "jingyu"
 	videoProviderYCYAPI            = "ycyapi"
 	videoProviderNewtoken          = "newtoken"
+	videoProviderMikuapi           = "mikuapi"
 	videoDefaultBaseURL            = "https://api.aigod.one"
 	videoDefaultYCYAPIBaseURL      = "https://ycyapi.cn"
 	videoDefaultNewtokenBaseURL    = "https://newtoken.club"
+	videoDefaultMikuapiBaseURL     = "https://mikuapi.org"
 	videoDefaultAPIPath            = "/v1/videos"
 	videoDefaultJingyuBaseURL      = "https://api.jingyuapi.art"
 	videoDefaultJingyuAPIPath      = "/v1/video/generations"
@@ -47,34 +49,38 @@ const (
 	videoNewtokenSeedance201080PModel    = "sd2.0-1080p-official"
 	videoNewtokenSeedance20Fast720PModel = "sd2.0-720p-fast-official"
 	videoNewtokenSeedance25720PModel     = "sd2.5-720p-official"
-	videoDefaultPollInterval       = 2 * time.Second
-	videoDefaultPollTimeout        = 5 * time.Minute
-	videoDefaultRequestTimeout     = 60 * time.Second
-	videoDefaultConnectTimeout     = 15 * time.Second
-	videoJingyuPollInterval        = 5 * time.Second
-	videoJingyuPollTimeout         = 30 * time.Minute
-	videoJingyuRequestTimeout      = 30 * time.Minute
-	videoJingyuConnectTimeout      = 60 * time.Second
-	videoYCYAPIPollInterval        = 5 * time.Second
-	videoYCYAPIPollTimeout         = 60 * time.Minute
-	videoYCYAPIRequestTimeout      = 5 * time.Minute
-	videoYCYAPIConnectTimeout      = 15 * time.Second
-	videoNewtokenPollInterval      = 5 * time.Second
-	videoNewtokenPollTimeout       = 60 * time.Minute
-	videoNewtokenRequestTimeout    = 5 * time.Minute
-	videoNewtokenConnectTimeout    = 15 * time.Second
-	videoMinDurationSeconds        = 4
-	videoMaxDurationSeconds        = 15
-	videoSeedance25MaxDuration     = 30
-	videoMaxReferenceVideoTotal    = 15
-	videoSeedance25MaxReferences   = 50
-	videoPublicIDPrefix            = "video_"
-	videoObject                    = "video"
-	videoAbilityTextToVideo        = "video_text_to_video"
-	videoAbilityImageToVideo       = "video_image_to_video"
-	videoAbilityStartEndToVideo    = "video_start_end_to_video"
-	videoAbilityReferenceToVideo   = "video_reference_to_video"
-	jingyuVideoCallbackPath        = "/api/v1/webhooks/jingyu/videos/"
+	videoDefaultPollInterval             = 2 * time.Second
+	videoDefaultPollTimeout              = 5 * time.Minute
+	videoDefaultRequestTimeout           = 60 * time.Second
+	videoDefaultConnectTimeout           = 15 * time.Second
+	videoJingyuPollInterval              = 5 * time.Second
+	videoJingyuPollTimeout               = 30 * time.Minute
+	videoJingyuRequestTimeout            = 30 * time.Minute
+	videoJingyuConnectTimeout            = 60 * time.Second
+	videoYCYAPIPollInterval              = 5 * time.Second
+	videoYCYAPIPollTimeout               = 60 * time.Minute
+	videoYCYAPIRequestTimeout            = 5 * time.Minute
+	videoYCYAPIConnectTimeout            = 15 * time.Second
+	videoNewtokenPollInterval            = 5 * time.Second
+	videoNewtokenPollTimeout             = 60 * time.Minute
+	videoNewtokenRequestTimeout          = 5 * time.Minute
+	videoNewtokenConnectTimeout          = 15 * time.Second
+	videoMikuapiPollInterval             = 5 * time.Second
+	videoMikuapiPollTimeout              = 60 * time.Minute
+	videoMikuapiRequestTimeout           = 5 * time.Minute
+	videoMikuapiConnectTimeout           = 15 * time.Second
+	videoMinDurationSeconds              = 4
+	videoMaxDurationSeconds              = 15
+	videoSeedance25MaxDuration           = 30
+	videoMaxReferenceVideoTotal          = 15
+	videoSeedance25MaxReferences         = 50
+	videoPublicIDPrefix                  = "video_"
+	videoObject                          = "video"
+	videoAbilityTextToVideo              = "video_text_to_video"
+	videoAbilityImageToVideo             = "video_image_to_video"
+	videoAbilityStartEndToVideo          = "video_start_end_to_video"
+	videoAbilityReferenceToVideo         = "video_reference_to_video"
+	jingyuVideoCallbackPath              = "/api/v1/webhooks/jingyu/videos/"
 )
 
 type VideoService struct {
@@ -564,6 +570,9 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 	result := &videoPollResult{Status: status}
 	if status == VideoTaskStatusCompleted {
 		result.VideoURL = videoResultURLFromPayload(payload)
+		if result.VideoURL == "" && videoAccountProvider(account) == videoProviderMikuapi {
+			result.VideoURL = strings.TrimRight(endpoint, "/") + "/content"
+		}
 		if result.VideoURL == "" {
 			return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing video result URL")}
 		}
@@ -992,6 +1001,9 @@ func (s *VideoService) publishVideoResult(ctx context.Context, input VideoTaskLi
 	}
 	if input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil {
 		return "", errors.New("video result owner is unavailable")
+	}
+	if authenticated, ok := s.videoResultPublisher.(AuthenticatedVideoResultPublisher); ok && videoAccountProvider(input.Account) == videoProviderMikuapi {
+		return authenticated.PublishGeneratedVideoWithAuth(ctx, TemporaryAssetOwner{UserID: input.APIKey.User.ID, APIKeyID: input.APIKey.ID, GroupID: input.APIKey.Group.ID}, input.ResultPublicBaseURL, upstreamURL, "Bearer "+strings.TrimSpace(input.Account.GetCredential("api_key")))
 	}
 	publishedURL, err := s.videoResultPublisher.PublishGeneratedVideo(
 		ctx,
@@ -1805,7 +1817,7 @@ func isVideoAccountCompatibleForRequest(account *Account, normalized *normalized
 // unsupported request is routed to another upstream instead of failing there.
 func videoProviderNeedsRequestCompatibility(provider string) bool {
 	switch provider {
-	case videoProviderYCYAPI, videoProviderNewtoken:
+	case videoProviderYCYAPI, videoProviderNewtoken, videoProviderMikuapi:
 		return true
 	default:
 		return false
@@ -1986,6 +1998,8 @@ func SanitizeVideoClientError(code, message string) (string, string) {
 		"jingyu",
 		"jingyuapi",
 		"api.jingyuapi.art",
+		"mikuapi",
+		"mikuapi.org",
 		"upstream",
 		"upstream_task",
 		"upstream_task_id",
@@ -2046,6 +2060,8 @@ func videoAccountProvider(account *Account) string {
 		return videoProviderNewtoken
 	case videoProviderJingyu:
 		return videoProviderJingyu
+	case videoProviderMikuapi:
+		return videoProviderMikuapi
 	default:
 		return videoProviderAigod
 	}
@@ -2102,6 +2118,18 @@ func videoAccountDefaultDuration(account *Account, key string) time.Duration {
 			return videoJingyuRequestTimeout
 		case "connect_timeout_ms":
 			return videoJingyuConnectTimeout
+		}
+	}
+	if videoAccountProvider(account) == videoProviderMikuapi {
+		switch key {
+		case "poll_interval_ms":
+			return videoMikuapiPollInterval
+		case "poll_timeout_ms":
+			return videoMikuapiPollTimeout
+		case "request_timeout_ms":
+			return videoMikuapiRequestTimeout
+		case "connect_timeout_ms":
+			return videoMikuapiConnectTimeout
 		}
 	}
 	switch key {

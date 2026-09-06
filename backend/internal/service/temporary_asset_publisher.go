@@ -64,6 +64,10 @@ type VideoResultPublisher interface {
 	) (string, error)
 }
 
+type AuthenticatedVideoResultPublisher interface {
+	PublishGeneratedVideoWithAuth(ctx context.Context, owner TemporaryAssetOwner, fallbackPublicBaseURL, upstreamURL, authorization string) (string, error)
+}
+
 // TemporaryAssetPublisher stores generated images in the same managed storage
 // used by Agent reference assets and records their lifecycle in temporary_assets.
 type TemporaryAssetPublisher struct {
@@ -234,6 +238,26 @@ func (p *TemporaryAssetPublisher) PublishGeneratedVideo(
 	fallbackPublicBaseURL string,
 	upstreamURL string,
 ) (string, error) {
+	return p.publishGeneratedVideo(ctx, owner, fallbackPublicBaseURL, upstreamURL, "")
+}
+
+func (p *TemporaryAssetPublisher) PublishGeneratedVideoWithAuth(
+	ctx context.Context,
+	owner TemporaryAssetOwner,
+	fallbackPublicBaseURL string,
+	upstreamURL string,
+	authorization string,
+) (string, error) {
+	return p.publishGeneratedVideo(ctx, owner, fallbackPublicBaseURL, upstreamURL, authorization)
+}
+
+func (p *TemporaryAssetPublisher) publishGeneratedVideo(
+	ctx context.Context,
+	owner TemporaryAssetOwner,
+	fallbackPublicBaseURL string,
+	upstreamURL string,
+	authorization string,
+) (string, error) {
 	if p == nil || p.db == nil || p.fileStorage == nil {
 		return "", errors.New("temporary asset publisher is unavailable")
 	}
@@ -263,6 +287,9 @@ func (p *TemporaryAssetPublisher) PublishGeneratedVideo(
 	}
 	req.Header.Set("Accept", "video/mp4,video/quicktime,application/octet-stream;q=0.8")
 	req.Header.Set("User-Agent", "Sub2API-Video-Result-Publisher/1.0")
+	if strings.TrimSpace(authorization) != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", errors.New("download generated video failed")

@@ -18,6 +18,8 @@ func videoProviderAdapterForAccount(account *Account) videoProviderAdapter {
 		return ycyapiVideoProviderAdapter{}
 	case videoProviderNewtoken:
 		return newtokenVideoProviderAdapter{}
+	case videoProviderMikuapi:
+		return mikuapiVideoProviderAdapter{}
 	case videoProviderJingyu:
 		return jingyuVideoProviderAdapter{}
 	default:
@@ -31,6 +33,8 @@ func videoProviderAdapterByName(provider string) videoProviderAdapter {
 		return ycyapiVideoProviderAdapter{}
 	case videoProviderNewtoken:
 		return newtokenVideoProviderAdapter{}
+	case videoProviderMikuapi:
+		return mikuapiVideoProviderAdapter{}
 	case videoProviderJingyu:
 		return jingyuVideoProviderAdapter{}
 	default:

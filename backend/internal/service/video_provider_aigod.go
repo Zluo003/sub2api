@@ -17,10 +17,12 @@ func (a aigodVideoProviderAdapter) DefaultAPIPath() string {
 }
 
 func (a aigodVideoProviderAdapter) Compatible(model, resolution string) bool {
-	if strings.TrimSpace(resolution) == VideoResolution4K {
+	model = strings.TrimSpace(model)
+	resolution = strings.TrimSpace(resolution)
+	if resolution == VideoResolution4K {
 		return false
 	}
-	return IsSupportedVideoResolution(strings.TrimSpace(model), strings.TrimSpace(resolution))
+	return IsSupportedVideoResolution(model, resolution)
 }
 
 func (a aigodVideoProviderAdapter) CompatibleRequest(normalized *normalizedVideoRequest) bool {

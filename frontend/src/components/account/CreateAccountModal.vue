@@ -547,6 +547,24 @@
               </span>
             </div>
           </button>
+          <button
+            type="button"
+            @click="videoProvider = 'mikuapi'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              videoProvider === 'mikuapi'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div :class="['flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', videoProvider === 'mikuapi' ? 'bg-cyan-600 text-white' : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400']">
+              <Icon name="key" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.video.providers.mikuapi') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.video.mikuapiAdapter') }}</span>
+            </div>
+          </button>
         </div>
       </div>
 
@@ -3905,7 +3923,7 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
-type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken'
+type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken' | 'mikuapi'
 
 const videoProvider = ref<VideoProvider>('aigod')
 const videoAPIPath = ref('/v1/videos')
@@ -3941,7 +3959,9 @@ const videoDefaultsFor = (provider: VideoProvider) =>
             requestTimeoutMs: 300000,
             connectTimeoutMs: 15000
           }
-        : {
+        : provider === 'mikuapi'
+          ? { baseUrl: 'https://mikuapi.org', apiPath: '/v1/videos', pollIntervalMs: 5000, pollTimeoutMs: 3600000, requestTimeoutMs: 300000, connectTimeoutMs: 15000 }
+          : {
             baseUrl: 'https://api.aigod.one',
             apiPath: '/v1/videos',
             pollIntervalMs: 2000,
@@ -4004,6 +4024,16 @@ const applyVideoProviderModelDefaults = () => {
       { from: 'seedance-2.0', to: 'firefly-video-v2' },
       { from: 'seedance-2.0-fast', to: 'firefly-video-v2-fast' },
       { from: 'seedance-2.5', to: 'leonardo-seedance-2.5' }
+    ]
+    return
+  }
+  if (videoProvider.value === 'mikuapi') {
+    modelRestrictionMode.value = 'mapping'
+    allowedModels.value = []
+    modelMappings.value = [
+      { from: 'seedance-2.0', to: 'seedance-2-pro' },
+      { from: 'seedance-2.0-fast', to: 'seedance-2-fast' },
+      { from: 'seedance-2.5', to: 'seedance-2.5-pro' }
     ]
     return
   }

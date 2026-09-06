@@ -368,7 +368,8 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testi
 
 	adapter := aigodVideoProviderAdapter{}
 	require.True(t, adapter.Compatible(VideoModelSeedance25, VideoResolution720P))
-	require.False(t, adapter.Compatible(VideoModelSeedance25, VideoResolution1080P))
+	require.True(t, adapter.Compatible(VideoModelSeedance25, VideoResolution1080P))
+	require.Equal(t, "seedance-2.5-1080p", adapter.UpstreamModel(nil, &normalizedVideoRequest{Model: VideoModelSeedance25, Resolution: VideoResolution1080P}))
 	require.False(t, adapter.Compatible(VideoModelSeedance25, VideoResolution4K))
 	jingyuAdapter := jingyuVideoProviderAdapter{}
 	require.True(t, jingyuAdapter.Compatible(VideoModelSeedance25, VideoResolution480P))
@@ -731,7 +732,6 @@ func TestNormalizeVideoCreateRequestSupportsSeedance25DurationAndRatioLimits(t *
 		{name: "duration too short", duration: 3, resolution: VideoResolution720P, ratio: "16:9"},
 		{name: "duration too long", duration: 31, resolution: VideoResolution720P, ratio: "16:9"},
 		{name: "fractional duration", duration: 4.5, resolution: VideoResolution720P, ratio: "16:9"},
-		{name: "unsupported 1080p", duration: 5, resolution: VideoResolution1080P, ratio: "16:9"},
 		{name: "unsupported 4K", duration: 5, resolution: VideoResolution4K, ratio: "16:9"},
 		{name: "unsupported ratio", duration: 5, resolution: VideoResolution720P, ratio: "2:1"},
 	} {
@@ -899,19 +899,14 @@ func TestNormalizeVideoPricingRulesAllowsOnlyBaseSeedance1080P(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid_video_resolution")
 }
 
-func TestNormalizeVideoPricingRulesSupportsSeedance25OnlyAt480PAnd720P(t *testing.T) {
+func TestNormalizeVideoPricingRulesSupportsSeedance25At1080P(t *testing.T) {
 	rules, err := normalizeVideoPricingRules([]VideoGroupPricingRule{
 		{ModelCode: VideoModelSeedance25, Resolution: VideoResolution480P, CreditsPerSecond: 1, Enabled: true},
 		{ModelCode: VideoModelSeedance25, Resolution: VideoResolution720P, CreditsPerSecond: 2, Enabled: true},
-	})
-	require.NoError(t, err)
-	require.Len(t, rules, 2)
-
-	_, err = normalizeVideoPricingRules([]VideoGroupPricingRule{
 		{ModelCode: VideoModelSeedance25, Resolution: VideoResolution1080P, CreditsPerSecond: 3, Enabled: true},
 	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid_video_resolution")
+	require.NoError(t, err)
+	require.Len(t, rules, 3)
 }
 
 func TestVideoResponseFromTaskDoesNotExposeUpstreamFieldsOrProvider(t *testing.T) {

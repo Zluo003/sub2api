@@ -35,6 +35,7 @@
             <option value="ycyapi">{{ t('admin.accounts.video.providers.ycyapi') }}</option>
             <option value="jingyu">{{ t('admin.accounts.video.providers.jingyu') }}</option>
             <option value="newtoken">{{ t('admin.accounts.video.providers.newtoken') }}</option>
+            <option value="mikuapi">{{ t('admin.accounts.video.providers.mikuapi') }}</option>
           </select>
           <p class="input-hint">{{ t('admin.accounts.video.providerHint') }}</p>
         </div>
@@ -2820,7 +2821,7 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
-type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken'
+type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken' | 'mikuapi'
 
 const editVideoProvider = ref<VideoProvider>('aigod')
 const editVideoAPIPath = ref('/v1/videos')
@@ -2837,6 +2838,9 @@ const editVideoDefaultsFor = (provider: VideoProvider) => {
   }
   if (provider === 'newtoken') {
     return { baseUrl: 'https://newtoken.club', apiPath: '/v1/videos', pollIntervalMs: 5000, pollTimeoutMs: 3600000, requestTimeoutMs: 300000, connectTimeoutMs: 15000 }
+  }
+  if (provider === 'mikuapi') {
+    return { baseUrl: 'https://mikuapi.org', apiPath: '/v1/videos', pollIntervalMs: 5000, pollTimeoutMs: 3600000, requestTimeoutMs: 300000, connectTimeoutMs: 15000 }
   }
   return { baseUrl: 'https://api.aigod.one', apiPath: '/v1/videos', pollIntervalMs: 2000, pollTimeoutMs: 300000, requestTimeoutMs: 60000, connectTimeoutMs: 15000 }
 }
@@ -3368,6 +3372,14 @@ watch(editVideoProvider, (_newProvider, oldProvider) => {
       { from: 'seedance-2.0-fast', to: 'firefly-video-v2-fast' },
       { from: 'seedance-2.5', to: 'leonardo-seedance-2.5' }
     ]
+  } else if (editVideoProvider.value === 'mikuapi') {
+    modelRestrictionMode.value = 'mapping'
+    allowedModels.value = []
+    modelMappings.value = [
+      { from: 'seedance-2.0', to: 'seedance-2-pro' },
+      { from: 'seedance-2.0-fast', to: 'seedance-2-fast' },
+      { from: 'seedance-2.5', to: 'seedance-2.5-pro' }
+    ]
   } else {
     // aigod and newtoken both accept the canonical downstream model ids. newtoken
     // in particular must NOT get a static mapping: its upstream model id encodes
@@ -3670,6 +3682,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         ? 'ycyapi'
         : extra?.video_provider === 'newtoken'
           ? 'newtoken'
+          : extra?.video_provider === 'mikuapi'
+            ? 'mikuapi'
           : 'aigod'
     const platformDefaultUrl =
       newAccount.platform === 'openai'

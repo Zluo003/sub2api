@@ -778,7 +778,7 @@ async function fileToBase64(file) {
       bullets: [
         { title: '鉴权', text: '创建和查询都使用 Authorization: Bearer <API Key>。API Key 必须绑定 seedance 分组或具备 Seedance 视频能力的 Agent 分组。' },
         { title: '分组与任务所有权', text: '使用 seedance 分组或具备视频能力的 Agent 分组。创建和查询必须使用同一个用户、同一把 API Key；其他密钥查询同一任务 ID 会得到 404。' },
-        { title: '模型', text: 'seedance-2.0 支持 480p、720p、1080p、4K；seedance-2.0-fast 和 seedance-2.5 支持 480p、720p。' },
+        { title: '模型', text: 'seedance-2.0 支持 480p、720p、1080p、4K；seedance-2.0-fast 支持 480p、720p；seedance-2.5 支持 480p、720p、1080p。' },
         { title: '默认值与生成时长', text: 'resolution 默认 720p。2.0/fast 的 ratio 默认 16:9、duration 必须为 4-15 的整数秒；2.5 支持 4-30 秒，duration: -1 会按 5 秒提交，图生视频和首尾帧模式未传比例时默认 auto，adaptive 会归一化为 auto。' },
         { title: '能力自动推断', text: 'ability_code 可省略，服务端会根据 content 推断；生产调用建议显式传入，避免 role 写错后落入其他模式。' },
         { title: '计费', text: '生成秒数和每个参考视频向上取整后计费。基础公式为（生成秒数 × 分辨率单价 + 参考视频秒数 × 分辨率单价 × 参考系数）× 分组倍率；普通 seedance 分组的参考系数为 1。' },
@@ -828,7 +828,7 @@ async function fileToBase64(file) {
           headers: ['项目', '限制', '说明'],
           rows: [
             ['生成视频时长', '2.0/fast: 4-15 秒；2.5: 4-30 秒', '必须为整数秒。2.5 的 -1 会转换为 5 秒；2.0/fast 不接受 -1。'],
-            ['输出分辨率', 'seedance-2.0: 480p / 720p / 1080p / 4K；seedance-2.0-fast、seedance-2.5: 480p / 720p', '1080p 和 4K 只适用于 seedance-2.0。'],
+            ['输出分辨率', 'seedance-2.0: 480p / 720p / 1080p / 4K；seedance-2.0-fast: 480p / 720p；seedance-2.5: 480p / 720p / 1080p', '4K 只适用于 seedance-2.0。'],
             ['输出比例', '2.5: auto / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9', '兼容 ratio、aspect_ratio、aspectRatio；adaptive 在 2.5 中会归一化为 auto。'],
             ['参考图片数量', '首帧模式 1 张；首尾帧模式 2 张；2.0/fast 参考模式最多 9 张；2.5 最多 30 张', '参考模式图片 role 必须为 reference_image；首尾帧模式与参考模式不能混用。'],
             ['参考图片格式', 'jpeg / png / webp / bmp / tiff / gif / heic / heif', 'URL 或 data:image/<format>;base64,<base64>；大文件建议使用可公开访问 URL。'],
@@ -1513,7 +1513,7 @@ async function fileToBase64(file) {
       bullets: [
         { title: 'Authentication', text: 'Creation and polling use Authorization: Bearer <API Key>. The key must belong to a seedance group or a Seedance-capable Agent group.' },
         { title: 'Group and task ownership', text: 'Use a seedance group or a video-capable Agent group. Create and query must use the same user and API key; another key receives 404 for the same task id.' },
-        { title: 'Models', text: 'seedance-2.0 supports 480p, 720p, 1080p, and 4K; seedance-2.0-fast and seedance-2.5 support 480p and 720p.' },
+        { title: 'Models', text: 'seedance-2.0 supports 480p, 720p, 1080p, and 4K; seedance-2.0-fast supports 480p and 720p; seedance-2.5 supports 480p, 720p, and 1080p.' },
         { title: 'Defaults and generated duration', text: 'resolution defaults to 720p. For 2.0/fast, ratio defaults to 16:9 and duration must be an integer from 4 through 15. Seedance 2.5 accepts 4-30 seconds; duration: -1 is submitted as 5 seconds, image-to-video and start-end mode default to auto when ratio is omitted, and adaptive is normalized to auto.' },
         { title: 'Ability inference', text: 'ability_code may be omitted and inferred from content. Production clients should send it explicitly so an incorrect role cannot silently select another mode.' },
         { title: 'Billing', text: 'Generated duration and each reference video duration are rounded up. Base formula: (generated seconds x resolution price + reference seconds x resolution price x reference multiplier) x group multiplier. The reference multiplier is 1 for standard seedance groups.' },
@@ -1563,7 +1563,7 @@ async function fileToBase64(file) {
           headers: ['Item', 'Limit', 'Notes'],
           rows: [
             ['Generated duration', '2.0/fast: 4-15 seconds; 2.5: 4-30 seconds', 'Integer seconds only. Seedance 2.5 converts -1 to 5 seconds; 2.0/fast reject -1.'],
-            ['Output resolution', 'seedance-2.0: 480p / 720p / 1080p / 4K; seedance-2.0-fast and seedance-2.5: 480p / 720p', '1080p and 4K are only available on seedance-2.0.'],
+            ['Output resolution', 'seedance-2.0: 480p / 720p / 1080p / 4K; seedance-2.0-fast: 480p / 720p; seedance-2.5: 480p / 720p / 1080p', '4K is only available on seedance-2.0.'],
             ['Output ratio', '2.5: auto / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9', 'The endpoint accepts ratio, aspect_ratio, and aspectRatio. adaptive is normalized to auto for Seedance 2.5.'],
             ['Reference image count', 'First-frame mode: 1 image; start-end mode: 2 images; 2.0/fast reference mode: up to 9; 2.5: up to 30', 'Reference-mode image role must be reference_image. Start/end-frame mode and reference mode cannot be mixed.'],
             ['Reference image formats', 'jpeg / png / webp / bmp / tiff / gif / heic / heif', 'Use a URL or data:image/<format>;base64,<base64>. Public URLs are recommended for large files.'],

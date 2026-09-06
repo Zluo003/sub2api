@@ -14,7 +14,7 @@ const editSource = readFileSync(
 describe('Seedance newtoken account defaults', () => {
   it('offers newtoken as an upstream video provider in both modals', () => {
     for (const source of [createSource, editSource]) {
-      expect(source).toContain("type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken'")
+      expect(source).toContain("type VideoProvider = 'aigod' | 'ycyapi' | 'jingyu' | 'newtoken' | 'mikuapi'")
       expect(source).toContain('admin.accounts.video.providers.newtoken')
     }
     expect(createSource).toContain("videoProvider = 'newtoken'")

@@ -5435,6 +5435,13 @@ const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
     reference_video_multiplier: 1,
     enabled: true,
   },
+  {
+    model_code: "seedance-2.5",
+    resolution: "1080p",
+    credits_per_second: 0,
+    reference_video_multiplier: 1,
+    enabled: true,
+  },
 ];
 
 const ensureVideoPricingRules = (rules: VideoGroupPricingRule[] | undefined): VideoGroupPricingRule[] => {
