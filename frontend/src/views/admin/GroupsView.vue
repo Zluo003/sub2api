@@ -5369,80 +5369,41 @@ const videoModelOptions: Array<{ value: VideoModelCode; label: string }> = [
   { value: "seedance-2.0", label: "Seedance 2.0" },
   { value: "seedance-2.0-fast", label: "Seedance 2.0 fast" },
   { value: "seedance-2.5", label: "Seedance 2.5" },
+  { value: "minimax-h3", label: "MiniMax H3" },
+  { value: "minimax-h3-max", label: "MiniMax H3 Max" },
+  { value: "wan-3", label: "Wan 3" },
 ];
 
 const videoResolutionOptions: Array<{ value: VideoResolution; label: string }> = [
   { value: "480p", label: "480p" },
   { value: "720p", label: "720p" },
+  { value: "768p", label: "768p" },
   { value: "1080p", label: "1080p" },
+  { value: "2K", label: "2K" },
   { value: "4K", label: "4K" },
 ];
 
-const defaultVideoPricingRules = (): VideoGroupPricingRule[] => [
-  {
-    model_code: "seedance-2.0",
-    resolution: "480p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.0",
-    resolution: "720p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.0",
-    resolution: "1080p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.0",
-    resolution: "4K",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.0-fast",
-    resolution: "480p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.0-fast",
-    resolution: "720p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.5",
-    resolution: "480p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.5",
-    resolution: "720p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
-  {
-    model_code: "seedance-2.5",
-    resolution: "1080p",
-    credits_per_second: 0,
-    reference_video_multiplier: 1,
-    enabled: true,
-  },
+// One row per model/resolution the backend accepts. Rows outside this grid are
+// rejected by normalizeVideoPricingRules, so it has to track the model specs.
+const videoPricingMatrix: Array<{ model: VideoModelCode; resolutions: VideoResolution[] }> = [
+  { model: "seedance-2.0", resolutions: ["480p", "720p", "1080p", "4K"] },
+  { model: "seedance-2.0-fast", resolutions: ["480p", "720p"] },
+  { model: "seedance-2.5", resolutions: ["480p", "720p", "1080p"] },
+  { model: "minimax-h3", resolutions: ["768p", "2K"] },
+  { model: "minimax-h3-max", resolutions: ["480p", "768p"] },
+  { model: "wan-3", resolutions: ["480p", "720p", "1080p"] },
 ];
+
+const defaultVideoPricingRules = (): VideoGroupPricingRule[] =>
+  videoPricingMatrix.flatMap(({ model, resolutions }) =>
+    resolutions.map((resolution) => ({
+      model_code: model,
+      resolution,
+      credits_per_second: 0,
+      reference_video_multiplier: 1,
+      enabled: true,
+    })),
+  );
 
 const ensureVideoPricingRules = (rules: VideoGroupPricingRule[] | undefined): VideoGroupPricingRule[] => {
   const incoming = Array.isArray(rules) ? rules : [];

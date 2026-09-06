@@ -538,8 +538,14 @@ export interface OpenAIMessagesDispatchModelConfig {
   exact_model_mappings?: Record<string, string>
 }
 
-export type VideoModelCode = 'seedance-2.0' | 'seedance-2.0-fast' | 'seedance-2.5'
-export type VideoResolution = '480p' | '720p' | '1080p' | '4K'
+export type VideoModelCode =
+  | 'seedance-2.0'
+  | 'seedance-2.0-fast'
+  | 'seedance-2.5'
+  | 'minimax-h3'
+  | 'minimax-h3-max'
+  | 'wan-3'
+export type VideoResolution = '480p' | '720p' | '768p' | '1080p' | '2K' | '4K'
 
 export interface VideoGroupPricingRule {
   id?: number

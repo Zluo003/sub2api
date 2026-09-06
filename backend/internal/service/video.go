@@ -12,10 +12,15 @@ const (
 	VideoModelSeedance20     = "seedance-2.0"
 	VideoModelSeedance20Fast = "seedance-2.0-fast"
 	VideoModelSeedance25     = "seedance-2.5"
+	VideoModelMinimaxH3      = "minimax-h3"
+	VideoModelMinimaxH3Max   = "minimax-h3-max"
+	VideoModelWan3           = "wan-3"
 
 	VideoResolution480P  = "480p"
 	VideoResolution720P  = "720p"
+	VideoResolution768P  = "768p"
 	VideoResolution1080P = "1080p"
+	VideoResolution2K    = "2K"
 	VideoResolution4K    = "4K"
 
 	VideoTaskStatusQueued     = "queued"
@@ -29,25 +34,176 @@ const (
 	VideoRefundStatusRefunded      = "refunded"
 )
 
+// videoModelSpec collects the downstream limits of one video model. The
+// upstream clamps out-of-range parameters to the nearest allowed value instead
+// of rejecting them, so anything we let through silently produces a video that
+// differs from the one we billed for. Every limit therefore has to be enforced
+// here, not left to the provider.
+type videoModelSpec struct {
+	Resolutions       []string
+	DefaultResolution string
+	// AutoDurationSeconds is the duration substituted for the "auto" sentinel
+	// (-1). Zero means the model has no auto duration and rejects the sentinel.
+	AutoDurationSeconds int
+	MinSeconds          int
+	MaxSeconds          int
+	MaxRefImages        int
+	MaxRefVideos        int
+	MaxRefAudios        int
+	// MaxRefTotal caps images+videos+audios together. Zero means no aggregate
+	// cap beyond the per-kind ones.
+	MaxRefTotal int
+	// MaxRefVideoSeconds caps a single reference clip, MaxRefVideoTotalSeconds
+	// caps their sum.
+	MaxRefVideoSeconds      int
+	MaxRefVideoTotalSeconds int
+	// AudioNeedsVisual rejects reference sets whose only media is audio.
+	AudioNeedsVisual bool
+}
+
+// videoModelSpecs is the single source of truth for per-model video limits.
+// Models absent from the table are only reachable through agent groups, where
+// the catalog comes from each account's model_mapping; those fall back to
+// videoDefaultModelSpec.
+var videoModelSpecs = map[string]videoModelSpec{
+	VideoModelSeedance20: {
+		Resolutions:             []string{VideoResolution480P, VideoResolution720P, VideoResolution1080P, VideoResolution4K},
+		DefaultResolution:       VideoResolution720P,
+		MinSeconds:              videoMinDurationSeconds,
+		MaxSeconds:              videoMaxDurationSeconds,
+		MaxRefImages:            9,
+		MaxRefVideos:            3,
+		MaxRefAudios:            3,
+		MaxRefVideoSeconds:      videoMaxDurationSeconds,
+		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+		AudioNeedsVisual:        true,
+	},
+	VideoModelSeedance20Fast: {
+		Resolutions:             []string{VideoResolution480P, VideoResolution720P},
+		DefaultResolution:       VideoResolution720P,
+		MinSeconds:              videoMinDurationSeconds,
+		MaxSeconds:              videoMaxDurationSeconds,
+		MaxRefImages:            9,
+		MaxRefVideos:            3,
+		MaxRefAudios:            3,
+		MaxRefVideoSeconds:      videoMaxDurationSeconds,
+		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+		AudioNeedsVisual:        true,
+	},
+	VideoModelSeedance25: {
+		Resolutions:             []string{VideoResolution480P, VideoResolution720P, VideoResolution1080P},
+		DefaultResolution:       VideoResolution720P,
+		AutoDurationSeconds:     5,
+		MinSeconds:              videoMinDurationSeconds,
+		MaxSeconds:              videoSeedance25MaxDuration,
+		MaxRefImages:            30,
+		MaxRefVideos:            10,
+		MaxRefAudios:            10,
+		MaxRefTotal:             videoSeedance25MaxReferences,
+		MaxRefVideoSeconds:      videoSeedance25MaxDuration,
+		MaxRefVideoTotalSeconds: videoSeedance25MaxDuration,
+	},
+	VideoModelMinimaxH3: {
+		Resolutions:             []string{VideoResolution768P, VideoResolution2K},
+		DefaultResolution:       VideoResolution768P,
+		MinSeconds:              5,
+		MaxSeconds:              15,
+		MaxRefImages:            9,
+		MaxRefVideos:            3,
+		MaxRefAudios:            3,
+		MaxRefVideoSeconds:      videoMaxDurationSeconds,
+		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+		AudioNeedsVisual:        true,
+	},
+	VideoModelMinimaxH3Max: {
+		Resolutions:             []string{VideoResolution480P, VideoResolution768P},
+		DefaultResolution:       VideoResolution768P,
+		MinSeconds:              5,
+		MaxSeconds:              15,
+		MaxRefImages:            12,
+		MaxRefVideos:            12,
+		MaxRefAudios:            12,
+		MaxRefVideoSeconds:      videoMaxDurationSeconds,
+		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+	},
+	VideoModelWan3: {
+		Resolutions:             []string{VideoResolution480P, VideoResolution720P, VideoResolution1080P},
+		DefaultResolution:       VideoResolution720P,
+		MinSeconds:              2,
+		MaxSeconds:              30,
+		MaxRefImages:            10,
+		MaxRefVideos:            5,
+		MaxRefAudios:            5,
+		MaxRefVideoSeconds:      videoMaxDurationSeconds,
+		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+		AudioNeedsVisual:        true,
+	},
+}
+
+// videoDefaultModelSpec mirrors the limits that applied to every non-2.5 model
+// before videoModelSpecs existed. It keeps agent groups, whose model catalog is
+// account-defined, on exactly the validation they had before.
+var videoDefaultModelSpec = videoModelSpec{
+	DefaultResolution:       VideoResolution720P,
+	MinSeconds:              videoMinDurationSeconds,
+	MaxSeconds:              videoMaxDurationSeconds,
+	MaxRefImages:            9,
+	MaxRefVideos:            3,
+	MaxRefAudios:            3,
+	MaxRefVideoSeconds:      videoMaxDurationSeconds,
+	MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+	AudioNeedsVisual:        true,
+}
+
+// videoSpecForModel returns the model's row, or the legacy defaults for models
+// the gateway does not know about. The bool reports whether the model is one of
+// the built-in ones.
+func videoSpecForModel(model string) (videoModelSpec, bool) {
+	spec, ok := videoModelSpecs[strings.TrimSpace(model)]
+	if !ok {
+		return videoDefaultModelSpec, false
+	}
+	return spec, true
+}
+
+func IsSupportedVideoModel(model string) bool {
+	_, ok := videoModelSpecs[strings.TrimSpace(model)]
+	return ok
+}
+
+func SupportedVideoModels() []string {
+	return []string{
+		VideoModelSeedance20,
+		VideoModelSeedance20Fast,
+		VideoModelSeedance25,
+		VideoModelMinimaxH3,
+		VideoModelMinimaxH3Max,
+		VideoModelWan3,
+	}
+}
+
+// SupportedVideoResolutions returns a copy of the model's allow-list so callers
+// cannot mutate the shared spec table.
+func SupportedVideoResolutions(model string) []string {
+	spec, ok := videoSpecForModel(model)
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), spec.Resolutions...)
+}
+
 func IsSupportedVideoResolution(model, resolution string) bool {
-	model = strings.TrimSpace(model)
-	resolution = strings.TrimSpace(resolution)
-	switch model {
-	case VideoModelSeedance20:
-		return resolution == VideoResolution480P ||
-			resolution == VideoResolution720P ||
-			resolution == VideoResolution1080P ||
-			resolution == VideoResolution4K
-	case VideoModelSeedance20Fast:
-		return resolution == VideoResolution480P ||
-			resolution == VideoResolution720P
-	case VideoModelSeedance25:
-		return resolution == VideoResolution480P ||
-			resolution == VideoResolution720P ||
-			resolution == VideoResolution1080P
-	default:
+	spec, ok := videoSpecForModel(model)
+	if !ok {
 		return false
 	}
+	resolution = strings.TrimSpace(resolution)
+	for _, allowed := range spec.Resolutions {
+		if allowed == resolution {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -202,6 +358,7 @@ type VideoTaskLifecycleInput struct {
 	InboundEndpoint     string
 	UpstreamEndpoint    string
 	ResultPublicBaseURL string
+	UpstreamTaskID      string
 }
 
 type VideoTaskCreateInput struct {

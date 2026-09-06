@@ -35,4 +35,21 @@ describe('modelCatalog', () => {
     expect(identity.descriptionEn).toContain('direct official access')
     expect(identity.descriptionZh).not.toContain('豆包/Seed 系列模型')
   })
+
+  it.each([
+    ['minimax-h3', 'MiniMax', '2K'],
+    ['minimax-h3-max', 'MiniMax', '12 张参考图'],
+    ['hailuo-3', 'MiniMax', '2K'],
+    ['minimax-hailuo-3-max', 'MiniMax', '12 张参考图'],
+    ['wan-3', 'Alibaba Cloud', '2–30 秒'],
+    ['wan3', 'Alibaba Cloud', '2–30 秒'],
+    ['wan-3.0', 'Alibaba Cloud', '2–30 秒']
+  ])('uses model-specific copy for the mikuapi video model %s', (model, vendor, capability) => {
+    const identity = getModelIdentity(model, 'seedance')
+
+    expect(identity.vendor).toBe(vendor)
+    expect(identity.descriptionZh).toContain(capability)
+    // The seedance platform falls back to ByteDance, which would be wrong here.
+    expect(identity.descriptionZh).not.toContain('豆包/Seed 系列模型')
+  })
 })

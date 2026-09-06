@@ -259,6 +259,37 @@ func (s *VideoService) createTask(ctx context.Context, input *VideoCreateInput) 
 		UpstreamEndpoint:    upstreamEndpoint,
 		ResultPublicBaseURL: input.ResultPublicBaseURL,
 	}
+	if videoAccountProvider(account) == videoProviderMikuapi {
+		// mikuapi is asynchronous only for generation. The creation POST must
+		// return an upstream ID before this API reports the local task as ready.
+		created, createErr := s.createUpstreamTask(ctx, account, upstreamBody)
+		if createErr != nil {
+			clientErr := mapVideoUpstreamError(createErr, false)
+			s.recordVideoAccountFailure(context.Background(), account, clientErr, createErr)
+			failed := VideoTaskStatusFailed
+			failedTask, _ := s.taskRepo.UpdateByPublicID(context.Background(), task.PublicID, VideoTaskUpdate{
+				Status:    &failed,
+				ErrorJSON: videoErrorJSON(clientErr.VideoClientError),
+			})
+			_ = s.refundFailedTask(context.Background(), failedTask, input.APIKey, input.Subscription, account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, inboundEndpoint, upstreamEndpoint)
+			return nil, ErrVideoAccountNotFound.WithCause(createErr)
+		}
+		processing := VideoTaskStatusProcessing
+		updatedTask, updateErr := s.taskRepo.UpdateByPublicID(ctx, task.PublicID, VideoTaskUpdate{
+			Status:         &processing,
+			UpstreamTaskID: &created.ID,
+		})
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		lifecycleInput.UpstreamTaskID = created.ID
+		if s.startLifecycleFunc != nil {
+			s.startLifecycleFunc(lifecycleInput)
+		} else {
+			go s.pollLifecycle(lifecycleInput, created.ID)
+		}
+		return videoResponseFromTask(updatedTask), nil
+	}
 	if s.startLifecycleFunc != nil {
 		s.startLifecycleFunc(lifecycleInput)
 	} else {
@@ -526,10 +557,10 @@ func (s *VideoService) createUpstreamTask(ctx context.Context, account *Account,
 	if err := json.Unmarshal(respBody, &payload); err != nil {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: err}
 	}
-	id := firstNonEmptyVideoString(
-		stringFromMap(payload, "task_id"),
-		stringFromMap(payload, "id"),
-	)
+	id := videoTaskIDFromPayload(payload)
+	if id == "" {
+		id = videoTaskIDFromLocation(resp.Header.Get("Location"))
+	}
 	if id == "" {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: errors.New("missing upstream task id")}
 	}
@@ -569,7 +600,9 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 	status := normalizeVideoUpstreamStatus(rawStatus)
 	result := &videoPollResult{Status: status}
 	if status == VideoTaskStatusCompleted {
-		result.VideoURL = videoResultURLFromPayload(payload)
+		// mikuapi returns a direct link for the finished video. Its authenticated
+		// /content endpoint is only the fallback for payloads that omit one.
+		result.VideoURL = videoAbsoluteResultURL(endpoint, videoResultURLFromPayload(payload))
 		if result.VideoURL == "" && videoAccountProvider(account) == videoProviderMikuapi {
 			result.VideoURL = strings.TrimRight(endpoint, "/") + "/content"
 		}
@@ -617,6 +650,13 @@ func (s *VideoService) startLifecycle(input VideoTaskLifecycleInput) {
 				slog.Warn("jingyu video callback configuration failed", "task_id", input.PublicID, "error", err)
 				return
 			}
+		}
+
+		if existing := strings.TrimSpace(input.UpstreamTaskID); existing != "" {
+			// The caller already submitted this task (mikuapi creates upstream
+			// synchronously). Re-creating it here would double-charge the user.
+			s.pollLifecycle(input, existing)
+			return
 		}
 
 		created, err := s.createUpstreamTask(context.Background(), input.Account, input.UpstreamBody)
@@ -1002,7 +1042,7 @@ func (s *VideoService) publishVideoResult(ctx context.Context, input VideoTaskLi
 	if input.APIKey == nil || input.APIKey.User == nil || input.APIKey.Group == nil {
 		return "", errors.New("video result owner is unavailable")
 	}
-	if authenticated, ok := s.videoResultPublisher.(AuthenticatedVideoResultPublisher); ok && videoAccountProvider(input.Account) == videoProviderMikuapi {
+	if authenticated, ok := s.videoResultPublisher.(AuthenticatedVideoResultPublisher); ok && videoAccountProvider(input.Account) == videoProviderMikuapi && videoResultURLNeedsAccountAuth(input.Account, upstreamURL) {
 		return authenticated.PublishGeneratedVideoWithAuth(ctx, TemporaryAssetOwner{UserID: input.APIKey.User.ID, APIKeyID: input.APIKey.ID, GroupID: input.APIKey.Group.ID}, input.ResultPublicBaseURL, upstreamURL, "Bearer "+strings.TrimSpace(input.Account.GetCredential("api_key")))
 	}
 	publishedURL, err := s.videoResultPublisher.PublishGeneratedVideo(
@@ -1334,12 +1374,13 @@ func normalizeAgentVideoCreateRequest(req *VideoCreateRequest) (*normalizedVideo
 
 func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynamicModel bool) (*normalizedVideoRequest, error) {
 	model := strings.TrimSpace(req.Model)
-	if model == "" || (!dynamicModel && model != VideoModelSeedance20 && model != VideoModelSeedance20Fast && model != VideoModelSeedance25) {
+	spec, knownModel := videoSpecForModel(model)
+	if model == "" || (!dynamicModel && !knownModel) {
 		return nil, videoBadRequest("invalid_video_model", "Invalid video model")
 	}
 	resolution := strings.TrimSpace(req.Resolution)
 	if resolution == "" {
-		resolution = VideoResolution720P
+		resolution = spec.DefaultResolution
 	}
 	if dynamicModel {
 		var err error
@@ -1347,7 +1388,10 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 		if err != nil {
 			return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 		}
-		if model == VideoModelSeedance25 && !IsSupportedVideoResolution(model, resolution) {
+		// Agent groups build their catalog from each account's model_mapping, so
+		// models we do not know stay unconstrained. Known ones still have to land
+		// inside the upstream allow-list.
+		if knownModel && !IsSupportedVideoResolution(model, resolution) {
 			return nil, videoBadRequest("invalid_video_resolution", "Invalid video resolution")
 		}
 	} else if !IsSupportedVideoResolution(model, resolution) {
@@ -1355,14 +1399,10 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 	}
 	requestedDuration := req.Duration
 	duration := requestedDuration
-	maxDuration := float64(videoMaxDurationSeconds)
-	if model == VideoModelSeedance25 {
-		if duration == -1 {
-			duration = 5
-		}
-		maxDuration = videoSeedance25MaxDuration
+	if duration == -1 && spec.AutoDurationSeconds > 0 {
+		duration = float64(spec.AutoDurationSeconds)
 	}
-	if duration != math.Trunc(duration) || duration < videoMinDurationSeconds || duration > maxDuration {
+	if duration != math.Trunc(duration) || duration < float64(spec.MinSeconds) || duration > float64(spec.MaxSeconds) {
 		return nil, videoBadRequest("invalid_video_duration", "Invalid video duration")
 	}
 	generatedSeconds := int(math.Ceil(duration))
@@ -1583,33 +1623,38 @@ func validateVideoAbilityInput(model, ability, prompt string, stats videoContent
 			return videoBadRequest("invalid_video_content", "Start-end video cannot include video or audio references")
 		}
 	case videoAbilityReferenceToVideo:
-		if model == VideoModelSeedance25 {
-			referenceCount := stats.ImageCount + stats.VideoCount + stats.AudioCount
-			if stats.ImageCount > 30 || stats.VideoCount > 10 || stats.AudioCount > 10 || referenceCount > videoSeedance25MaxReferences {
-				return videoBadRequest("invalid_video_content", "Seedance 2.5 reference video requests support up to 30 images, 10 videos, 10 audio files, and 50 total media references")
-			}
-			if referenceCount == 0 {
-				return videoBadRequest("invalid_video_content", "Seedance 2.5 reference video requests require at least one image, video, or audio reference")
-			}
-			break
+		spec, _ := videoSpecForModel(model)
+		referenceCount := stats.ImageCount + stats.VideoCount + stats.AudioCount
+		if stats.ImageCount > spec.MaxRefImages || stats.VideoCount > spec.MaxRefVideos || stats.AudioCount > spec.MaxRefAudios ||
+			(spec.MaxRefTotal > 0 && referenceCount > spec.MaxRefTotal) {
+			return videoBadRequest("invalid_video_content", videoReferenceLimitMessage(spec))
 		}
-		if stats.ImageCount > 9 || stats.VideoCount > 3 || stats.AudioCount > 3 {
-			return videoBadRequest("invalid_video_content", "Reference video requests support up to 9 images, 3 videos, and 3 audio files")
-		}
-		if stats.ImageCount+stats.VideoCount == 0 {
-			return videoBadRequest("invalid_video_content", "Reference video requests require at least one image or video reference")
+		if spec.AudioNeedsVisual {
+			// Audio on its own has nothing to animate, so these models need at
+			// least one image or video alongside it.
+			if stats.ImageCount+stats.VideoCount == 0 {
+				return videoBadRequest("invalid_video_content", "Reference video requests require at least one image or video reference")
+			}
+		} else if referenceCount == 0 {
+			return videoBadRequest("invalid_video_content", "Reference video requests require at least one image, video, or audio reference")
 		}
 	}
 	return nil
 }
 
-func referenceVideoSeconds(model string, content []VideoContent) (int, error) {
-	maxDuration := float64(videoMaxDurationSeconds)
-	maxTotal := videoMaxReferenceVideoTotal
-	if model == VideoModelSeedance25 {
-		maxDuration = videoSeedance25MaxDuration
-		maxTotal = videoSeedance25MaxDuration
+func videoReferenceLimitMessage(spec videoModelSpec) string {
+	message := fmt.Sprintf("Reference video requests support up to %d images, %d videos, and %d audio files",
+		spec.MaxRefImages, spec.MaxRefVideos, spec.MaxRefAudios)
+	if spec.MaxRefTotal > 0 {
+		message += fmt.Sprintf(", and %d total media references", spec.MaxRefTotal)
 	}
+	return message
+}
+
+func referenceVideoSeconds(model string, content []VideoContent) (int, error) {
+	spec, _ := videoSpecForModel(model)
+	maxDuration := float64(spec.MaxRefVideoSeconds)
+	maxTotal := spec.MaxRefVideoTotalSeconds
 	total := 0
 	for _, item := range content {
 		if item.Type != "video_url" || (item.Role != "" && item.Role != "reference_video") {
@@ -2192,6 +2237,83 @@ func firstNonEmptyVideoString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// videoTaskIDFromPayload accepts the documented top-level id and the common
+// data/task/result envelopes used by OpenAI-compatible async providers.
+func videoTaskIDFromPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if id := firstNonEmptyVideoString(stringFromMap(payload, "task_id"), stringFromMap(payload, "id")); id != "" {
+		return id
+	}
+	for _, key := range []string{"data", "task", "result"} {
+		if nested, ok := mapFromAny(payload[key]); ok {
+			if id := videoTaskIDFromPayload(nested); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func videoTaskIDFromLocation(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 3 || parts[len(parts)-2] != "videos" {
+		return ""
+	}
+	return strings.TrimSpace(parts[len(parts)-1])
+}
+
+// videoAbsoluteResultURL resolves a relative result URL against the polled
+// endpoint. mikuapi documents the finished video as a direct link, but its
+// Grok-style payloads express it as a path, so both forms must publish.
+func videoAbsoluteResultURL(endpoint, resultURL string) string {
+	resultURL = strings.TrimSpace(resultURL)
+	if resultURL == "" {
+		return ""
+	}
+	target, err := url.Parse(resultURL)
+	if err != nil {
+		return ""
+	}
+	if target.IsAbs() {
+		return resultURL
+	}
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return resultURL
+	}
+	return base.ResolveReference(target).String()
+}
+
+// videoResultURLNeedsAccountAuth reports whether the result URL points back at
+// the account's own upstream host. mikuapi's /content endpoint requires the
+// account credential, whereas the direct link it normally returns must be
+// fetched without one — presigned URLs reject a second auth mechanism.
+func videoResultURLNeedsAccountAuth(account *Account, resultURL string) bool {
+	endpoint, err := videoAccountEndpoint(account)
+	if err != nil {
+		return false
+	}
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	target, err := url.Parse(strings.TrimSpace(resultURL))
+	if err != nil {
+		return false
+	}
+	return target.Host != "" && strings.EqualFold(base.Host, target.Host)
 }
 
 func videoResultURLFromPayload(payload map[string]any) string {

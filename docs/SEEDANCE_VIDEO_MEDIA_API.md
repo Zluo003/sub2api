@@ -1,6 +1,14 @@
-# Seedance 视频与媒体输入接口
+# 视频生成与媒体输入接口
 
-本文档描述 Sub2API 当前的视频媒体输入协议，适用于需要向 Seedance 上游提交图片、视频和音频参考素材的下游客户端。
+本文档描述 Sub2API 当前的视频媒体输入协议，适用于需要提交图片、视频和音频参考素材的下游客户端。
+
+当前支持的视频模型系列：
+
+- **Seedance 系列**：`seedance-2.0`、`seedance-2.0-fast`、`seedance-2.5`
+- **MiniMax 系列**：`minimax-h3`、`minimax-h3-max`
+- **Alibaba 系列**：`wan-3`
+
+所有模型使用统一的请求协议，上游差异由 Sub2API 适配器处理。
 
 当前接口支持两种提交模式：
 
@@ -10,7 +18,7 @@
 | multipart + `attachment://N` | 下游只有本地图片、视频或音频 | 按 multipart 文件顺序上传，替换对应 URL，再提交上游 |
 | 上游生成结果 URL | Seedance 任务已经生成完成 | Sub2API 强制下载并转存，只向下游返回 Sub2API `/media/*` URL |
 
-下游请求协议不随上游账号变化。选择 YCYAPI 视频账号时，Sub2API 会在上游适配层读取规范化请求中的图片、视频和音频 URL，并转换为 YCYAPI 要求的真实 `multipart/form-data` 文件字段；下游仍按本文的 JSON URL 或 `attachment://N` 协议提交。选择 newtoken 视频账号时，Sub2API 在上游适配层沿用 JSON URL 协议，把素材 URL 拆分到 newtoken 的 `first_frame`、`last_frame`、`extra_images`、`extra_videos`、`extra_audios` 字段，同样不改变下游请求格式。
+下游请求协议不随上游账号或模型变化。所有视频模型（Seedance、MiniMax、Alibaba）使用相同的请求体结构（`model`、`prompt`、`content`、`ratio`、`duration`、`resolution`）。选择 YCYAPI 视频账号时，Sub2API 会在上游适配层读取规范化请求中的图片、视频和音频 URL，并转换为 YCYAPI 要求的真实 `multipart/form-data` 文件字段；下游仍按本文的 JSON URL 或 `attachment://N` 协议提交。选择 newtoken 视频账号时，Sub2API 在上游适配层沿用 JSON URL 协议，把素材 URL 拆分到 newtoken 的 `first_frame`、`last_frame`、`extra_images`、`extra_videos`、`extra_audios` 字段，同样不改变下游请求格式。MiniMax 和 Alibaba 模型由 mikuapi 适配器提供，请求格式与 Seedance 完全一致。
 
 这里必须区分输入和输出：
 
@@ -145,6 +153,26 @@ X-Forwarded-Proto: https
 如果图片、视频和音频已经能被上游服务器通过 HTTPS 访问，直接使用 JSON 请求。
 
 ### 4.1 纯文本生成
+
+所有模型均支持纯文本生成。以下示例使用 `minimax-h3`，其他模型只需更改 `model` 和 `resolution` 字段：
+
+```bash
+curl -sS \
+  -X POST 'https://sub2api.example.com/v1/videos' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: minimax-h3-text-001' \
+  -d '{
+    "model": "minimax-h3",
+    "prompt": "一条小船在雾中的湖面上缓慢前进，电影感镜头",
+    "ability_code": "video_text_to_video",
+    "aspect_ratio": "16:9",
+    "duration": 10,
+    "resolution": "768p"
+  }'
+```
+
+**Seedance 2.0 示例：**
 
 ```bash
 curl -sS \
@@ -663,7 +691,7 @@ POST /api/v1/webhooks/jingyu/videos/*
 
 该路由不使用下游 API Key 鉴权，只接受每任务 HMAC 验签通过的 Jingyu 视频终态消息。回调处理返回任意 `2xx` 时 Jingyu 视为投递成功；验签或请求体无效返回 `4xx`，临时存储、下载或数据库处理失败返回 `5xx`，以触发 Jingyu 文档中的重试策略。
 
-## 7. Seedance 能力和输入规则
+## 7. 视频模型能力和输入规则
 
 ### 7.1 能力代码
 
@@ -676,7 +704,25 @@ video_reference_to_video  参考图片/视频/音频生成视频
 
 没有显式传 `ability_code` 时，Sub2API 会根据 `content` 中的媒体类型进行推断；生产客户端建议显式传递，避免请求意图不清晰。
 
-### 7.2 图生视频
+### 7.2 模型规格对比
+
+| 模型 | 时长范围 | 支持分辨率 | 最多图片 | 最多视频 | 最多音频 | 总引用上限 | 仅音频 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `seedance-2.0` | 4–15 秒 | 480p, 720p, 1080p, 4K | 9 | 3 | 3 | — | ✗ |
+| `seedance-2.0-fast` | 5 或 10 秒 | 480p, 720p | 9 | 3 | 3 | — | ✗ |
+| `seedance-2.5` | 4–30 秒 | 480p, 720p, 1080p | 30 | 10 | 10 | 50 | ✗ |
+| `minimax-h3` | 5–15 秒 | 768p, 2K | 9 | 3 | 3 | — | ✗ |
+| `minimax-h3-max` | 5–15 秒 | 480p, 768p | 12 | 12 | 12 | — | ✓ |
+| `wan-3` | 2–30 秒 | 480p, 720p, 1080p | 10 | 5 | 5 | — | ✗ |
+
+**说明：**
+
+- **时长范围**：请求 `duration` 必须在此范围内的整数秒。`seedance-2.0-fast` 只支持 5 或 10 秒。`seedance-2.5` 支持 `duration: -1` 自动选择 5 秒。
+- **支持分辨率**：每个模型有独立的允许分辨率集合。省略 `resolution` 时使用模型默认值（`minimax-h3` / `minimax-h3-max` 默认 768p，其余默认 720p）。
+- **总引用上限**：`seedance-2.5` 限制图片+视频+音频总数不超过 50；其他模型只按单项限制。
+- **仅音频**：`minimax-h3-max` 允许只提供音频参考（无图片和视频）；其他模型的参考请求必须包含至少一张图片或一个视频。
+
+### 7.3 图生视频
 
 必须恰好包含一张：
 
@@ -690,7 +736,7 @@ video_reference_to_video  参考图片/视频/音频生成视频
 
 不能同时加入视频或音频引用。
 
-### 7.3 首尾帧
+### 7.4 首尾帧
 
 必须包含：
 
@@ -699,9 +745,9 @@ video_reference_to_video  参考图片/视频/音频生成视频
 
 不能同时加入视频或音频引用。
 
-### 7.4 参考视频
+### 7.5 参考视频
 
-Seedance 2.0 参考模式支持图片、视频和音频，但至少需要一张图片或一个视频。视频引用需要：
+参考模式支持图片、视频和音频的组合。视频引用需要：
 
 ```json
 {
@@ -712,23 +758,13 @@ Seedance 2.0 参考模式支持图片、视频和音频，但至少需要一张�
 }
 ```
 
-当前代码校验的常用限制：
+除 `minimax-h3-max` 外，其他模型的参考请求必须至少包含一张图片或一个视频（音频单独使用会被拒绝）。`minimax-h3-max` 允许仅使用音频参考。
 
-| 模型 | 单次时长 | 图片数量 | 视频数量 | 音频数量 | 总引用数量 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `seedance-2.0` | 4–15 秒 | 最多 9 | 最多 3 | 最多 3 | 按图片/视频规则校验 |
-| `seedance-2.0-fast` | 4–15 秒 | 按上游能力 | 按上游能力 | 按上游能力 | 按上游能力 |
-| `seedance-2.5` | 4–30 秒 | 最多 30 | 最多 10 | 最多 10 | 最多 50 |
+### 7.6 上游路由说明
 
-最终可用分辨率仍取决于模型和已配置的上游路由：
+### 7.6 上游路由说明
 
-```text
-seedance-2.0       480p / 720p / 1080p / 4K
-seedance-2.0-fast  480p / 720p
-seedance-2.5       480p / 720p
-```
-
-newtoken 上游把输出分辨率编码进了模型 ID 本身，因此该上游只按下面的组合路由，下游请求格式不变：
+**newtoken** 上游把输出分辨率编码进了模型 ID 本身，因此该上游只按下面的组合路由，下游请求格式不变：
 
 | 下游 `model` | `resolution` | newtoken 上游模型 |
 | --- | --- | --- |
@@ -738,6 +774,19 @@ newtoken 上游把输出分辨率编码进了模型 ID 本身，因此该上游�
 | `seedance-2.5` | `720p` | `sd2.5-720p-official` |
 
 表外的组合（例如任何 `480p` 请求、`seedance-2.0` 的 `4K`）在 newtoken 上没有对应模型，调度时会跳过 newtoken 账号并回落到其他已配置的上游；只有在没有任何上游支持该组合时才会返回错误。
+
+**mikuapi** 上游支持所有 Seedance 系列模型和新接入的 MiniMax、Alibaba 模型。下游模型名直接对应上游模型名，无需转换：
+
+| 下游 `model` | mikuapi 上游模型 | 支持分辨率 |
+| --- | --- | --- |
+| `seedance-2.0` | `seedance-2.0` | 480p, 720p, 1080p, 4K |
+| `seedance-2.0-fast` | `seedance-2.0-fast` | 480p, 720p |
+| `seedance-2.5` | `seedance-2.5` | 480p, 720p, 1080p |
+| `minimax-h3` | `minimax-h3` | 768p, 2K |
+| `minimax-h3-max` | `minimax-h3-max` | 480p, 768p |
+| `wan-3` | `wan-3` | 480p, 720p, 1080p |
+
+**aigod** 上游仅支持 Seedance 系列模型，不支持 MiniMax 和 Alibaba 模型。
 
 ## 8. 支持的上传格式和大小
 

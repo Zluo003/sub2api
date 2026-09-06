@@ -19,6 +19,14 @@ func (a aigodVideoProviderAdapter) DefaultAPIPath() string {
 func (a aigodVideoProviderAdapter) Compatible(model, resolution string) bool {
 	model = strings.TrimSpace(model)
 	resolution = strings.TrimSpace(resolution)
+	// aigod only carries the Seedance family. Without this guard the shared
+	// resolution table would make the default adapter claim every video model
+	// and pull requests onto accounts that cannot serve them.
+	switch model {
+	case VideoModelSeedance20, VideoModelSeedance20Fast, VideoModelSeedance25:
+	default:
+		return false
+	}
 	if resolution == VideoResolution4K {
 		return false
 	}

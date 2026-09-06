@@ -379,6 +379,9 @@ func normalizeAgentPriceResolution(mediaType, resolution string) (string, error)
 	if resolution == "" || len(resolution) > 32 {
 		return "", errors.New("video resolution must be between 1 and 32 characters")
 	}
+	if strings.EqualFold(resolution, "2k") {
+		return VideoResolution2K, nil
+	}
 	if strings.EqualFold(resolution, "4k") {
 		return VideoResolution4K, nil
 	}

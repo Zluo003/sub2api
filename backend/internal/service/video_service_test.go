@@ -342,6 +342,106 @@ func TestNormalizeVideoCreateRequestRejectsFast1080P(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid_video_resolution")
 }
 
+func TestNormalizeVideoCreateRequestAcceptsMikuapiOnlyModels(t *testing.T) {
+	for _, tc := range []struct {
+		model      string
+		resolution string
+		duration   float64
+	}{
+		{VideoModelMinimaxH3, VideoResolution2K, 15},
+		{VideoModelMinimaxH3Max, VideoResolution480P, 5},
+		{VideoModelWan3, VideoResolution1080P, 2},
+	} {
+		normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+			Model: tc.model, Prompt: "a cinematic shot", Duration: tc.duration, Resolution: tc.resolution,
+		})
+		require.NoError(t, err, tc.model)
+		require.Equal(t, tc.model, normalized.Model)
+		require.Equal(t, tc.resolution, normalized.Resolution)
+		require.Equal(t, int(tc.duration), normalized.GeneratedSeconds)
+	}
+}
+
+// Omitting resolution has to keep working for every model, which means the
+// default cannot stay pinned to 720p once models without a 720p tier exist.
+func TestNormalizeVideoCreateRequestUsesPerModelDefaultResolution(t *testing.T) {
+	for model, want := range map[string]string{
+		VideoModelSeedance20:   VideoResolution720P,
+		VideoModelSeedance25:   VideoResolution720P,
+		VideoModelWan3:         VideoResolution720P,
+		VideoModelMinimaxH3:    VideoResolution768P,
+		VideoModelMinimaxH3Max: VideoResolution768P,
+	} {
+		normalized, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+			Model: model, Prompt: "a cinematic shot", Duration: 5,
+		})
+		require.NoError(t, err, model)
+		require.Equal(t, want, normalized.Resolution, model)
+	}
+}
+
+func TestNormalizeVideoCreateRequestEnforcesPerModelDurationBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		model      string
+		resolution string
+		duration   float64
+	}{
+		{"minimax_h3_below_floor", VideoModelMinimaxH3, VideoResolution768P, 4},
+		{"minimax_h3_above_cap", VideoModelMinimaxH3, VideoResolution768P, 16},
+		{"minimax_h3_max_below_floor", VideoModelMinimaxH3Max, VideoResolution480P, 4},
+		{"wan3_below_floor", VideoModelWan3, VideoResolution720P, 1},
+		{"wan3_above_cap", VideoModelWan3, VideoResolution720P, 31},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+				Model: tc.model, Prompt: "a cinematic shot", Duration: tc.duration, Resolution: tc.resolution,
+			})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "invalid_video_duration")
+		})
+	}
+}
+
+func TestNormalizeVideoCreateRequestRejectsUnsupportedResolutionForNewModels(t *testing.T) {
+	for _, tc := range []struct{ model, resolution string }{
+		{VideoModelMinimaxH3, VideoResolution720P},
+		{VideoModelMinimaxH3Max, VideoResolution1080P},
+		{VideoModelWan3, VideoResolution2K},
+		{VideoModelSeedance20, VideoResolution768P},
+	} {
+		_, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+			Model: tc.model, Prompt: "a cinematic shot", Duration: 5, Resolution: tc.resolution,
+		})
+		require.Error(t, err, "%s/%s", tc.model, tc.resolution)
+		require.Contains(t, err.Error(), "invalid_video_resolution")
+	}
+}
+
+func TestNormalizeAgentVideoCreateRequestKeepsUnknownModelsPermissive(t *testing.T) {
+	// Agent groups source their catalog from each account's model_mapping, so a
+	// model the gateway does not know must not be rejected on resolution.
+	normalized, err := normalizeAgentVideoCreateRequest(&VideoCreateRequest{
+		Model: "some-partner-video-model", Prompt: "a cinematic shot", Duration: 5, Resolution: "540p",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "540p", normalized.Resolution)
+
+	// Known models still have to stay inside the upstream allow-list.
+	_, err = normalizeAgentVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelMinimaxH3, Prompt: "a cinematic shot", Duration: 5, Resolution: VideoResolution720P,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_resolution")
+
+	// 2K survives the agent pricing-key normalisation.
+	normalized, err = normalizeAgentVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelMinimaxH3, Prompt: "a cinematic shot", Duration: 5, Resolution: "2k",
+	})
+	require.NoError(t, err)
+	require.Equal(t, VideoResolution2K, normalized.Resolution)
+}
+
 func TestNormalizeVideoCreateRequestSupportsSeedance25ProviderContracts(t *testing.T) {
 	req := &VideoCreateRequest{
 		Model:       VideoModelSeedance25,

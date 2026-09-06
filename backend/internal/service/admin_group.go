@@ -250,7 +250,7 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
 	case PlatformSeedance:
-		return []string{VideoModelSeedance20, VideoModelSeedance20Fast, VideoModelSeedance25}
+		return SupportedVideoModels()
 	case PlatformOpenAI:
 		return openai.DefaultModelIDs()
 	case PlatformGemini:
@@ -1363,9 +1363,7 @@ func normalizeVideoPricingRules(rules []VideoGroupPricingRule) ([]VideoGroupPric
 	seen := make(map[string]struct{}, len(rules))
 	for _, rule := range rules {
 		model := strings.TrimSpace(rule.ModelCode)
-		switch model {
-		case VideoModelSeedance20, VideoModelSeedance20Fast, VideoModelSeedance25:
-		default:
+		if !IsSupportedVideoModel(model) {
 			return nil, infraerrors.BadRequest("invalid_video_model", "Invalid video model")
 		}
 		resolution := strings.TrimSpace(rule.Resolution)

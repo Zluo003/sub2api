@@ -9,17 +9,7 @@ func (m mikuapiVideoProviderAdapter) DefaultBaseURL() string { return videoDefau
 func (m mikuapiVideoProviderAdapter) DefaultAPIPath() string { return videoDefaultAPIPath }
 
 func (m mikuapiVideoProviderAdapter) Compatible(model, resolution string) bool {
-	resolution = strings.ToLower(strings.TrimSpace(resolution))
-	switch strings.TrimSpace(model) {
-	case VideoModelSeedance20:
-		return resolution == "480p" || resolution == "720p" || resolution == "1080p" || resolution == "4k"
-	case VideoModelSeedance20Fast:
-		return resolution == "480p" || resolution == "720p"
-	case VideoModelSeedance25:
-		return resolution == "480p" || resolution == "720p" || resolution == "1080p"
-	default:
-		return false
-	}
+	return IsSupportedVideoResolution(strings.TrimSpace(model), mikuapiResolution(resolution))
 }
 
 func (m mikuapiVideoProviderAdapter) CompatibleRequest(r *normalizedVideoRequest) bool {
@@ -29,21 +19,21 @@ func (m mikuapiVideoProviderAdapter) CompatibleRequest(r *normalizedVideoRequest
 	if r.RatioProvided && !isMikuapiRatio(r.Ratio) {
 		return false
 	}
-	if r.Model == VideoModelSeedance20Fast && r.GeneratedSeconds != 5 && r.GeneratedSeconds != 10 {
+	spec, known := videoSpecForModel(r.Model)
+	if !known {
 		return false
 	}
-	if r.Model == VideoModelSeedance20 && (r.GeneratedSeconds < 4 || r.GeneratedSeconds > 15) {
-		return false
-	}
-	if r.Model == VideoModelSeedance25 && (r.GeneratedSeconds < 4 || r.GeneratedSeconds > 30) {
+	// seedance-2.0-fast only renders two fixed lengths, which no other model
+	// shares, so it stays a special case rather than a spec field.
+	if r.Model == VideoModelSeedance20Fast {
+		if r.GeneratedSeconds != 5 && r.GeneratedSeconds != 10 {
+			return false
+		}
+	} else if r.GeneratedSeconds < spec.MinSeconds || r.GeneratedSeconds > spec.MaxSeconds {
 		return false
 	}
 	stats := inspectVideoContent(r.Content)
-	maxImages, maxVideos, maxAudios := 9, 3, 3
-	if r.Model == VideoModelSeedance25 {
-		maxImages, maxVideos, maxAudios = 30, 10, 10
-	}
-	if stats.ImageCount > maxImages || stats.VideoCount > maxVideos || stats.AudioCount > maxAudios {
+	if stats.ImageCount > spec.MaxRefImages || stats.VideoCount > spec.MaxRefVideos || stats.AudioCount > spec.MaxRefAudios {
 		return false
 	}
 	if stats.LastFrameCount > 0 && stats.FirstFrameCount == 0 {
@@ -55,7 +45,7 @@ func (m mikuapiVideoProviderAdapter) CompatibleRequest(r *normalizedVideoRequest
 			return false
 		}
 	}
-	if r.Model != VideoModelSeedance25 && stats.AudioCount > 0 && stats.ImageCount+stats.VideoCount == 0 {
+	if spec.AudioNeedsVisual && stats.AudioCount > 0 && stats.ImageCount+stats.VideoCount == 0 {
 		return false
 	}
 	return true
@@ -75,6 +65,9 @@ func (m mikuapiVideoProviderAdapter) UpstreamModel(account *Account, r *normaliz
 		return "seedance-2-fast"
 	case VideoModelSeedance25:
 		return "seedance-2.5-pro"
+	case VideoModelMinimaxH3, VideoModelMinimaxH3Max, VideoModelWan3:
+		// MikuAPI publishes these under the same names we expose downstream.
+		return r.Model
 	}
 	return ""
 }
@@ -83,7 +76,7 @@ func (m mikuapiVideoProviderAdapter) BuildCreateBody(r *normalizedVideoRequest, 
 	if r == nil {
 		return nil
 	}
-	body := map[string]any{"model": upstreamModel, "prompt": r.Prompt, "seconds": r.GeneratedSeconds, "resolution": strings.ToLower(r.Resolution)}
+	body := map[string]any{"model": upstreamModel, "prompt": r.Prompt, "seconds": r.GeneratedSeconds, "resolution": mikuapiResolution(r.Resolution)}
 	if r.RatioProvided {
 		body["aspect_ratio"] = r.Ratio
 	}
@@ -137,6 +130,22 @@ func (m mikuapiVideoProviderAdapter) BuildCreateBody(r *normalizedVideoRequest, 
 		body["reference_audios"] = audios
 	}
 	return body
+}
+
+// mikuapiResolution matches the upstream allow-list casing exactly. MikuAPI
+// snaps unrecognised resolutions to the nearest tier instead of rejecting them,
+// so a lowercased "4k" would silently downgrade the video while still billing
+// the 4K rate.
+func mikuapiResolution(resolution string) string {
+	resolution = strings.TrimSpace(resolution)
+	switch strings.ToLower(resolution) {
+	case "2k":
+		return "2K"
+	case "4k":
+		return "4K"
+	default:
+		return strings.ToLower(resolution)
+	}
 }
 
 func isMikuapiRatio(ratio string) bool {
