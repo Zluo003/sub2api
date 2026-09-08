@@ -588,13 +588,24 @@ func (s *VideoService) pollUpstreamTask(ctx context.Context, account *Account, u
 		return nil, &videoUpstreamError{StatusCode: 0, Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	mikuapi := videoAccountProvider(account) == videoProviderMikuapi
+	if mikuapi && (mikuapiPollResponseRetryable(resp.StatusCode, respBody) ||
+		(readErr != nil && resp.StatusCode >= 200 && resp.StatusCode < 300)) {
+		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: readErr, PollRetryable: true}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody}
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(respBody, &payload); err != nil {
 		return nil, &videoUpstreamError{StatusCode: resp.StatusCode, Body: respBody, Err: err}
+	}
+	if mikuapi {
+		// Upstream sometimes wraps a normal task response in data.
+		if nested, ok := payload["data"].(map[string]any); ok && stringFromMap(payload, "status") == "" {
+			payload = nested
+		}
 	}
 	rawStatus := stringFromMap(payload, "status")
 	status := normalizeVideoUpstreamStatus(rawStatus)
@@ -972,6 +983,8 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 	defer cancel()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	consecutiveQueryFailures := 0
+	mikuapi := videoAccountProvider(input.Account) == videoProviderMikuapi
 	for {
 		select {
 		case <-ctx.Done():
@@ -988,6 +1001,12 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 				clientErr := mapVideoUpstreamError(err, true)
 				s.recordVideoAccountFailure(context.Background(), input.Account, clientErr, err)
 				if clientErr.Retryable {
+					if mikuapi {
+						consecutiveQueryFailures++
+						delay := mikuapiPollRetryDelay(interval, consecutiveQueryFailures)
+						ticker.Reset(delay)
+						slog.Warn("mikuapi video query temporarily unavailable; keeping task active", "task_id", input.PublicID, "upstream_task_id", upstreamTaskID, "consecutive_failures", consecutiveQueryFailures, "retry_delay", delay, "upstream_error", err)
+					}
 					continue
 				}
 				task, _ := s.taskRepo.UpdateByPublicID(context.Background(), input.PublicID, VideoTaskUpdate{
@@ -996,6 +1015,10 @@ func (s *VideoService) pollLifecycle(input VideoTaskLifecycleInput, upstreamTask
 				})
 				_ = s.refundFailedTask(context.Background(), task, input.APIKey, input.Subscription, input.Account, input.RequestPayloadHash, input.UserAgent, input.IPAddress, input.InboundEndpoint, input.UpstreamEndpoint)
 				return
+			}
+			if mikuapi {
+				consecutiveQueryFailures = 0
+				ticker.Reset(interval)
 			}
 			switch result.Status {
 			case VideoTaskStatusQueued, VideoTaskStatusProcessing:
@@ -1879,9 +1902,10 @@ type videoPollResult struct {
 }
 
 type videoUpstreamError struct {
-	StatusCode int
-	Body       []byte
-	Err        error
+	PollRetryable bool // Set only by provider-specific query handling.
+	StatusCode    int
+	Body          []byte
+	Err           error
 }
 
 func (e *videoUpstreamError) Error() string {
@@ -1909,7 +1933,7 @@ func mapVideoUpstreamError(err error, polling bool) mappedVideoClientError {
 		case http.StatusTooManyRequests:
 			return mappedVideoClientError{VideoClientError: videoClientError("video_service_busy", "Video service is busy. Please retry later."), StatusCode: upstreamErr.StatusCode, Retryable: polling}
 		}
-		if upstreamErr.StatusCode >= 500 || upstreamErr.StatusCode == 0 {
+		if upstreamErr.StatusCode >= 500 || upstreamErr.StatusCode == 0 || (polling && upstreamErr.PollRetryable) {
 			return mappedVideoClientError{VideoClientError: videoClientError("video_service_unavailable", "Video service is temporarily unavailable. Please retry later."), StatusCode: upstreamErr.StatusCode, Retryable: polling}
 		}
 		return mappedVideoClientError{VideoClientError: videoClientError("video_service_unavailable", "Video service is temporarily unavailable. Please retry later."), StatusCode: upstreamErr.StatusCode}

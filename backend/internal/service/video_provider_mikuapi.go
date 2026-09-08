@@ -1,6 +1,11 @@
 package service
 
-import "strings"
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+)
 
 type mikuapiVideoProviderAdapter struct{}
 
@@ -155,4 +160,53 @@ func isMikuapiRatio(ratio string) bool {
 	default:
 		return false
 	}
+}
+
+// Only query responses use this classification; a failed POST must never be
+// automatically resubmitted because the upstream may already have billed it.
+func mikuapiPollResponseRetryable(status int, body []byte) bool {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return false
+	}
+	if status == 0 || status == http.StatusNotFound || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 {
+		return true
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return status >= 200 && status < 300
+	}
+	return mikuapiTemporaryQueryMessage(payload, 0)
+}
+
+func mikuapiTemporaryQueryMessage(value any, depth int) bool {
+	if depth > 6 {
+		return false
+	}
+	switch value := value.(type) {
+	case string:
+		message := strings.ToLower(strings.Join(strings.Fields(value), " "))
+		return strings.Contains(message, "temporarily unavailable") || strings.Contains(message, "暂时不可用")
+	case map[string]any:
+		if code, ok := value["code"].(string); ok && strings.EqualFold(strings.TrimSpace(code), "query_failed") {
+			return true
+		}
+		for _, key := range []string{"message", "detail", "error", "data"} {
+			if mikuapiTemporaryQueryMessage(value[key], depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mikuapiPollRetryDelay(interval time.Duration, failures int) time.Duration {
+	const maximum = 30 * time.Second
+	delay := interval
+	for i := 1; i < failures && delay < maximum; i++ {
+		delay *= 2
+	}
+	if delay > maximum {
+		return maximum
+	}
+	return delay
 }
