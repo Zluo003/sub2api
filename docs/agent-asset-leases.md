@@ -29,3 +29,9 @@
 - `go test ./internal/handler -run '^$' -bench BenchmarkTemporaryAssetReceive -benchmem`：8 MiB 上传接收路径比较；不包含媒体解码校验成本。
 - Yingzo `scripts/reference_transfer_acceptance.py`：真实两仓代码、临时 PostgreSQL、localhost HTTP，三张合计 9,451,974 字节的 PNG。冷缓存 30.167 ms / 9,452,502 字节 multipart 正文；热缓存 3.615 ms / 0 字节；重启客户端 11.990 ms / 0 字节。HEAD 正文 0 字节，Range 正文 10 字节。
 - 8 MiB 接收旧路径约 10.45 ms、33,610,760 B/op，新路径约 12.91 ms、47,326 B/op；独立进程最大 RSS 108,986,368 → 71,221,248 字节。流式路径显著减少分配，并未改善本机冷接收速度。localhost 结果不能推算公网带宽和真实生成耗时。
+
+## 发布门禁补丁
+
+GitHub Security Scan 发现既有依赖问题后，构建工具链由 Go 1.26.5 升到同系列补丁 1.26.8，golang.org/x/image 升到 0.45.0 并更新其必要依赖；nanoid 锁定已修复版本。SheetJS 从 npm 的 0.18.5 改为官方 CDN 0.20.3，并删除已过期的两项 xlsx 豁免。报表导出的 11 项回归通过，生产依赖 audit 门禁通过，govulncheck 未发现可达漏洞。
+
+依据：[Go 发布记录](https://go.dev/doc/devel/release#go1.26.8)、[图片解码修复](https://pkg.go.dev/vuln/GO-2026-6222)、[SheetJS 官方安装说明](https://docs.sheetjs.com/docs/getting-started/installation/nodejs/)、[nanoid 修复公告](https://github.com/advisories/GHSA-2v37-7h3g-55p8)。
