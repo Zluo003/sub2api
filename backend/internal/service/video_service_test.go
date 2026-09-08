@@ -588,7 +588,7 @@ func TestYCYAPIAdapterMaterializesCanonicalMediaAsMultipart(t *testing.T) {
 	require.Equal(t, "multipart/form-data", mediaType)
 	form, err := multipart.NewReader(strings.NewReader(string(raw)), params["boundary"]).ReadForm(1 << 20)
 	require.NoError(t, err)
-	defer form.RemoveAll()
+	defer func() { _ = form.RemoveAll() }()
 	require.Equal(t, []string{videoYCYAPISeedance25Model}, form.Value["model"])
 	require.Equal(t, []string{"10"}, form.Value["duration"])
 	require.Len(t, form.File["first_frame"], 1)

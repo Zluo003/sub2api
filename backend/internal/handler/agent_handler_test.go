@@ -43,8 +43,11 @@ func (sha256HexArgument) Match(value driver.Value) bool {
 }
 
 type memoryObjectStore struct {
-	objects map[string][]byte
-	deleted []string
+	objects         map[string][]byte
+	deleted         []string
+	heads           int
+	ranges          [][2]int64
+	downloadedBytes int64
 }
 
 func newMemoryObjectStore() *memoryObjectStore {
@@ -62,6 +65,23 @@ func (s *memoryObjectStore) Upload(_ context.Context, key string, body io.Reader
 
 func (s *memoryObjectStore) Download(_ context.Context, key string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(s.objects[key])), nil
+}
+
+func (s *memoryObjectStore) UploadSized(ctx context.Context, key string, body io.ReadSeeker, ct string, size int64) (int64, error) {
+	return s.Upload(ctx, key, body, ct)
+}
+func (s *memoryObjectStore) Stat(_ context.Context, key string) (int64, error) {
+	s.heads++
+	data, ok := s.objects[key]
+	if !ok {
+		return 0, os.ErrNotExist
+	}
+	return int64(len(data)), nil
+}
+func (s *memoryObjectStore) DownloadRange(_ context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	s.ranges = append(s.ranges, [2]int64{start, end})
+	s.downloadedBytes += end - start + 1
+	return io.NopCloser(bytes.NewReader(s.objects[key][start : end+1])), nil
 }
 
 func (s *memoryObjectStore) Delete(_ context.Context, key string) error {
@@ -220,7 +240,7 @@ func expectTemporaryAssetInsert(mock sqlmock.Sqlmock, backend string, size int64
 		WithArgs(int64(2), int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "bytes"}).AddRow(int64(0), int64(0)))
 	mock.ExpectExec("INSERT INTO temporary_assets").
-		WithArgs(sqlmock.AnyArg(), int64(1), int64(2), sqlmock.AnyArg(), sha256HexArgument{}, backend, sqlmock.AnyArg(), "pixel.png", "image", "image/png", size, sha256HexArgument{}, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), int64(1), int64(2), sqlmock.AnyArg(), sha256HexArgument{}, backend, sqlmock.AnyArg(), "pixel.png", "image", "image/png", size, sha256HexArgument{}, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }
 
@@ -262,7 +282,7 @@ func TestTemporaryAssetUploadServeRangeHeadAndExpiry(t *testing.T) {
 		if expired {
 			expires = time.Now().Add(-time.Hour)
 		}
-		mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
+		mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,").
 			WithArgs(assetID).
 			WillReturnRows(sqlmock.NewRows([]string{"storage_backend", "storage_key", "original_filename", "mime_type", "size_bytes", "expires_at"}).
 				AddRow("local", files[0], "pixel.png", "image/png", len(png), expires))
@@ -336,7 +356,7 @@ func TestTemporaryAssetUploadDoesNotUseFilenameAsStoragePath(t *testing.T) {
 		WithArgs(int64(2), int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"count", "bytes"}).AddRow(int64(0), int64(0)))
 	mock.ExpectExec("INSERT INTO temporary_assets").
-		WithArgs(sqlmock.AnyArg(), int64(1), int64(2), sqlmock.AnyArg(), sha256HexArgument{}, "local", sqlmock.AnyArg(), "escape.png", "image", "image/png", int64(len(png)), sha256HexArgument{}, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), int64(1), int64(2), sqlmock.AnyArg(), sha256HexArgument{}, "local", sqlmock.AnyArg(), "escape.png", "image", "image/png", int64(len(png)), sha256HexArgument{}, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	req, _ := multipartRequest(t, "../../../../escape.png", "image/png", png)
 	w := httptest.NewRecorder()
@@ -354,7 +374,7 @@ func TestTemporaryAssetUnknownTokenReturnsOpaqueNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h, mock := newAgentHandlerMock(t)
 	const guessedToken = "guessed-public-token"
-	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
+	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,").
 		WithArgs(hashToken(guessedToken)).
 		WillReturnError(sql.ErrNoRows)
 	r := gin.New()
@@ -407,7 +427,7 @@ func TestTemporaryAssetS3UploadAndRange(t *testing.T) {
 	assetID, err := uuid.Parse(parts[len(parts)-2])
 	require.NoError(t, err)
 	require.Equal(t, "asset.png", parts[len(parts)-1])
-	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
+	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,").
 		WithArgs(assetID).
 		WillReturnRows(sqlmock.NewRows([]string{"storage_backend", "storage_key", "original_filename", "mime_type", "size_bytes", "expires_at"}).
 			AddRow("s3", storageKey, "pixel.png", "image/png", len(png), time.Now().Add(time.Hour)))

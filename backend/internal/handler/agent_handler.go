@@ -647,6 +647,7 @@ type temporaryAssetUploadResult struct {
 	Metadata    trustedMediaMetadata `json:"metadata"`
 	CreatedAt   time.Time            `json:"created_at"`
 	ExpiresAt   time.Time            `json:"expires_at"`
+	LeaseUntil  time.Time            `json:"lease_until"`
 }
 
 type temporaryAssetUploadError struct {
@@ -678,17 +679,20 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 		return
 	}
 
-	file, header, err := c.Request.FormFile("file")
+	started := time.Now()
+	file, header, digest, err := h.receiveTemporaryAsset(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-			"code":    "file_required",
-			"message": "Multipart field 'file' is required",
-		}})
+		status, code := http.StatusBadRequest, "file_required"
+		if uploadErr, ok := err.(*temporaryAssetUploadError); ok {
+			status, code = uploadErr.status, uploadErr.code
+		}
+		c.JSON(status, gin.H{"error": gin.H{"code": code, "message": err.Error()}})
 		return
 	}
-	defer func() { _ = file.Close() }()
-
-	result, err := h.uploadTemporaryAssetPart(c, apiKey, file, header)
+	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
+	received := time.Since(started)
+	result, err := h.storeTemporaryAssetPart(c, apiKey, file, header, digest)
+	c.Header("Server-Timing", fmt.Sprintf("receive;dur=%.3f, validate;dur=%.3f, store;dur=%.3f, total;dur=%.3f", float64(received.Microseconds())/1000, c.GetFloat64("assetValidateMs"), c.GetFloat64("assetStoreMs"), float64(time.Since(started).Microseconds())/1000))
 	if err != nil {
 		if uploadErr, ok := err.(*temporaryAssetUploadError); ok {
 			message := uploadErr.message
@@ -715,6 +719,11 @@ func (h *AgentHandler) UploadTemporaryAsset(c *gin.Context) {
 // uploadTemporaryAssetPart stores one multipart file for the standalone Agent
 // upload endpoint and the one-shot multipart video request path.
 func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.APIKey, file multipart.File, header *multipart.FileHeader) (*temporaryAssetUploadResult, error) {
+	return h.storeTemporaryAssetPart(c, key, file, header, "")
+}
+
+func (h *AgentHandler) storeTemporaryAssetPart(c *gin.Context, key *service.APIKey, file multipart.File, header *multipart.FileHeader, digest string) (*temporaryAssetUploadResult, error) {
+	validateStarted := time.Now()
 	if h == nil || key == nil || file == nil || header == nil {
 		return nil, &temporaryAssetUploadError{status: http.StatusBadRequest, code: "invalid_upload"}
 	}
@@ -763,17 +772,31 @@ func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.API
 		return nil, &temporaryAssetUploadError{status: http.StatusInternalServerError, code: "storage_error"}
 	}
 	target := filepath.Join(dir, "object")
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, &temporaryAssetUploadError{status: http.StatusInternalServerError, code: "storage_error"}
-	}
-	hash := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(out, hash), io.LimitReader(file, policy.limit+1))
-	closeErr := out.Close()
-	if copyErr != nil || closeErr != nil || n > policy.limit {
-		_ = os.RemoveAll(dir)
-		return nil, &temporaryAssetUploadError{status: http.StatusBadRequest, code: "upload_failed"}
+	n := header.Size
+	if digest != "" {
+		spool, ok := file.(*os.File)
+		if !ok {
+			_ = os.RemoveAll(dir)
+			return nil, errors.New("invalid spool")
+		}
+		if err = os.Rename(spool.Name(), target); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
+	} else {
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
+		hash := sha256.New()
+		n, err = io.Copy(io.MultiWriter(out, hash), io.LimitReader(file, policy.limit+1))
+		closeErr := out.Close()
+		if err != nil || closeErr != nil || n > policy.limit || n != header.Size {
+			_ = os.RemoveAll(dir)
+			return nil, &temporaryAssetUploadError{status: http.StatusBadRequest, code: "upload_failed"}
+		}
+		digest = hex.EncodeToString(hash.Sum(nil))
 	}
 	metadata, probeErr := probeTrustedMedia(c.Request.Context(), target, policy, contentType)
 	if probeErr != nil {
@@ -785,6 +808,9 @@ func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.API
 		_ = os.RemoveAll(dir)
 		return nil, &temporaryAssetUploadError{status: http.StatusInternalServerError, code: "media_probe_failed", message: "Failed to serialize trusted media metadata"}
 	}
+	c.Set("assetValidateMs", float64(time.Since(validateStarted).Microseconds())/1000)
+	storeStarted := time.Now()
+	defer func() { c.Set("assetStoreMs", float64(time.Since(storeStarted).Microseconds())/1000) }()
 	expires := time.Now().Add(time.Duration(runtime.Config.RetentionHours) * time.Hour)
 	backend, storageKey := "local", target
 	if runtime.Config.Backend == "s3" {
@@ -798,7 +824,7 @@ func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.API
 			return nil, &temporaryAssetUploadError{status: http.StatusInternalServerError, code: "storage_error"}
 		}
 		storageKey = runtime.Config.S3.Prefix + id.String()
-		_, err = runtime.Store.Upload(c, storageKey, f, contentType)
+		_, err = uploadMediaFile(c, runtime.Store, storageKey, f, contentType, n)
 		_ = f.Close()
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -807,7 +833,8 @@ func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.API
 		backend = "s3"
 		_ = os.RemoveAll(dir)
 	}
-	_, err = h.db.ExecContext(c, `INSERT INTO temporary_assets(id,user_id,api_key_id,group_id,public_token_hash,storage_backend,storage_key,original_filename,media_type,mime_type,size_bytes,sha256,metadata,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, id, key.UserID, key.ID, key.GroupID, hashToken(token), backend, storageKey, filepath.Base(header.Filename), policy.kind, contentType, n, hex.EncodeToString(hash.Sum(nil)), metadataJSON, expires)
+	leaseUntil := time.Now().UTC().Add(10 * time.Minute)
+	_, err = h.db.ExecContext(c, `INSERT INTO temporary_assets(id,user_id,api_key_id,group_id,public_token_hash,storage_backend,storage_key,original_filename,media_type,mime_type,size_bytes,sha256,metadata,expires_at,lease_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, id, key.UserID, key.ID, key.GroupID, hashToken(token), backend, storageKey, filepath.Base(header.Filename), policy.kind, contentType, n, digest, metadataJSON, expires, leaseUntil)
 	if err != nil {
 		if backend == "s3" {
 			_ = runtime.Store.Delete(context.Background(), storageKey)
@@ -821,10 +848,11 @@ func (h *AgentHandler) uploadTemporaryAssetPart(c *gin.Context, key *service.API
 		URL:         temporaryAssetPublicURL(publicBaseURL, id, contentType),
 		ContentType: contentType,
 		Size:        n,
-		SHA256:      hex.EncodeToString(hash.Sum(nil)),
+		SHA256:      digest,
 		Metadata:    metadata,
 		CreatedAt:   time.Now().UTC(),
 		ExpiresAt:   expires.UTC(),
+		LeaseUntil:  leaseUntil,
 	}, nil
 }
 
@@ -832,7 +860,7 @@ func (h *AgentHandler) ServeTemporaryAsset(c *gin.Context) {
 	var backend, file, name, ct string
 	var size int64
 	var expires time.Time
-	err := h.db.QueryRowContext(c, `SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at FROM temporary_assets WHERE public_token_hash=$1 AND deleted_at IS NULL`, hashToken(c.Param("token"))).Scan(&backend, &file, &name, &ct, &size, &expires)
+	err := h.db.QueryRowContext(c, `SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,GREATEST(expires_at,lease_until) AS expires_at FROM temporary_assets WHERE public_token_hash=$1 AND deleted_at IS NULL`, hashToken(c.Param("token"))).Scan(&backend, &file, &name, &ct, &size, &expires)
 	if err != nil || time.Now().After(expires) {
 		c.Status(404)
 		return
@@ -852,7 +880,7 @@ func (h *AgentHandler) ServeCleanTemporaryAsset(c *gin.Context) {
 	var backend, file, name, ct string
 	var size int64
 	var expires time.Time
-	err = h.db.QueryRowContext(c, `SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at FROM temporary_assets WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&backend, &file, &name, &ct, &size, &expires)
+	err = h.db.QueryRowContext(c, `SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,GREATEST(expires_at,lease_until) AS expires_at FROM temporary_assets WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&backend, &file, &name, &ct, &size, &expires)
 	if err != nil || time.Now().After(expires) || c.Param("filename") != "asset"+canonicalMediaExtension(ct) {
 		c.Status(http.StatusNotFound)
 		return
@@ -864,30 +892,10 @@ func (h *AgentHandler) ServeCleanTemporaryAsset(c *gin.Context) {
 }
 
 func (h *AgentHandler) serveTemporaryAssetContent(c *gin.Context, backend, file, name, contentType string, size int64) bool {
-	var f ioReadSeekCloser
-	var err error
 	if backend == "s3" {
-		store, storeErr := h.fileStorageObjectStore(c.Request.Context())
-		if storeErr != nil || store == nil {
-			c.Status(http.StatusNotFound)
-			return false
-		}
-		var body io.ReadCloser
-		body, err = store.Download(c, file)
-		if err == nil {
-			var data []byte
-			data, err = io.ReadAll(io.LimitReader(body, size+1))
-			_ = body.Close()
-			if err == nil && int64(len(data)) != size {
-				err = errors.New("temporary asset size mismatch")
-			}
-			if err == nil {
-				f = &memoryReadSeekCloser{Reader: bytes.NewReader(data)}
-			}
-		}
-	} else {
-		f, err = os.Open(file)
+		return h.serveS3Media(c, file, name, contentType, size)
 	}
+	f, err := os.Open(file)
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return false
@@ -924,23 +932,13 @@ func canonicalMediaExtension(contentType string) string {
 	}
 }
 
-type ioReadSeekCloser interface {
-	io.Reader
-	io.Seeker
-	io.Closer
-}
-
-type memoryReadSeekCloser struct{ *bytes.Reader }
-
-func (m *memoryReadSeekCloser) Close() error { return nil }
-
 func (h *AgentHandler) CleanupExpired(ctx context.Context) (int64, error) {
 	tx, err := h.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT id,storage_backend,storage_key FROM temporary_assets WHERE expires_at<=NOW() AND deleted_at IS NULL ORDER BY expires_at LIMIT 200 FOR UPDATE SKIP LOCKED`)
+	rows, err := tx.QueryContext(ctx, `SELECT id,storage_backend,storage_key FROM temporary_assets WHERE GREATEST(expires_at,lease_until)<=NOW() AND deleted_at IS NULL ORDER BY GREATEST(expires_at,lease_until) LIMIT 200 FOR UPDATE SKIP LOCKED`)
 	if err != nil {
 		return 0, err
 	}

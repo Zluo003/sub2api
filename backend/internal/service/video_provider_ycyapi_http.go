@@ -215,10 +215,9 @@ func ycyapiMediaFieldAndURL(item VideoContent) (string, string) {
 			return "", ""
 		}
 		field := "images"
-		if item.Role == "first_frame" {
-			field = "first_frame"
-		} else if item.Role == "last_frame" {
-			field = "last_frame"
+		switch item.Role {
+		case "first_frame", "last_frame":
+			field = item.Role
 		}
 		return field, strings.TrimSpace(item.ImageURL.URL)
 	case "video_url":

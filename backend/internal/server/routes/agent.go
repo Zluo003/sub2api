@@ -16,6 +16,7 @@ func RegisterAgentRoutes(r *gin.Engine, v1 *gin.RouterGroup, h *handler.Handlers
 	g.POST("/generation/estimates", h.Agent.EstimateGeneration)
 	g.GET("/generation/estimates/:id", h.Agent.GetGenerationEstimate)
 	g.POST("/assets", h.Agent.UploadTemporaryAsset)
+	g.POST("/assets/resolve", h.Agent.ResolveTemporaryAssets)
 
 	r.GET("/temporary-assets/:token", h.Agent.ServeTemporaryAsset)
 	r.HEAD("/temporary-assets/:token", h.Agent.ServeTemporaryAsset)

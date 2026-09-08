@@ -94,7 +94,7 @@ func TestTemporaryAssetMinIOUploadRangeAndCleanup(t *testing.T) {
 	require.Equal(t, "https://api-key.cc/media/"+assetID.String()+"/asset.png", publicURL)
 	require.NotContains(t, publicURL, "?")
 
-	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,expires_at").
+	mock.ExpectQuery("SELECT storage_backend,storage_key,original_filename,mime_type,size_bytes,").
 		WithArgs(assetID).
 		WillReturnRows(sqlmock.NewRows([]string{"storage_backend", "storage_key", "original_filename", "mime_type", "size_bytes", "expires_at"}).
 			AddRow("s3", storageKey, "pixel.png", "image/png", len(png), time.Now().Add(time.Hour)))

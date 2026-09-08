@@ -38,6 +38,20 @@ func NewS3BackupStoreFactory() service.BackupObjectStoreFactory {
 }
 
 func (s *S3BackupStore) Upload(ctx context.Context, key string, body io.Reader, contentType string) (int64, error) {
+	if seekable, ok := body.(io.ReadSeeker); ok {
+		position, err := seekable.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return 0, err
+		}
+		end, err := seekable.Seek(0, io.SeekEnd)
+		if err != nil {
+			return 0, err
+		}
+		if _, err = seekable.Seek(position, io.SeekStart); err != nil {
+			return 0, err
+		}
+		return s.UploadSized(ctx, key, seekable, contentType, end-position)
+	}
 	// 读取全部内容以获取大小（S3 PutObject 需要知道内容长度）
 	// 注意：阿里云 OSS 不兼容 s3manager 分片上传的签名方式，因此使用 PutObject
 	data, err := io.ReadAll(body)
@@ -108,4 +122,38 @@ func (s *S3BackupStore) HeadBucket(ctx context.Context) error {
 		return fmt.Errorf("S3 HeadBucket failed: %w", err)
 	}
 	return nil
+}
+
+func (s *S3BackupStore) UploadSized(ctx context.Context, key string, body io.ReadSeeker, contentType string, size int64) (int64, error) {
+	finish := servertiming.ObserveDependency(ctx, "s3")
+	defer finish()
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: &s.bucket, Key: &key, Body: body, ContentType: &contentType, ContentLength: &size})
+	if err != nil {
+		return 0, fmt.Errorf("S3 PutObject: %w", err)
+	}
+	return size, nil
+}
+
+func (s *S3BackupStore) Stat(ctx context.Context, key string) (int64, error) {
+	finish := servertiming.ObserveDependency(ctx, "s3")
+	defer finish()
+	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &key})
+	if err != nil {
+		return 0, err
+	}
+	if result.ContentLength == nil {
+		return 0, fmt.Errorf("missing object size")
+	}
+	return *result.ContentLength, nil
+}
+
+func (s *S3BackupStore) DownloadRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	finish := servertiming.ObserveDependency(ctx, "s3")
+	defer finish()
+	byteRange := fmt.Sprintf("bytes=%d-%d", start, end)
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key, Range: &byteRange})
+	if err != nil {
+		return nil, err
+	}
+	return result.Body, nil
 }
