@@ -76,6 +76,16 @@ func TestMikuapiResolutionKeepsUppercaseKTiers(t *testing.T) {
 	require.Equal(t, "4K", body["resolution"])
 }
 
+func TestMinimaxH3MaxRejectsNativeAudioGeneration(t *testing.T) {
+	audio := true
+	_, err := normalizeVideoCreateRequest(&VideoCreateRequest{
+		Model: VideoModelMinimaxH3Max, Prompt: "move", Duration: 6,
+		Resolution: VideoResolution768P, AspectRatio: "16:9", GenerateAudio: &audio,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid_video_audio")
+}
+
 func TestMikuapiTaskIDParsingAcceptsNestedPayloadAndLocation(t *testing.T) {
 	require.Equal(t, "nested-task", videoTaskIDFromPayload(map[string]any{
 		"status": "queued", "data": map[string]any{"id": "nested-task"},

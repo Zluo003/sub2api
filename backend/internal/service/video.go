@@ -59,6 +59,9 @@ type videoModelSpec struct {
 	MaxRefVideoTotalSeconds int
 	// AudioNeedsVisual rejects reference sets whose only media is audio.
 	AudioNeedsVisual bool
+	// NativeAudio controls generated sound effects. Reference audio remains
+	// independent and may be supported when this is false.
+	NativeAudio bool
 }
 
 // videoModelSpecs is the single source of truth for per-model video limits.
@@ -77,6 +80,7 @@ var videoModelSpecs = map[string]videoModelSpec{
 		MaxRefVideoSeconds:      videoMaxDurationSeconds,
 		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
 		AudioNeedsVisual:        true,
+		NativeAudio:             true,
 	},
 	VideoModelSeedance20Fast: {
 		Resolutions:             []string{VideoResolution480P, VideoResolution720P},
@@ -89,6 +93,7 @@ var videoModelSpecs = map[string]videoModelSpec{
 		MaxRefVideoSeconds:      videoMaxDurationSeconds,
 		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
 		AudioNeedsVisual:        true,
+		NativeAudio:             true,
 	},
 	VideoModelSeedance25: {
 		Resolutions:             []string{VideoResolution480P, VideoResolution720P, VideoResolution1080P},
@@ -102,6 +107,7 @@ var videoModelSpecs = map[string]videoModelSpec{
 		MaxRefTotal:             videoSeedance25MaxReferences,
 		MaxRefVideoSeconds:      videoSeedance25MaxDuration,
 		MaxRefVideoTotalSeconds: videoSeedance25MaxDuration,
+		NativeAudio:             true,
 	},
 	VideoModelMinimaxH3: {
 		Resolutions:             []string{VideoResolution768P, VideoResolution2K},
@@ -114,6 +120,7 @@ var videoModelSpecs = map[string]videoModelSpec{
 		MaxRefVideoSeconds:      videoMaxDurationSeconds,
 		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
 		AudioNeedsVisual:        true,
+		NativeAudio:             false,
 	},
 	VideoModelMinimaxH3Max: {
 		Resolutions:             []string{VideoResolution480P, VideoResolution768P},
@@ -125,6 +132,7 @@ var videoModelSpecs = map[string]videoModelSpec{
 		MaxRefAudios:            12,
 		MaxRefVideoSeconds:      videoMaxDurationSeconds,
 		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
+		NativeAudio:             false,
 	},
 	VideoModelWan3: {
 		Resolutions:             []string{VideoResolution480P, VideoResolution720P, VideoResolution1080P},
@@ -137,6 +145,7 @@ var videoModelSpecs = map[string]videoModelSpec{
 		MaxRefVideoSeconds:      videoMaxDurationSeconds,
 		MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
 		AudioNeedsVisual:        true,
+		NativeAudio:             false,
 	},
 }
 
@@ -153,6 +162,7 @@ var videoDefaultModelSpec = videoModelSpec{
 	MaxRefVideoSeconds:      videoMaxDurationSeconds,
 	MaxRefVideoTotalSeconds: videoMaxReferenceVideoTotal,
 	AudioNeedsVisual:        true,
+	NativeAudio:             true,
 }
 
 // videoSpecForModel returns the model's row, or the legacy defaults for models

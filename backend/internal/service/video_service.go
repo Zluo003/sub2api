@@ -1432,6 +1432,12 @@ func normalizeVideoCreateRequestWithDynamicModel(req *VideoCreateRequest, dynami
 	if generatedSeconds <= 0 {
 		return nil, videoBadRequest("invalid_video_duration", "Invalid video duration")
 	}
+	if req.GenerateAudio != nil && *req.GenerateAudio && knownModel && !spec.NativeAudio {
+		return nil, videoBadRequest(
+			"invalid_video_audio",
+			"The selected video model does not support native audio generation",
+		)
+	}
 	prompt := strings.TrimSpace(req.Prompt)
 	content := normalizeVideoContent(req.Content)
 	stats := inspectVideoContent(content)
