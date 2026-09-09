@@ -85,7 +85,9 @@ func (m mikuapiVideoProviderAdapter) BuildCreateBody(r *normalizedVideoRequest, 
 	if r.RatioProvided {
 		body["aspect_ratio"] = r.Ratio
 	}
-	if r.GenerateAudio != nil {
+	// H3 models always generate native audio by provider default and reject
+	// mikuapi's sound_effects control field. Legacy client values are ignored.
+	if r.GenerateAudio != nil && r.Model != VideoModelMinimaxH3 && r.Model != VideoModelMinimaxH3Max {
 		body["sound_effects"] = *r.GenerateAudio
 	}
 	images, videos, audios := make([]string, 0), make([]string, 0), make([]string, 0)
