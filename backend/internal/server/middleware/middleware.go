@@ -44,6 +44,12 @@ func ForcePlatform(platform string) gin.HandlerFunc {
 	}
 }
 
+func SetForcePlatform(c *gin.Context, platform string) {
+	ctx := context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, platform)
+	c.Request = c.Request.WithContext(ctx)
+	c.Set(string(ContextKeyForcePlatform), platform)
+}
+
 // HasForcePlatform 检查是否有强制平台（用于 Handler 跳过分组检查）
 func HasForcePlatform(c *gin.Context) bool {
 	_, exists := c.Get(string(ContextKeyForcePlatform))

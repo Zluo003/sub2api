@@ -1166,6 +1166,8 @@ func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Sort order updated successfully"})
 }
 
+func (h *GroupHandler) GetModelsListCandidates(c *gin.Context) { h.GetGroupModelAllowlistCandidates(c) }
+
 func (h *GroupHandler) GetAgentModels(c *gin.Context) {
 	groupID, ok := parseAdminGroupID(c)
 	if !ok || !h.requireAgentModels(c) {
