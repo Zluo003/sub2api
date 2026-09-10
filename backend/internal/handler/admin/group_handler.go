@@ -1234,7 +1234,11 @@ func (h *GroupHandler) UpdateAgentModel(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	cfg, err := h.agentModels.UpdateModel(c.Request.Context(), groupID, modelID, service.AgentModelConfigInput{MediaType: req.MediaType, Enabled: req.Enabled, Prices: req.Prices})
+	enabled := false
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	cfg, err := h.agentModels.UpdateModel(c.Request.Context(), groupID, modelID, service.AgentModelConfigInput{MediaType: req.MediaType, Enabled: enabled, Prices: req.Prices})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -1251,7 +1255,7 @@ func (h *GroupHandler) DeleteAgentModel(c *gin.Context) {
 		response.BadRequest(c, "Invalid model ID")
 		return
 	}
-	if err := h.agentModels.DeleteModel(c.Request.Context(), groupID, modelID); err != nil {
+	if _, err := h.agentModels.ExcludeModel(c.Request.Context(), groupID, modelID); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
