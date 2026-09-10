@@ -15,20 +15,21 @@ import (
 // ──────────────────────────────────────────────────────────
 
 const (
-	EndpointMessages          = "/v1/messages"
-	EndpointChatCompletions   = "/v1/chat/completions"
-	EndpointEmbeddings        = "/v1/embeddings"
-	EndpointAlphaSearch       = "/v1/alpha/search"
-	EndpointResponses         = "/v1/responses"
-	EndpointResponsesCompact  = "/v1/responses/compact"
-	EndpointImagesGenerations = "/v1/images/generations"
-	EndpointImagesEdits       = "/v1/images/edits"
-	EndpointImageTasks        = "/v1/images/tasks"
-	EndpointVideosGenerations = "/v1/videos/generations"
-	EndpointVideosEdits       = "/v1/videos/edits"
-	EndpointVideosExtensions  = "/v1/videos/extensions"
-	EndpointVideos            = "/v1/videos"
-	EndpointGeminiModels      = "/v1beta/models"
+	EndpointMessages             = "/v1/messages"
+	EndpointChatCompletions      = "/v1/chat/completions"
+	EndpointEmbeddings           = "/v1/embeddings"
+	EndpointAlphaSearch          = "/v1/alpha/search"
+	EndpointResponses            = "/v1/responses"
+	EndpointResponsesInputTokens = "/v1/responses/input_tokens"
+	EndpointResponsesCompact     = "/v1/responses/compact"
+	EndpointImagesGenerations    = "/v1/images/generations"
+	EndpointImagesEdits          = "/v1/images/edits"
+	EndpointImageTasks           = "/v1/images/tasks"
+	EndpointVideosGenerations    = "/v1/videos/generations"
+	EndpointVideosEdits          = "/v1/videos/edits"
+	EndpointVideosExtensions     = "/v1/videos/extensions"
+	EndpointVideos               = "/v1/videos"
+	EndpointGeminiModels         = "/v1beta/models"
 )
 
 const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
@@ -106,6 +107,8 @@ func NormalizeInboundEndpoint(path string) string {
 		return EndpointVideos
 	case strings.Contains(path, EndpointResponsesCompact) || isResponsesCompactAliasPath(path):
 		return EndpointResponsesCompact
+	case strings.Contains(path, EndpointResponsesInputTokens) || strings.HasSuffix(strings.TrimRight(path, "/"), "/responses/input_tokens"):
+		return EndpointResponsesInputTokens
 	case strings.Contains(path, EndpointResponses) || isResponsesRootAliasPath(path):
 		return EndpointResponses
 	case strings.Contains(path, EndpointGeminiModels):
@@ -187,6 +190,9 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	switch platform {
 	case service.PlatformOpenAI, service.PlatformGrok:
+		if inbound == EndpointResponsesInputTokens {
+			return EndpointResponsesInputTokens
+		}
 		if inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
 			return inbound
 		}
@@ -305,6 +311,9 @@ func GetInboundEndpoint(c *gin.Context) string {
 // and the account platform. Handlers call this after scheduling an
 // account, passing account.Platform.
 func GetUpstreamEndpoint(c *gin.Context, platform string) string {
+	if endpoint := service.GetActualOpenAIUpstreamEndpoint(c); endpoint != "" {
+		return endpoint
+	}
 	if c != nil {
 		if value, ok := c.Get(ctxKeyActualUpstreamEndpoint); ok {
 			if endpoint, ok := value.(string); ok && endpoint != "" {

@@ -588,6 +588,20 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	}
 
 	if result != nil && result.ImageCount > 0 {
+		if apiKey != nil && apiKey.Group != nil && apiKey.Group.IsAgent() {
+			if s.resolver == nil {
+				return nil, ErrAgentImagePricingUnavailable
+			}
+			platform := apiKey.Group.Platform
+			if platform == "" {
+				platform = PlatformOpenAI
+			}
+			unitPrice, _, err := s.resolver.ResolveAgentMediaUnitPrice(ctx, apiKey.Group.ID, platform, AgentMediaTypeImage, result.ImageSize, billingModels...)
+			if err != nil {
+				return nil, err
+			}
+			return s.billingService.CalculateConfiguredAgentImageCost(unitPrice, result.ImageCount)
+		}
 		// 渠道定价为 token 计费时走 token 路径，否则走图片计费
 		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
 			return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, imageMultiplier), nil

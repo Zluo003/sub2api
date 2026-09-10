@@ -917,6 +917,15 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 		return OpenAIUsage{}, 0, nil, err
 	}
 	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
+	usage, _ := extractOpenAIUsageFromJSONBytes(body)
+	imageCount := extractOpenAIImageCountFromJSONBytes(body)
+	imageSizes := collectOpenAIResponseImageOutputSizesFromJSONBytes(body)
+	if _, publishURLs := openAIImageURLPublicationFromContext(c.Request.Context()); publishURLs {
+		body, err = transformOpenAIImagesURLResponse(c.Request.Context(), body)
+		if err != nil {
+			return usage, imageCount, imageSizes, fmt.Errorf("%w: %v", ErrOpenAIImagePublication, err)
+		}
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -926,8 +935,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	}
 	c.Data(resp.StatusCode, contentType, body)
 
-	usage, _ := extractOpenAIUsageFromJSONBytes(body)
-	return usage, extractOpenAIImageCountFromJSONBytes(body), collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
+	return usage, imageCount, imageSizes, nil
 }
 
 func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
@@ -935,6 +943,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	c *gin.Context,
 	startTime time.Time,
 ) (OpenAIUsage, int, []string, *int, error) {
+	if _, publishURLs := openAIImageURLPublicationFromContext(c.Request.Context()); publishURLs {
+		return s.handlePublishedOpenAIImagesStream(resp, c, startTime)
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
@@ -1133,6 +1144,57 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			lastDownstreamWriteAt = time.Now()
 		}
 	}
+}
+
+// handlePublishedOpenAIImagesStream buffers the short image-generation SSE
+// response so Agent clients never observe transient partial_image events or
+// base64 payloads. Normal non-Agent streams retain the upstream pass-through
+// path above.
+func (s *OpenAIGatewayService) handlePublishedOpenAIImagesStream(resp *http.Response, c *gin.Context, startTime time.Time) (OpenAIUsage, int, []string, *int, error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return OpenAIUsage{}, 0, nil, nil, err
+	}
+	var out strings.Builder
+	var usage OpenAIUsage
+	imageCount := 0
+	var imageSizes []string
+	for _, event := range strings.Split(string(body), "\n\n") {
+		if strings.TrimSpace(event) == "" || strings.Contains(event, "partial_image") {
+			continue
+		}
+		lines := strings.Split(event, "\n")
+		for i, line := range lines {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if payload == "[DONE]" {
+				continue
+			}
+			if gjson.Valid(payload) {
+				usagePart, _ := extractOpenAIUsageFromJSONBytes([]byte(payload))
+				mergeOpenAIUsage(&usage, []byte(payload))
+				_ = usagePart
+				imageCount += extractOpenAIImageCountFromJSONBytes([]byte(payload))
+				if imageCount == 0 && (gjson.Get(payload, "b64_json").Exists() || gjson.Get(payload, "url").Exists()) {
+					imageCount = 1
+				}
+				imageSizes = append(imageSizes, collectOpenAIResponseImageOutputSizesFromJSONBytes([]byte(payload))...)
+				transformed, transformErr := transformOpenAIImagesURLResponse(c.Request.Context(), []byte(payload))
+				if transformErr != nil {
+					return usage, imageCount, imageSizes, nil, fmt.Errorf("%w: %v", ErrOpenAIImagePublication, transformErr)
+				}
+				lines[i] = "data: " + string(transformed)
+			}
+		}
+		out.WriteString(strings.Join(lines, "\n"))
+		out.WriteString("\n\n")
+	}
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	c.Data(resp.StatusCode, "text/event-stream", []byte(out.String()))
+	firstTokenMs := int(time.Since(startTime).Milliseconds())
+	return usage, imageCount, imageSizes, &firstTokenMs, nil
 }
 
 func (s *OpenAIGatewayService) openAIImageStreamDataInterval() time.Duration {

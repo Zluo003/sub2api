@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,18 @@ type fileStorageObjectStore struct {
 
 func (s *fileStorageObjectStore) Upload(context.Context, string, io.Reader, string) (int64, error) {
 	return 0, nil
+}
+func (s *fileStorageObjectStore) UploadFile(_ context.Context, _ string, filePath string, _ string) (int64, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 func (s *fileStorageObjectStore) Download(context.Context, string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil

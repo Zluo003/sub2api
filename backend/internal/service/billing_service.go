@@ -272,6 +272,41 @@ func (s *BillingService) CalculateConfiguredAgentImageCost(unitPrice float64, im
 	return &CostBreakdown{TotalCost: cost, ActualCost: cost, BillingMode: string(BillingModeImage), ImageOutputCost: cost}, nil
 }
 
+// EstimateImageGenerationCost keeps the legacy quote API available for
+// standard groups while failing closed for Agent groups, whose final price is
+// resolved from the synchronized Agent model catalogue.
+func (s *BillingService) EstimateImageGenerationCost(
+	ctx context.Context,
+	apiKey *APIKey,
+	rateRepo UserGroupRateRepository,
+	model, imageSize string,
+	imageCount int,
+) (*CostBreakdown, string, error) {
+	if apiKey == nil || apiKey.Group == nil || apiKey.GroupID == nil || apiKey.UserID <= 0 {
+		return nil, "", fmt.Errorf("agent API key group context is required")
+	}
+	if imageCount <= 0 {
+		return nil, "", fmt.Errorf("image count must be positive")
+	}
+	tier := NormalizeImageBillingTierOrDefault(imageSize)
+	if apiKey.Group.IsAgent() {
+		return nil, tier, fmt.Errorf("%w: use the synchronized Agent model catalogue", ErrAgentImagePricingUnavailable)
+	}
+	multiplier := apiKey.Group.RateMultiplier
+	if rateRepo != nil {
+		userMultiplier, err := rateRepo.GetByUserAndGroup(ctx, apiKey.UserID, *apiKey.GroupID)
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve user group rate: %w", err)
+		}
+		if userMultiplier != nil {
+			multiplier = *userMultiplier
+		}
+	}
+	multiplier = resolveImageRateMultiplier(apiKey, multiplier)
+	groupConfig := &ImagePriceConfig{Price1K: apiKey.Group.ImagePrice1K, Price2K: apiKey.Group.ImagePrice2K, Price4K: apiKey.Group.ImagePrice4K}
+	return s.CalculateImageCost(model, tier, imageCount, groupConfig, multiplier), tier, nil
+}
+
 // ---- DeepSeek 官方低谷价（$/token，2026-08-23 起生效）----
 // Source: https://api-docs.deepseek.com/quick_start/pricing
 // 高峰价 = 2× 低谷价；高峰时段 01:00–04:00 与 06:00–10:00 UTC（仅工作日），

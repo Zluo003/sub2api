@@ -244,7 +244,7 @@ func TestAgentModelCatalogExpandsLanguageAndImageWildcardsAgainstProviderDefault
 	require.NoError(t, err)
 	catalog, err := catalogService.ListAvailable(context.Background(), 9)
 	require.NoError(t, err)
-	require.Equal(t, []string{"gpt-image-1", "gpt-image-1.5", "gpt-image-2"}, agentCatalogIDsForTest(catalog))
+	require.Equal(t, []string{"gpt-image-1", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"}, agentCatalogIDsForTest(catalog))
 }
 
 func TestAgentModelCatalogPreservesExclusionAcrossSync(t *testing.T) {

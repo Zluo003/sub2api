@@ -43,6 +43,7 @@ type OpenAIGatewayHandler struct {
 	securityAuditCoordinator   *securityaudit.Coordinator
 	grokMediaEligibilityProber grokMediaEligibilityProber
 	opsService                 *service.OpsService
+	imageResultPublisher       service.OpenAIImageResultPublisher
 	concurrencyHelper          *ConcurrencyHelper
 	imageLimiter               *imageConcurrencyLimiter
 	maxAccountSwitches         int
@@ -348,8 +349,18 @@ func NewOpenAIGatewayHandler(
 	errorPassthroughService *service.ErrorPassthroughService,
 	contentModerationService *service.ContentModerationService,
 	opsService *service.OpsService,
-	cfg *config.Config,
+	options ...any,
 ) *OpenAIGatewayHandler {
+	var cfg *config.Config
+	var imageResultPublisher service.OpenAIImageResultPublisher
+	for _, option := range options {
+		switch value := option.(type) {
+		case *config.Config:
+			cfg = value
+		case service.OpenAIImageResultPublisher:
+			imageResultPublisher = value
+		}
+	}
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 3
 	if cfg != nil {
@@ -366,6 +377,7 @@ func NewOpenAIGatewayHandler(
 		errorPassthroughService:  errorPassthroughService,
 		contentModerationService: contentModerationService,
 		opsService:               opsService,
+		imageResultPublisher:     imageResultPublisher,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
 		maxAccountSwitches:       maxAccountSwitches,

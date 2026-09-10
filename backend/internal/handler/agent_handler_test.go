@@ -63,6 +63,15 @@ func (s *memoryObjectStore) Upload(_ context.Context, key string, body io.Reader
 	return int64(len(data)), nil
 }
 
+func (s *memoryObjectStore) UploadFile(ctx context.Context, key, filePath, contentType string) (int64, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return s.Upload(ctx, key, f, contentType)
+}
+
 func (s *memoryObjectStore) Download(_ context.Context, key string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(s.objects[key])), nil
 }

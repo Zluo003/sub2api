@@ -210,7 +210,7 @@ func (g *Group) GetSearchPricePer1k() *float64 {
 }
 
 func groupSupportsOpenAIFast(platform string) bool {
-	return platform == PlatformOpenAI || platform == PlatformGrok
+	return platform == PlatformOpenAI || platform == PlatformGrok || platform == PlatformComposite
 }
 
 // IsGroupContextValid reports whether a group from context has the fields required for routing decisions.

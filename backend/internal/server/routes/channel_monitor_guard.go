@@ -6,6 +6,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// channelMonitorAdminFeatureGuard gates the channel monitor admin APIs on the
+// runtime feature flag. Keep this separate from the v2 mode guard because the
+// admin read APIs are available in either monitor mode.
+func channelMonitorAdminFeatureGuard(settingService *service.SettingService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if settingService != nil && settingService.GetChannelMonitorRuntime(c.Request.Context()).Enabled {
+			c.Next()
+			return
+		}
+		response.ErrorFrom(c, service.ErrChannelMonitorDisabled)
+		c.Abort()
+	}
+}
+
 func channelMonitorModeV2Guard(settingService *service.SettingService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if settingService == nil {

@@ -25,15 +25,14 @@ Yingzo providers are discoverable at startup.
 Validation performed:
 
 - `go build ./...` in `backend`: passes.
-- Targeted production packages (`internal/service`, `internal/handler`,
-  `internal/server/routes`): pass with `go build`.
+- `go test ./...` in `backend`: passes, including the upstream protocol suites,
+  Agent/video/asset tests, repository tests, route tests, and generated server
+  wiring tests.
 - `pnpm run build` in `frontend`: passes, including i18n checks, Vue typecheck,
   and Vite output.
-- `go test` is not green yet because the tree contains mixed-era test doubles:
-  older Yingzo tests expect pre-upstream method signatures and a few route test
-  helpers that are absent from the upstream route files. These are test-only
-  compile failures; production compilation is clean and the failing symbols
-  are listed in the integration task log.
+- The test compatibility layer updates old Yingzo test doubles to the upstream
+  repository contracts, restores Agent image publication coverage, and keeps
+  the generated Wire cleanup test aligned with the current provider graph.
 
 No upstream standard Gemini/Claude/OpenAI request transformer was replaced by
 the older二开 implementation in this branch.

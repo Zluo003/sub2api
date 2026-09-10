@@ -84,6 +84,31 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
+	if shouldPublishOpenAIImageURLs(apiKey) {
+		if h.imageResultPublisher == nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Temporary image URL storage is unavailable")
+			return
+		}
+		publicOrigin, originErr := requestPublicOrigin(c)
+		if originErr != nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Temporary image public URL is unavailable")
+			return
+		}
+		groupID := apiKey.Group.ID
+		if apiKey.GroupID != nil {
+			groupID = *apiKey.GroupID
+		}
+		if groupID <= 0 {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Agent group context is invalid")
+			return
+		}
+		c.Request = c.Request.WithContext(service.WithOpenAIImageURLPublication(
+			c.Request.Context(), h.imageResultPublisher,
+			service.TemporaryAssetOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID, GroupID: groupID},
+			publicOrigin,
+		))
+		parsed.ResponseFormat = "url"
+	}
 
 	reqLog = reqLog.With(
 		zap.String("model", clientRequestModel),
@@ -101,6 +126,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	}
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, parsed.ModerationBody()); decision != nil && !decision.AllowNextStage {
 		h.openAISecurityAuditError(c, decision)
+		return
+	}
+	if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformOpenAI, requestModel, parsed.SizeTier, parsed.N); err != nil {
+		reqLog.Warn("openai.images.agent_pricing_unavailable", zap.Error(err))
+		writeOpenAIAgentPricingError(c, err)
 		return
 	}
 	imageReleaseFunc, acquired := h.acquireImageGenerationSlot(c, streamStarted)
@@ -437,4 +467,8 @@ func (h *OpenAIGatewayHandler) openAIImagesJSONKeepaliveInterval() time.Duration
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+func shouldPublishOpenAIImageURLs(apiKey *service.APIKey) bool {
+	return apiKey != nil && apiKey.Group != nil && apiKey.Group.IsAgent() && !apiKey.Group.IsExclusive
 }

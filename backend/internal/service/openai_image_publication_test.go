@@ -132,7 +132,7 @@ func TestOpenAIImagesURLPublicationFailureReturnsBillableResultWithoutFalseSucce
 	}
 
 	service := &OpenAIGatewayService{}
-	_, count, _, err := service.handleOpenAIImagesNonStreamingResponse(response, c)
+	_, count, _, err := service.handleOpenAIImagesNonStreamingResponse(context.Background(), response, c, nil, &OpenAIImagesRequest{ResponseFormat: "url"})
 	require.ErrorIs(t, err, ErrOpenAIImagePublication)
 	require.Equal(t, 1, count)
 	require.Empty(t, recorder.Body.String())

@@ -310,10 +310,10 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	// user-specific) rate multiplier consumes subscription quota at the expected
 	// speed. TotalCost remains the raw (pre-multiplier) value; downstream guards
 	// on "> 0" still correctly skip free subscriptions (RateMultiplier == 0).
-	if p.IsSubscriptionBill && p.Subscription != nil && p.Cost.TotalCost > 0 {
+	if p.IsSubscriptionBill && p.Subscription != nil && p.Cost.TotalCost != 0 {
 		cmd.SubscriptionID = &p.Subscription.ID
 		cmd.SubscriptionCost = p.Cost.ActualCost
-	} else if p.Cost.ActualCost > 0 {
+	} else if p.Cost.ActualCost != 0 {
 		cmd.BalanceCost = p.Cost.ActualCost
 	}
 
@@ -351,7 +351,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	if result == nil || !result.Applied {
-		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		if deps.deferredService != nil && p.Account != nil {
+			deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		}
 		return false, nil
 	}
 
@@ -382,7 +384,9 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 		deps.billingCacheService.QueueUpdateAPIKeyRateLimitUsage(p.APIKey.ID, p.Cost.ActualCost)
 	}
 
-	deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	if deps.deferredService != nil && p.Account != nil {
+		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	}
 
 	// Platform quota 累加：仅在 standard（余额）模式生效；订阅模式豁免；仅对有 limit 的用户写
 	// Redis 同步写 + DB 异步持久化（flag=false 降级）或 flusher 异步刷（flag=true）:
@@ -931,6 +935,44 @@ func (s *GatewayService) calculateRecordUsageCost(
 		}
 	}
 	return tokenCost
+}
+
+// calculateAgentRecordUsageCost applies Agent catalogue prices to generated
+// media and token usage instead of falling back to standard group pricing.
+func (s *GatewayService) calculateAgentRecordUsageCost(
+	ctx context.Context,
+	result *ForwardResult,
+	group *Group,
+	account *Account,
+	billingModels []string,
+	multiplier float64,
+) (*CostBreakdown, error) {
+	if result.ImageCount > 0 {
+		if s.resolver == nil {
+			return nil, ErrAgentImagePricingUnavailable
+		}
+		unitPrice, _, err := s.resolver.ResolveAgentMediaUnitPrice(ctx, group.ID, account.Platform, AgentMediaTypeImage, result.ImageSize, billingModels...)
+		if err != nil {
+			return nil, err
+		}
+		return s.billingService.CalculateConfiguredAgentImageCost(unitPrice, result.ImageCount)
+	}
+	if s.resolver == nil {
+		return nil, ErrAgentChannelPricingUnavailable
+	}
+	resolved, billingModel, err := s.resolver.ResolveAgentAccountCandidates(ctx, group.ID, account, billingModels...)
+	if err != nil {
+		return nil, err
+	}
+	return s.billingService.CalculateCostUnified(CostInput{
+		Ctx: ctx, Model: billingModel,
+		GroupID: &group.ID, Group: group,
+		Tokens: UsageTokens{InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
+			CacheCreationTokens: result.Usage.CacheCreationInputTokens, CacheReadTokens: result.Usage.CacheReadInputTokens,
+			CacheCreation5mTokens: result.Usage.CacheCreation5mTokens, CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+			ImageOutputTokens: result.Usage.ImageOutputTokens},
+		RequestCount: 1, RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
+	})
 }
 
 // compositeBillableModel 决定 composite 分组请求的计费模型：来源覆盖把计费模型

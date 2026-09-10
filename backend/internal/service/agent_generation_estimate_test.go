@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -109,7 +110,6 @@ func TestAgentImageBillingUsesPerModelPriceForGatewayPaths(t *testing.T) {
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Credentials: map[string]any{
 		"model_mapping": map[string]any{"shared-image": "shared-image"},
 	}}
-
 	geminiGateway := &GatewayService{billingService: billingService, resolver: resolver}
 	geminiCost, err := geminiGateway.calculateAgentRecordUsageCost(
 		context.Background(),
@@ -128,7 +128,6 @@ func TestAgentImageBillingUsesPerModelPriceForGatewayPaths(t *testing.T) {
 		context.Background(),
 		&OpenAIForwardResult{Model: "shared-image", ImageCount: 2, ImageSize: ImageBillingSize1K},
 		&APIKey{GroupID: &groupID, Group: group},
-		account,
 		[]string{"shared-image"},
 		99,
 		99,
@@ -136,7 +135,8 @@ func TestAgentImageBillingUsesPerModelPriceForGatewayPaths(t *testing.T) {
 		99,
 		UsageTokens{},
 		"",
-		false,
+		nil,
+		time.Now(),
 	)
 	require.NoError(t, err)
 	require.InDelta(t, 0.8, openAICost.TotalCost, 1e-12)
