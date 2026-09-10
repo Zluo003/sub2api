@@ -780,6 +780,10 @@ func ProvideVideoService(
 	return videoService
 }
 
+func ProvidePluginHostInfo(buildInfo BuildInfo) PluginHostInfo {
+	return PluginHostInfo{Version: buildInfo.Version, BuildType: buildInfo.BuildType}
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -816,7 +820,7 @@ var ProviderSet = wire.NewSet(
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
 	ProvideOpenAIOAuthService,
-	NewGrokOAuthService,
+	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
@@ -831,6 +835,10 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAITokenProvider,
 	ProvideOpenAIQuotaService,
 	ProvideGrokQuotaService,
+	ProvideOpenAIQuotaAutoResetService,
+	ProvideCNProviderQuotaService,
+	ProvideCNProviderBalanceService,
+	ProvideCNProviderBalanceCheckService,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
@@ -905,6 +913,11 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorRequestTemplateService,
+	NewChannelMonitorV2Service,
+	NewChannelMonitorV2Aggregator,
+	NewPluginManager,
+	ProvidePluginHostInfo,
+	NewModelPlazaService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
 
@@ -961,4 +974,149 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+func ProvideGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient, cfg *config.Config, redisClient *redis.Client) *GrokOAuthService {
+	svc := NewGrokOAuthService(proxyRepo, oauthClient, cfg)
+	// wire.go is depguard-exempt for redis; construct the Redis session store here.
+	if redisClient != nil {
+		svc = svc.WithSessionStore(xai.NewRedisSessionStore(redisClient))
+	}
+	return svc
+}
+
+func ProvideOpenAIQuotaAutoResetService(
+	accountRepo AccountRepository,
+	quotaService *OpenAIQuotaService,
+	rateLimitService *RateLimitService,
+	idempotency *IdempotencyCoordinator,
+	audit *AuditLogService,
+	settingService *SettingService,
+	leaderLock LeaderLockCache,
+) *OpenAIQuotaAutoResetService {
+	service := NewOpenAIQuotaAutoResetService(
+		accountRepo,
+		quotaService,
+		rateLimitService,
+		idempotency,
+		audit,
+		settingService,
+		leaderLock,
+	)
+	service.Start()
+	return service
+}
+
+func ProvideAccountUsageService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
+	grokQuotaFetcher *GrokQuotaFetcher,
+	grokQuotaService *GrokQuotaService,
+	openAIQuotaService *OpenAIQuotaService,
+	cache *UsageCache,
+	identityCache IdentityCache,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	openAIGatewayService *OpenAIGatewayService,
+) *AccountUsageService {
+	service := NewAccountUsageService(
+		accountRepo,
+		usageLogRepo,
+		usageFetcher,
+		geminiQuotaService,
+		antigravityQuotaFetcher,
+		grokQuotaFetcher,
+		grokQuotaService,
+		openAIQuotaService,
+		cache,
+		identityCache,
+		tlsFPProfileService,
+	)
+	service.agentIdentityWS = openAIGatewayService
+	return service
+}
+
+func ProvideAccountTestService(
+	accountRepo AccountRepository,
+	geminiTokenProvider *GeminiTokenProvider,
+	claudeTokenProvider *ClaudeTokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	antigravityGatewayService *AntigravityGatewayService,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	openAIGatewayService *OpenAIGatewayService,
+	settingService *SettingService,
+	pluginManager *PluginManager,
+) *AccountTestService {
+	service := NewAccountTestService(
+		accountRepo,
+		geminiTokenProvider,
+		claudeTokenProvider,
+		grokTokenProvider,
+		antigravityGatewayService,
+		httpUpstream,
+		cfg,
+		tlsFPProfileService,
+	)
+	service.agentIdentityWS = openAIGatewayService
+	service.SetOpenAIGatewayService(openAIGatewayService)
+	service.SetSettingService(settingService)
+	service.SetPluginManager(pluginManager)
+	return service
+}
+
+func ProvideGrokQuotaService(
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	tokenProvider *GrokTokenProvider,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+	usageLogRepo UsageLogRepository,
+	settingService *SettingService,
+) *GrokQuotaService {
+	service := NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream, cfg, usageLogRepo)
+	service.SetSettingService(settingService)
+	return service
+}
+
+// ProvideCNProviderQuotaService 构造国产供应商 Coding Plan 额度探测服务。
+func ProvideCNProviderQuotaService(
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+) *CNProviderQuotaService {
+	return NewCNProviderQuotaService(accountRepo, proxyRepo, httpUpstream, cfg)
+}
+
+// ProvideCNProviderBalanceService 构造国产供应商余额探测服务。
+func ProvideCNProviderBalanceService(
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	httpUpstream HTTPUpstream,
+	cfg *config.Config,
+) *CNProviderBalanceService {
+	return NewCNProviderBalanceService(accountRepo, proxyRepo, httpUpstream, cfg)
+}
+
+// ProvideCNProviderBalanceCheckService 构造并启动周期余额/额度检测任务。
+// payg 账号探余额（低余额停调）；coding plan 账号探 5h/weekly 滚动窗口
+// （落 extra 快照供调度阈值评估自动停调）。
+// 间隔取自 gateway.cn_providers.balance_check_interval_minutes；<=0 或关闭时不启动。
+func ProvideCNProviderBalanceCheckService(
+	accountRepo AccountRepository,
+	balanceService *CNProviderBalanceService,
+	quotaService *CNProviderQuotaService,
+	cfg *config.Config,
+) *CNProviderBalanceCheckService {
+	minutes := 10
+	if cfg != nil && cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes > 0 {
+		minutes = cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes
+	}
+	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
+	svc.Start()
+	return svc
 }
