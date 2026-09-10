@@ -1679,7 +1679,7 @@ export interface CodexSessionImportResult {
 // ==================== Usage & Redeem Types ====================
 
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'
-export type UsageRequestType = 'unknown' | 'sync' | 'stream' | 'ws_v2' | 'cyber' | 'live'
+export type UsageRequestType = 'unknown' | 'sync' | 'stream' | 'ws_v2' | 'cyber' | 'video' | 'live'
 export type ImageSizeSource = 'output' | 'input' | 'default' | 'legacy'
 export type ImageSizeBreakdown = Record<string, number>
 
@@ -1743,6 +1743,14 @@ export interface UsageLog {
 
   // 计费模式
   billing_mode?: string | null
+
+  // Video task accounting fields
+  video_task_id?: string | null
+  video_resolution?: string | null
+  video_duration_seconds?: number | null
+  video_reference_duration_seconds?: number | null
+  video_billable_seconds?: number | null
+  video_result_url?: string | null
 
   created_at: string
 
