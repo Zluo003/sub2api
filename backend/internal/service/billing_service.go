@@ -269,7 +269,7 @@ func (s *BillingService) CalculateConfiguredAgentImageCost(unitPrice float64, im
 		return nil, ErrAgentImagePricingUnavailable
 	}
 	cost := unitPrice * float64(imageCount)
-	return &CostBreakdown{TotalCost: cost, ActualCost: cost, BillingMode: string(BillingModeImage), ImageOutputCost: cost, ImageCount: imageCount}, nil
+	return &CostBreakdown{TotalCost: cost, ActualCost: cost, BillingMode: string(BillingModeImage), ImageOutputCost: cost}, nil
 }
 
 // ---- DeepSeek 官方低谷价（$/token，2026-08-23 起生效）----
