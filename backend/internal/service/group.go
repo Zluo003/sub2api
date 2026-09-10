@@ -12,6 +12,7 @@ import (
 )
 
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
+type GroupCodexModelsManifestConfig = domain.GroupCodexModelsManifestConfig
 type GroupModelsListConfig = domain.GroupModelsListConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
 
@@ -20,6 +21,8 @@ type Group struct {
 	Name           string
 	Description    string
 	Platform       string
+	Kind           string
+	SystemCode     string
 	Kind           string
 	SystemCode     string
 	RateMultiplier float64
@@ -90,6 +93,7 @@ type Group struct {
 	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
+	CodexModelsManifestConfig   GroupCodexModelsManifestConfig
 	ModelsListConfig            GroupModelsListConfig
 
 	// 视频平台按模型/分辨率/秒计费规则（仅 seedance 平台使用）
@@ -125,6 +129,8 @@ type Group struct {
 func (g *Group) IsActive() bool {
 	return g.Status == StatusActive
 }
+
+func (g *Group) IsAgent() bool { return g != nil && g.Kind == "agent" && g.SystemCode != "" }
 func (g *Group) IsAgent() bool { return g.Kind == "agent" && g.SystemCode != "" }
 
 func (g *Group) IsSubscriptionType() bool {
