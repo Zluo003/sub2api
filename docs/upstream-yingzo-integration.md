@@ -27,6 +27,8 @@ Validation performed:
 - `go build ./...` in `backend`: passes.
 - Targeted production packages (`internal/service`, `internal/handler`,
   `internal/server/routes`): pass with `go build`.
+- `pnpm run build` in `frontend`: passes, including i18n checks, Vue typecheck,
+  and Vite output.
 - `go test` is not green yet because the tree contains mixed-era test doubles:
   older Yingzo tests expect pre-upstream method signatures and a few route test
   helpers that are absent from the upstream route files. These are test-only
