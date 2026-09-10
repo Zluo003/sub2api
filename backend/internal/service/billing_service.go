@@ -264,6 +264,14 @@ var ErrModelPricingUnavailable = errors.New("pricing not found")
 
 var ErrAgentImagePricingUnavailable = errors.New("agent image pricing not configured")
 
+func (s *BillingService) CalculateConfiguredAgentImageCost(unitPrice float64, imageCount int) (*CostBreakdown, error) {
+	if imageCount < 0 || unitPrice < 0 {
+		return nil, ErrAgentImagePricingUnavailable
+	}
+	cost := unitPrice * float64(imageCount)
+	return &CostBreakdown{TotalCost: cost, ActualCost: cost, BillingMode: string(BillingModeImage), ImageOutputCost: cost, ImageCount: imageCount}, nil
+}
+
 // ---- DeepSeek 官方低谷价（$/token，2026-08-23 起生效）----
 // Source: https://api-docs.deepseek.com/quick_start/pricing
 // 高峰价 = 2× 低谷价；高峰时段 01:00–04:00 与 06:00–10:00 UTC（仅工作日），

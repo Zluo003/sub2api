@@ -1061,6 +1061,13 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (s *adminServiceImpl) DeleteGroupIfEmpty(ctx context.Context, id int64) error {
+	total, _, err := s.groupRepo.GetAccountCount(ctx, id)
+	if err != nil { return err }
+	if total > 0 { return ErrGroupNotEmpty }
+	return s.DeleteGroup(ctx, id)
+}
+
 func (s *adminServiceImpl) GetGroupAPIKeys(ctx context.Context, groupID int64, page, pageSize int) ([]APIKey, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
 	keys, result, err := s.apiKeyRepo.ListByGroupID(ctx, groupID, params)
