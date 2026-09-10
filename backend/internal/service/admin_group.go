@@ -9,7 +9,6 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -21,44 +20,41 @@ import (
 )
 
 // Group management implementations
-func (s *adminServiceImpl) ValidateSimpleModeGroupOperation(operation AdminGroupOperation) error {
-	return ValidateSimpleModeGroupOperation(s.cfg, operation)
-}
-
 func (s *adminServiceImpl) ListGroups(ctx context.Context, page, pageSize int, platform, status, search string, isExclusive *bool, sortBy, sortOrder string) ([]Group, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
-	var groups []Group
-	var result *pagination.PaginationResult
-	var err error
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		repo, ok := s.groupRepo.(interface {
-			ListBindableWithFilters(context.Context, pagination.PaginationParams, string, string, string, *bool) ([]Group, *pagination.PaginationResult, error)
-		})
-		if !ok {
-			return nil, 0, errors.New("group repository does not support simple-mode filtering")
-		}
-		groups, result, err = repo.ListBindableWithFilters(ctx, params, platform, status, search, isExclusive)
-	} else {
-		groups, result, err = s.groupRepo.ListWithFilters(ctx, params, platform, status, search, isExclusive)
-	}
+	groups, result, err := s.groupRepo.ListWithFilters(ctx, params, platform, status, search, isExclusive)
 	if err != nil {
 		return nil, 0, err
 	}
+	s.hydrateVideoPricingRules(ctx, groups)
 	return groups, result.Total, nil
 }
 
 func (s *adminServiceImpl) GetAllGroups(ctx context.Context) ([]Group, error) {
-	return s.groupRepo.ListActive(ctx)
+	groups, err := s.groupRepo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.hydrateVideoPricingRules(ctx, groups)
+	return groups, nil
 }
 
 func (s *adminServiceImpl) GetAllGroupsByPlatform(ctx context.Context, platform string) ([]Group, error) {
-	return s.groupRepo.ListActiveByPlatform(ctx, platform)
+	groups, err := s.groupRepo.ListActiveByPlatform(ctx, platform)
+	if err != nil {
+		return nil, err
+	}
+	s.hydrateVideoPricingRules(ctx, groups)
+	return groups, nil
 }
 
 func (s *adminServiceImpl) GetAllGroupsIncludingInactive(ctx context.Context) ([]Group, error) {
 	// ListWithFilters with empty status = no status filter, so active + disabled groups are returned.
 	// PageSize 10000 is intentionally large; group count is O(dozens) in practice.
 	groups, _, err := s.groupRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10000}, "", "", "", nil)
+	if err == nil {
+		s.hydrateVideoPricingRules(ctx, groups)
+	}
 	return groups, err
 }
 
@@ -67,17 +63,8 @@ func (s *adminServiceImpl) GetGroup(ctx context.Context, id int64) (*Group, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateSimpleModeGroupAccess(group); err != nil {
-		return nil, err
-	}
+	s.hydrateVideoPricingRule(ctx, group)
 	return group, nil
-}
-
-func (s *adminServiceImpl) validateSimpleModeGroupAccess(group *Group) error {
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && !IsGroupBindableInSimpleMode(group) {
-		return infraerrors.BadRequest("SIMPLE_MODE_GROUP_NOT_BINDABLE", "composite groups are not supported in simple mode")
-	}
-	return nil
 }
 
 func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id int64, platform string) ([]string, error) {
@@ -133,9 +120,6 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 }
 
 func (s *adminServiceImpl) ListCompositeRoutes(ctx context.Context, groupID int64) ([]CompositeModelRoute, error) {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationCompositeRoute); err != nil {
-		return nil, err
-	}
 	if err := s.requireCompositeGroup(ctx, groupID); err != nil {
 		return nil, err
 	}
@@ -146,9 +130,6 @@ func (s *adminServiceImpl) ListCompositeRoutes(ctx context.Context, groupID int6
 }
 
 func (s *adminServiceImpl) CreateCompositeRoute(ctx context.Context, groupID int64, input CompositeRouteInput) (*CompositeModelRoute, error) {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationCompositeRoute); err != nil {
-		return nil, err
-	}
 	if err := s.requireCompositeGroup(ctx, groupID); err != nil {
 		return nil, err
 	}
@@ -166,9 +147,6 @@ func (s *adminServiceImpl) CreateCompositeRoute(ctx context.Context, groupID int
 }
 
 func (s *adminServiceImpl) UpdateCompositeRoute(ctx context.Context, groupID, routeID int64, input CompositeRouteInput) (*CompositeModelRoute, error) {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationCompositeRoute); err != nil {
-		return nil, err
-	}
 	if err := s.requireCompositeGroup(ctx, groupID); err != nil {
 		return nil, err
 	}
@@ -192,9 +170,6 @@ func (s *adminServiceImpl) UpdateCompositeRoute(ctx context.Context, groupID, ro
 }
 
 func (s *adminServiceImpl) DeleteCompositeRoute(ctx context.Context, groupID, routeID int64) error {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationCompositeRoute); err != nil {
-		return err
-	}
 	if err := s.requireCompositeGroup(ctx, groupID); err != nil {
 		return err
 	}
@@ -210,9 +185,6 @@ func (s *adminServiceImpl) DeleteCompositeRoute(ctx context.Context, groupID, ro
 }
 
 func (s *adminServiceImpl) PreviewCompositeRoute(ctx context.Context, groupID int64, input CompositeRoutePreviewRequest) (*CompositeRouteDecision, error) {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationCompositeRoute); err != nil {
-		return nil, err
-	}
 	if err := s.requireCompositeGroup(ctx, groupID); err != nil {
 		return nil, err
 	}
@@ -277,6 +249,8 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
+	case PlatformSeedance:
+		return SupportedVideoModels()
 	case PlatformOpenAI:
 		return openai.DefaultModelIDs()
 	case PlatformGemini:
@@ -314,7 +288,7 @@ func defaultAllowImageGenerationForPlatform(platform string) bool {
 func compositeDefaultModelsListCandidateIDs() []string {
 	seen := make(map[string]struct{})
 	ids := make([]string, 0)
-	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax} {
+	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok} {
 		for _, id := range defaultModelsListCandidateIDs(platform) {
 			if _, ok := seen[id]; ok {
 				continue
@@ -342,64 +316,23 @@ func groupSupportsOAuthOnlyFilter(platform string) bool {
 		platform == PlatformComposite
 }
 
-func groupSupportsOpenAIFast(platform string) bool {
-	return platform == PlatformOpenAI || platform == PlatformComposite
-}
-
-func sanitizeGroupOpenAIFast(group *Group) {
-	if group == nil || !groupSupportsOpenAIFast(group.Platform) {
-		if group != nil {
-			group.ForceOpenAIFast = false
-			group.FreeOpenAIFast = false
-		}
-	}
-}
-
-func normalizeCreateGroupInputForSimpleMode(input *CreateGroupInput) {
-	if input == nil {
-		return
-	}
-	*input = CreateGroupInput{
-		Name: input.Name, Description: input.Description, Platform: input.Platform,
-		RateMultiplier: 1, SubscriptionType: SubscriptionTypeStandard,
-	}
-}
-
-func normalizeUpdateGroupInputForSimpleMode(input *UpdateGroupInput) {
-	if input == nil {
-		return
-	}
-	*input = UpdateGroupInput{Name: input.Name, Description: input.Description}
-}
-
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && NormalizeGroupPlatform(input.Platform) == PlatformComposite {
-		return nil, infraerrors.BadRequest("SIMPLE_MODE_GROUP_NOT_BINDABLE", "composite groups are not supported in simple mode")
-	}
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		normalizeCreateGroupInputForSimpleMode(input)
-	}
 	if input.RateMultiplier <= 0 {
 		return nil, errors.New("rate_multiplier must be > 0")
 	}
 
 	platform := NormalizeGroupPlatform(input.Platform)
-	// 固定账号 manifest 配置：账号绑定发生在创建之后，创建时无法校验成员关系，
-	// 拒绝开启并在创建后的编辑里配置。
-	if normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig).Enabled {
-		return nil, infraerrors.New(http.StatusBadRequest, "INVALID_CODEX_MODELS_MANIFEST_CONFIG", "codex models manifest config cannot be enabled at group creation; configure it after creation in the group editor")
-	}
-	modelPricing, err := normalizeGroupModelPricing(platform, input.ModelPricing)
-	if err != nil {
-		return nil, err
+	videoPricingRules := input.VideoPricingRules
+	if platform == PlatformSeedance {
+		normalizedRules, err := normalizeVideoPricingRules(videoPricingRules)
+		if err != nil {
+			return nil, err
+		}
+		videoPricingRules = normalizedRules
 	}
 	maxReasoningEffort, err := normalizeMaxReasoningEffortForPlatform(platform, input.MaxReasoningEffort)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_MAX_REASONING_EFFORT", "%v", err)
-	}
-	maxReasoningEffortOverLimit, err := normalizeMaxReasoningEffortOverLimitForPlatform(platform, input.MaxReasoningEffortOverLimit)
-	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_MAX_REASONING_EFFORT_OVER_LIMIT", "%v", err)
 	}
 	reasoningEffortMappings, err := NormalizeReasoningEffortMappings(platform, input.ReasoningEffortMappings)
 	if err != nil {
@@ -424,10 +357,6 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	videoPrice720P := normalizePrice(input.VideoPrice720P)
 	videoPrice1080P := normalizePrice(input.VideoPrice1080P)
 	webSearchPricePerCall := normalizePrice(input.WebSearchPricePerCall)
-	searchPricePer1k := normalizePrice(input.SearchPricePer1k)
-	audioRealtimePricePerMin := normalizePrice(input.AudioRealtimePricePerMin)
-	audioTTSPricePerMillionChars := normalizePrice(input.AudioTTSPricePerMillionChars)
-	audioSTTPricePerHour := normalizePrice(input.AudioSTTPricePerHour)
 	imageRateMultiplier := 1.0
 	if input.ImageRateMultiplier != nil {
 		if *input.ImageRateMultiplier < 0 {
@@ -544,12 +473,6 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		}
 	}
 
-	// 白名单在创建路径同样收口：开启但为空、通配位置非法都会 400。
-	modelAllowlist, err := normalizeGroupModelAllowlist(input.ModelAllowlist)
-	if err != nil {
-		return nil, err
-	}
-
 	group := &Group{
 		Name:                            input.Name,
 		Description:                     input.Description,
@@ -561,8 +484,6 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		DailyLimitUSD:                   dailyLimit,
 		WeeklyLimitUSD:                  weeklyLimit,
 		MonthlyLimitUSD:                 monthlyLimit,
-		LongContextPricingEnabled:       input.LongContextPricingEnabled,
-		ModelPricing:                    modelPricing,
 		AllowImageGeneration:            allowImageGeneration,
 		AllowBatchImageGeneration:       allowBatchImageGeneration,
 		ImageRateIndependent:            input.ImageRateIndependent,
@@ -584,12 +505,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice480P:                  videoPrice480P,
 		VideoPrice720P:                  videoPrice720P,
 		VideoPrice1080P:                 videoPrice1080P,
-		VideoModelPrices:                NormalizeVideoModelPrices(input.VideoModelPrices),
 		WebSearchPricePerCall:           webSearchPricePerCall,
-		SearchPricePer1k:                searchPricePer1k,
-		AudioRealtimePricePerMin:        audioRealtimePricePerMin,
-		AudioTTSPricePerMillionChars:    audioTTSPricePerMillionChars,
-		AudioSTTPricePerHour:            audioSTTPricePerHour,
 		ClaudeCodeOnly:                  input.ClaudeCodeOnly,
 		FallbackGroupID:                 input.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
@@ -598,29 +514,31 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		SupportedModelScopes:            input.SupportedModelScopes,
 		AllowMessagesDispatch:           input.AllowMessagesDispatch,
 		AllowLive:                       input.AllowLive,
-		ForceOpenAIFast:                 input.ForceOpenAIFast,
-		FreeOpenAIFast:                  input.FreeOpenAIFast,
 		RequireOAuthOnly:                input.RequireOAuthOnly,
 		RequirePrivacySet:               input.RequirePrivacySet,
 		DefaultMappedModel:              input.DefaultMappedModel,
 		MessagesDispatchModelConfig:     normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
-		ModelAllowlist:                  modelAllowlist,
-		// 固定账号 manifest 配置：账号绑定发生在分组创建之后，创建路径禁止开启，
-		// 成员关系无从校验（前端创建对话框也不展示）。
-		CodexModelsManifestConfig:   normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig),
-		RPMLimit:                    input.RPMLimit,
-		MaxReasoningEffort:          maxReasoningEffort,
-		MaxReasoningEffortOverLimit: maxReasoningEffortOverLimit,
-		ReasoningEffortMappings:     reasoningEffortMappings,
+		ModelsListConfig:                normalizeGroupModelsListConfig(input.ModelsListConfig),
+		RPMLimit:                        input.RPMLimit,
+		MaxReasoningEffort:              maxReasoningEffort,
+		ReasoningEffortMappings:         reasoningEffortMappings,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
-	sanitizeGroupOpenAIFast(group)
-	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite {
+	if group.Platform != PlatformOpenAI {
 		group.AllowLive = false
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
+	}
+	if platform == PlatformSeedance && s.videoPricingRepo != nil {
+		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, videoPricingRules); err != nil {
+			return nil, err
+		}
+		group.VideoPricingRules = videoPricingRules
+		for i := range group.VideoPricingRules {
+			group.VideoPricingRules[i].GroupID = group.ID
+		}
 	}
 
 	// require_oauth_only: 过滤掉 apikey 类型账号
@@ -745,18 +663,21 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateSimpleModeGroupAccess(group); err != nil {
-		return nil, err
+	if group.IsAgent() {
+		if input.Platform != "" && input.Platform != group.Platform {
+			return nil, errors.New("system Agent group platform cannot be changed")
+		}
+		if input.IsExclusive != nil && *input.IsExclusive {
+			return nil, errors.New("system Agent group must remain public")
+		}
+		if input.AllowImageGeneration != nil && !*input.AllowImageGeneration {
+			return nil, errors.New("system Agent group must allow image generation")
+		}
+		group.AllowImageGeneration = true
+		group.IsExclusive = false
+		group.ImageRateIndependent = true
+		group.ImageRateMultiplier = 1
 	}
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && input.Platform == PlatformComposite {
-		return nil, infraerrors.BadRequest("SIMPLE_MODE_GROUP_NOT_BINDABLE", "composite groups are not supported in simple mode")
-	}
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		normalizeUpdateGroupInputForSimpleMode(input)
-	}
-
-	// 渠道缓存里存了 groupID → platform 的映射，改了平台要让它失效（见函数末尾）
-	previousPlatform := group.Platform
 
 	if input.Name != "" {
 		group.Name = input.Name
@@ -766,6 +687,13 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.Platform != "" {
 		group.Platform = input.Platform
+	}
+	if input.VideoPricingRules != nil && (group.Platform == PlatformSeedance || group.IsAgent()) {
+		normalizedRules, err := normalizeVideoPricingRules(*input.VideoPricingRules)
+		if err != nil {
+			return nil, err
+		}
+		group.VideoPricingRules = normalizedRules
 	}
 	if input.RateMultiplier != nil {
 		if *input.RateMultiplier <= 0 {
@@ -779,31 +707,16 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.Status != "" {
 		group.Status = input.Status
 	}
-	if input.LongContextPricingEnabled != nil {
-		group.LongContextPricingEnabled = *input.LongContextPricingEnabled
-	}
-	if input.ModelPricing != nil {
-		modelPricing, normalizeErr := normalizeGroupModelPricing(group.Platform, *input.ModelPricing)
-		if normalizeErr != nil {
-			return nil, normalizeErr
-		}
-		group.ModelPricing = modelPricing
-	}
 
 	// 订阅相关字段
 	if input.SubscriptionType != "" {
 		group.SubscriptionType = input.SubscriptionType
 	}
-	// 限额字段：nil 表示不修改，负数表示"无限制"，0 表示"不允许用量"，正数表示具体限额。
-	if input.DailyLimitUSD != nil {
-		group.DailyLimitUSD = normalizeLimit(input.DailyLimitUSD)
-	}
-	if input.WeeklyLimitUSD != nil {
-		group.WeeklyLimitUSD = normalizeLimit(input.WeeklyLimitUSD)
-	}
-	if input.MonthlyLimitUSD != nil {
-		group.MonthlyLimitUSD = normalizeLimit(input.MonthlyLimitUSD)
-	}
+	// 限额字段：nil/负数 表示"无限制"，0 表示"不允许用量"，正数表示具体限额
+	// 前端始终发送这三个字段，无需 nil 守卫
+	group.DailyLimitUSD = normalizeLimit(input.DailyLimitUSD)
+	group.WeeklyLimitUSD = normalizeLimit(input.WeeklyLimitUSD)
+	group.MonthlyLimitUSD = normalizeLimit(input.MonthlyLimitUSD)
 	// 图片生成计费配置：负数表示清除（使用默认价格）
 	if input.AllowImageGeneration != nil {
 		group.AllowImageGeneration = *input.AllowImageGeneration
@@ -840,6 +753,12 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if (input.BatchImageDiscountMultiplier != nil || input.BatchImageHoldMultiplier != nil) &&
 		group.BatchImageHoldMultiplier < group.BatchImageDiscountMultiplier {
 		return nil, errors.New("batch_image_hold_multiplier must be >= batch_image_discount_multiplier")
+	}
+	if group.IsAgent() {
+		group.AllowImageGeneration = true
+		group.IsExclusive = false
+		group.ImageRateIndependent = true
+		group.ImageRateMultiplier = 1
 	}
 	if input.VideoRateIndependent != nil {
 		group.VideoRateIndependent = *input.VideoRateIndependent
@@ -902,24 +821,8 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.VideoPrice1080P != nil {
 		group.VideoPrice1080P = normalizePrice(input.VideoPrice1080P)
 	}
-	// nil = leave unchanged; empty map = clear per-model prices.
-	if input.VideoModelPrices != nil {
-		group.VideoModelPrices = NormalizeVideoModelPrices(input.VideoModelPrices)
-	}
 	if input.WebSearchPricePerCall != nil {
 		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)
-	}
-	if input.SearchPricePer1k != nil {
-		group.SearchPricePer1k = normalizePrice(input.SearchPricePer1k)
-	}
-	if input.AudioRealtimePricePerMin != nil {
-		group.AudioRealtimePricePerMin = normalizePrice(input.AudioRealtimePricePerMin)
-	}
-	if input.AudioTTSPricePerMillionChars != nil {
-		group.AudioTTSPricePerMillionChars = normalizePrice(input.AudioTTSPricePerMillionChars)
-	}
-	if input.AudioSTTPricePerHour != nil {
-		group.AudioSTTPricePerHour = normalizePrice(input.AudioSTTPricePerHour)
 	}
 
 	// Claude Code 客户端限制
@@ -976,12 +879,6 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.AllowLive != nil {
 		group.AllowLive = *input.AllowLive
 	}
-	if input.ForceOpenAIFast != nil {
-		group.ForceOpenAIFast = *input.ForceOpenAIFast
-	}
-	if input.FreeOpenAIFast != nil {
-		group.FreeOpenAIFast = *input.FreeOpenAIFast
-	}
 	if input.RequireOAuthOnly != nil {
 		group.RequireOAuthOnly = *input.RequireOAuthOnly
 	}
@@ -994,15 +891,8 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.MessagesDispatchModelConfig != nil {
 		group.MessagesDispatchModelConfig = normalizeOpenAIMessagesDispatchModelConfig(*input.MessagesDispatchModelConfig)
 	}
-	if input.ModelAllowlist != nil {
-		modelAllowlist, err := normalizeGroupModelAllowlist(*input.ModelAllowlist)
-		if err != nil {
-			return nil, err
-		}
-		group.ModelAllowlist = modelAllowlist
-	}
-	if input.CodexModelsManifestConfig != nil {
-		group.CodexModelsManifestConfig = *input.CodexModelsManifestConfig
+	if input.ModelsListConfig != nil {
+		group.ModelsListConfig = normalizeGroupModelsListConfig(*input.ModelsListConfig)
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit
@@ -1014,13 +904,6 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		}
 		group.MaxReasoningEffort = maxReasoningEffort
 	}
-	if input.MaxReasoningEffortOverLimit != nil {
-		maxReasoningEffortOverLimit, err := normalizeMaxReasoningEffortOverLimitForPlatform(group.Platform, *input.MaxReasoningEffortOverLimit)
-		if err != nil {
-			return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_MAX_REASONING_EFFORT_OVER_LIMIT", "%v", err)
-		}
-		group.MaxReasoningEffortOverLimit = maxReasoningEffortOverLimit
-	}
 	if input.ReasoningEffortMappings != nil {
 		reasoningEffortMappings, err := NormalizeReasoningEffortMappings(group.Platform, *input.ReasoningEffortMappings)
 		if err != nil {
@@ -1029,34 +912,32 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		group.ReasoningEffortMappings = reasoningEffortMappings
 	}
 	sanitizeGroupMessagesDispatchFields(group)
-	sanitizeGroupOpenAIFast(group)
-	if group.Platform != PlatformOpenAI && group.Platform != PlatformComposite {
+	if group.Platform != PlatformOpenAI {
 		group.AllowLive = false
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
-	// 固定账号 manifest 配置：按最终平台归一化（切出 openai 平台时静默归零，
-	// 与 ForceOpenAIFast 同一收口）；校验仅在本次显式携带配置时进行，
-	// 避免脏 ID 阻塞无关字段更新。
-	group.CodexModelsManifestConfig = normalizeCodexModelsManifestConfig(group.Platform, group.CodexModelsManifestConfig)
-	if input.CodexModelsManifestConfig != nil {
-		if err := s.validateCodexModelsManifestConfig(ctx, id, group.CodexModelsManifestConfig); err != nil {
-			return nil, err
-		}
-	}
 
 	if err := s.groupRepo.Update(ctx, group); err != nil {
 		return nil, err
 	}
+	if input.VideoPricingRules != nil && (group.Platform == PlatformSeedance || group.IsAgent()) && s.videoPricingRepo != nil {
+		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, group.VideoPricingRules); err != nil {
+			return nil, err
+		}
+		for i := range group.VideoPricingRules {
+			group.VideoPricingRules[i].GroupID = group.ID
+		}
+	} else if group.Platform != PlatformSeedance && !group.IsAgent() && s.videoPricingRepo != nil {
+		if err := s.videoPricingRepo.ReplaceForGroup(ctx, group.ID, nil); err != nil {
+			return nil, err
+		}
+		group.VideoPricingRules = nil
+	} else {
+		s.hydrateVideoPricingRule(ctx, group)
+	}
 
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByGroupID(ctx, id)
-	}
-
-	// 平台变了就失效渠道缓存：该缓存持有 groupID → platform，而渠道定价 / 模型映射 /
-	// 模型白名单都按平台严格隔离。不失效的话，缓存最长 10 分钟仍按旧平台匹配，
-	// 期间定价查不到会静默回落到 LiteLLM 价格表、映射与白名单也不生效。
-	if group.Platform != previousPlatform && s.channelCacheInvalidator != nil {
-		s.channelCacheInvalidator.InvalidateCache()
 	}
 
 	// 如果指定了复制账号的源分组，同步绑定（替换当前分组的账号）
@@ -1076,13 +957,19 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			}
 		}
 
-		// 校验源分组的平台是否与当前分组一致
+		// 普通分组保持平台兼容；系统 Agent 分组可以聚合受支持平台的标准分组。
 		for _, srcGroupID := range uniqueSourceGroupIDs {
 			srcGroup, err := s.groupRepo.GetByIDLite(ctx, srcGroupID)
 			if err != nil {
 				return nil, fmt.Errorf("source group %d not found: %w", srcGroupID, err)
 			}
-			if !canCopyAccountsFromGroupPlatform(group.Platform, srcGroup.Platform) {
+			if srcGroup.IsAgent() {
+				return nil, fmt.Errorf("source group %d cannot be another Agent group", srcGroupID)
+			}
+			if group.IsAgent() && !isAgentPlatformSupported(srcGroup.Platform) {
+				return nil, fmt.Errorf("source group %d platform %s is not supported by the Agent group", srcGroupID, srcGroup.Platform)
+			}
+			if !group.IsAgent() && !canCopyAccountsFromGroupPlatform(group.Platform, srcGroup.Platform) {
 				return nil, fmt.Errorf("source group %d platform mismatch: expected %s, got %s", srcGroupID, group.Platform, srcGroup.Platform)
 			}
 		}
@@ -1130,56 +1017,14 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	return group, nil
 }
 
-func normalizeGroupModelPricing(platform string, pricing []ChannelModelPricing) ([]ChannelModelPricing, error) {
-	out := make([]ChannelModelPricing, len(pricing))
-	for i := range pricing {
-		out[i] = pricing[i].Clone()
-		out[i].ID = 0
-		out[i].ChannelID = 0
-		if out[i].TimePricing != nil && len(out[i].TimePricing.Periods) > 0 {
-			return nil, infraerrors.BadRequest(
-				"GROUP_MODEL_TIME_PRICING_UNSUPPORTED",
-				"group model pricing does not support time pricing",
-			)
-		}
-		if strings.TrimSpace(out[i].Platform) == "" {
-			out[i].Platform = platform
-		}
-		for j := range out[i].Models {
-			out[i].Models[j] = strings.TrimSpace(out[i].Models[j])
-		}
-		if len(out[i].Models) == 0 {
-			return nil, infraerrors.New(http.StatusBadRequest, "GROUP_MODEL_PRICING_MODELS_REQUIRED", "group model pricing entry requires at least one model")
-		}
-	}
-	if err := validatePricingEntries(out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
-	return s.deleteGroup(ctx, id, false)
-}
-
-func (s *adminServiceImpl) DeleteGroupIfEmpty(ctx context.Context, id int64) error {
-	return s.deleteGroup(ctx, id, true)
-}
-
-func (s *adminServiceImpl) deleteGroup(ctx context.Context, id int64, requireEmpty bool) error {
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		group, err := s.groupRepo.GetByIDLite(ctx, id)
-		if err != nil {
-			return err
-		}
-		if err := s.validateSimpleModeGroupAccess(group); err != nil {
-			return err
-		}
+	group, err := s.groupRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
 	}
-	if requireEmpty && s.emptyGroupDeleteRepo == nil {
-		return fmt.Errorf("guarded group deletion is unavailable")
+	if group.IsAgent() {
+		return errors.New("system Agent group cannot be deleted")
 	}
-
 	var groupKeys []string
 	if s.authCacheInvalidator != nil {
 		keys, err := s.apiKeyRepo.ListKeysByGroupID(ctx, id)
@@ -1188,13 +1033,7 @@ func (s *adminServiceImpl) deleteGroup(ctx context.Context, id int64, requireEmp
 		}
 	}
 
-	var affectedUserIDs []int64
-	var err error
-	if requireEmpty {
-		affectedUserIDs, err = s.emptyGroupDeleteRepo.DeleteCascadeIfEmpty(ctx, id)
-	} else {
-		affectedUserIDs, err = s.groupRepo.DeleteCascade(ctx, id)
-	}
+	affectedUserIDs, err := s.groupRepo.DeleteCascade(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1232,9 +1071,6 @@ func (s *adminServiceImpl) GetGroupAPIKeys(ctx context.Context, groupID int64, p
 }
 
 func (s *adminServiceImpl) GetGroupRateMultipliers(ctx context.Context, groupID int64) ([]UserGroupRateEntry, error) {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationMultiplier); err != nil {
-		return nil, err
-	}
 	if s.userGroupRateRepo == nil {
 		return nil, nil
 	}
@@ -1242,9 +1078,6 @@ func (s *adminServiceImpl) GetGroupRateMultipliers(ctx context.Context, groupID 
 }
 
 func (s *adminServiceImpl) ClearGroupRateMultipliers(ctx context.Context, groupID int64) error {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationMultiplier); err != nil {
-		return err
-	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1252,9 +1085,6 @@ func (s *adminServiceImpl) ClearGroupRateMultipliers(ctx context.Context, groupI
 }
 
 func (s *adminServiceImpl) BatchSetGroupRateMultipliers(ctx context.Context, groupID int64, entries []GroupRateMultiplierInput) error {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationMultiplier); err != nil {
-		return err
-	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1267,9 +1097,6 @@ func (s *adminServiceImpl) BatchSetGroupRateMultipliers(ctx context.Context, gro
 }
 
 func (s *adminServiceImpl) ClearGroupRPMOverrides(ctx context.Context, groupID int64) error {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationRPMOverride); err != nil {
-		return err
-	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1284,9 +1111,6 @@ func (s *adminServiceImpl) ClearGroupRPMOverrides(ctx context.Context, groupID i
 }
 
 func (s *adminServiceImpl) BatchSetGroupRPMOverrides(ctx context.Context, groupID int64, entries []GroupRPMOverrideInput) error {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationRPMOverride); err != nil {
-		return err
-	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1306,9 +1130,6 @@ func (s *adminServiceImpl) BatchSetGroupRPMOverrides(ctx context.Context, groupI
 }
 
 func (s *adminServiceImpl) UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
-	if err := s.ValidateSimpleModeGroupOperation(AdminGroupOperationSort); err != nil {
-		return err
-	}
 	return s.groupRepo.UpdateSortOrders(ctx, updates)
 }
 
@@ -1504,4 +1325,70 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 	}
 
 	return &ReplaceUserGroupResult{MigratedKeys: migrated}, nil
+}
+
+// 以下视频定价规则相关代码原本在 admin_service.go；上游把分组逻辑拆到本文件后
+// 一并迁移过来，保持 Seedance / Agent 分组的按分辨率与时长定价能力。
+func (s *adminServiceImpl) hydrateVideoPricingRules(ctx context.Context, groups []Group) {
+	if s.videoPricingRepo == nil || len(groups) == 0 {
+		return
+	}
+	for i := range groups {
+		if groups[i].Platform != PlatformSeedance && !groups[i].IsAgent() {
+			continue
+		}
+		rules, err := s.videoPricingRepo.ListByGroupID(ctx, groups[i].ID)
+		if err != nil {
+			logger.LegacyPrintf("service.admin", "failed to load video pricing rules: group=%d err=%v", groups[i].ID, err)
+			continue
+		}
+		groups[i].VideoPricingRules = rules
+	}
+}
+
+func (s *adminServiceImpl) hydrateVideoPricingRule(ctx context.Context, group *Group) {
+	if group == nil || (group.Platform != PlatformSeedance && !group.IsAgent()) || s.videoPricingRepo == nil {
+		return
+	}
+	rules, err := s.videoPricingRepo.ListByGroupID(ctx, group.ID)
+	if err != nil {
+		logger.LegacyPrintf("service.admin", "failed to load video pricing rules: group=%d err=%v", group.ID, err)
+		return
+	}
+	group.VideoPricingRules = rules
+}
+
+func normalizeVideoPricingRules(rules []VideoGroupPricingRule) ([]VideoGroupPricingRule, error) {
+	out := make([]VideoGroupPricingRule, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		model := strings.TrimSpace(rule.ModelCode)
+		if !IsSupportedVideoModel(model) {
+			return nil, infraerrors.BadRequest("invalid_video_model", "Invalid video model")
+		}
+		resolution := strings.TrimSpace(rule.Resolution)
+		if !IsSupportedVideoResolution(model, resolution) {
+			return nil, infraerrors.BadRequest("invalid_video_resolution", "Invalid video resolution")
+		}
+		if rule.CreditsPerSecond < 0 {
+			return nil, infraerrors.BadRequest("invalid_video_pricing_rule", "Video price must be non-negative")
+		}
+		referenceMultiplier := rule.ReferenceVideoMultiplier
+		if referenceMultiplier <= 0 {
+			referenceMultiplier = 1.0
+		}
+		key := model + "\x1f" + resolution
+		if _, ok := seen[key]; ok {
+			return nil, infraerrors.BadRequest("duplicate_video_pricing_rule", "Duplicate video pricing rule")
+		}
+		seen[key] = struct{}{}
+		out = append(out, VideoGroupPricingRule{
+			ModelCode:                model,
+			Resolution:               resolution,
+			CreditsPerSecond:         rule.CreditsPerSecond,
+			ReferenceVideoMultiplier: referenceMultiplier,
+			Enabled:                  rule.Enabled,
+		})
+	}
+	return out, nil
 }

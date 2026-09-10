@@ -84,6 +84,35 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
+	if shouldPublishOpenAIImageURLs(apiKey) {
+		if h.imageResultPublisher == nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Temporary image URL storage is unavailable")
+			return
+		}
+		publicOrigin, originErr := requestPublicOrigin(c)
+		if originErr != nil {
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Temporary image public URL is unavailable")
+			return
+		}
+		groupID := apiKey.Group.ID
+		if apiKey.GroupID != nil {
+			groupID = *apiKey.GroupID
+		}
+		if groupID <= 0 {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Agent group context is invalid")
+			return
+		}
+		requestContext := service.WithOpenAIImageURLPublication(
+			c.Request.Context(),
+			h.imageResultPublisher,
+			service.TemporaryAssetOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID, GroupID: groupID},
+			publicOrigin,
+		)
+		c.Request = c.Request.WithContext(requestContext)
+		// Public Agent clients always receive managed HTTP(S) assets. Upstreams may
+		// still return base64 internally, but the public response contract never does.
+		parsed.ResponseFormat = "url"
+	}
 
 	reqLog = reqLog.With(
 		zap.String("model", clientRequestModel),
@@ -101,6 +130,11 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	}
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, parsed.ModerationBody()); decision != nil && !decision.AllowNextStage {
 		h.openAISecurityAuditError(c, decision)
+		return
+	}
+	if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformOpenAI, requestModel, parsed.SizeTier, parsed.N); err != nil {
+		reqLog.Warn("openai.images.agent_pricing_unavailable", zap.Error(err))
+		writeOpenAIAgentPricingError(c, err)
 		return
 	}
 	imageReleaseFunc, acquired := h.acquireImageGenerationSlot(c, streamStarted)
@@ -262,20 +296,25 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		if err != nil {
 			if result != nil && result.ImageCount > 0 {
+				publicationErrorCommunicated := parsed.Stream &&
+					errors.Is(err, service.ErrOpenAIImagePublication) &&
+					c.Writer.Size() != writerSizeBeforeForward
+				publicationFallbackWritten := false
+				if errors.Is(err, service.ErrOpenAIImagePublication) && !publicationErrorCommunicated {
+					publicationFallbackWritten = h.ensureForwardErrorResponse(c, parsed.Stream)
+				}
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
 					zap.Int("image_count", result.ImageCount),
+					zap.Bool("publication_error_communicated", publicationErrorCommunicated),
+					zap.Bool("publication_fallback_written", publicationFallbackWritten),
 					zap.Error(err),
 				)
 			} else {
 				var imageUpstreamErr *service.OpenAIImagesUpstreamError
 				if errors.As(err, &imageUpstreamErr) {
 					retryableServerError := service.IsOpenAIImagesRetryableUpstreamError(imageUpstreamErr)
-					if retryableServerError {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
-					} else {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
-					}
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), !retryableServerError, nil)
 					logEvent := "openai.images.upstream_user_error"
 					if retryableServerError {
 						logEvent = "openai.images.upstream_server_error_after_flush"
@@ -291,7 +330,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
+					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
 					if service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 						reqLog.Warn("openai.images.upstream_failover_skipped_after_flush",
 							zap.Int64("account_id", account.ID),
@@ -308,21 +347,19 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						return
 					}
 					if failoverErr.RetryableOnSameAccount {
-						retryLimit := effectiveSameAccountRetryLimit(failoverErr, account)
-						if sameAccountRetryAllowed(failoverErr, sameAccountRetryCount[account.ID], retryLimit) {
+						retryLimit := account.GetPoolModeRetryCount()
+						if sameAccountRetryCount[account.ID] < retryLimit {
 							sameAccountRetryCount[account.ID]++
-							retryDelay := sameAccountRetryDelayFor(failoverErr, sameAccountRetryCount[account.ID])
 							reqLog.Warn("openai.images.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
 								zap.Int("upstream_status", failoverErr.StatusCode),
 								zap.Int("retry_limit", retryLimit),
 								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-								zap.Duration("retry_delay", retryDelay),
 							)
 							select {
 							case <-requestCtx.Done():
 								return
-							case <-time.After(retryDelay):
+							case <-time.After(sameAccountRetryDelay):
 							}
 							continue
 						}
@@ -347,7 +384,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), false, nil, err)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), false, nil)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -372,9 +409,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestModel, false, result), true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestModel), true, nil)
 		}
 
 		userAgent := c.GetHeader("User-Agent")
@@ -433,6 +470,13 @@ func (h *OpenAIGatewayHandler) openAIImagesJSONKeepaliveInterval() time.Duration
 		return 0
 	}
 	return time.Duration(h.cfg.Gateway.ImageNonstreamKeepaliveInterval) * time.Second
+}
+
+func shouldPublishOpenAIImageURLs(apiKey *service.APIKey) bool {
+	return apiKey != nil &&
+		apiKey.Group != nil &&
+		apiKey.Group.IsAgent() &&
+		!apiKey.Group.IsExclusive
 }
 
 func isMultipartImagesContentType(contentType string) bool {

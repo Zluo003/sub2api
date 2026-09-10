@@ -46,34 +46,23 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 
-	// 分组级模型白名单开启时过滤 models[].name（名字形如 models/xxx）。
-	filterGeminiModels := func(models []gemini.Model) []gemini.Model {
-		if apiKey.Group == nil || !apiKey.Group.ModelAllowlistEnabled() {
-			return models
-		}
-		filtered := make([]gemini.Model, 0, len(models))
-		for _, model := range models {
-			if apiKey.Group.ModelAllowlist.Allows(model.Name) {
-				filtered = append(filtered, model)
-			}
-		}
-		return filtered
-	}
-
 	// 强制 antigravity 模式：返回 antigravity 支持的模型列表
 	if forcePlatform == service.PlatformAntigravity {
-		if apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
-			agModels := antigravity.DefaultGeminiModels()
-			filtered := make([]antigravity.GeminiModel, 0, len(agModels))
-			for _, model := range agModels {
-				if apiKey.Group.ModelAllowlist.Allows(model.Name) {
-					filtered = append(filtered, model)
-				}
-			}
-			c.JSON(http.StatusOK, antigravity.GeminiModelsListResponse{Models: filtered})
+		c.JSON(http.StatusOK, antigravity.FallbackGeminiModelsList())
+		return
+	}
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		models, err := h.agentGeminiModels(c.Request.Context(), apiKey.Group.ID)
+		if err != nil {
+			googleError(c, http.StatusServiceUnavailable, "Agent model catalogue is unavailable")
 			return
 		}
-		c.JSON(http.StatusOK, antigravity.FallbackGeminiModelsList())
+		c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: models})
+		return
+	}
+
+	if models, ok := customGeminiModelsList(apiKey.Group); ok {
+		c.JSON(http.StatusOK, models)
 		return
 	}
 
@@ -83,7 +72,7 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		hasAntigravity, _ := h.geminiCompatService.HasAntigravityAccounts(c.Request.Context(), apiKey.GroupID)
 		if hasAntigravity {
 			// antigravity 账户使用静态模型列表
-			c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: filterGeminiModels(gemini.DefaultModels())})
+			c.JSON(http.StatusOK, gemini.FallbackModelsList())
 			return
 		}
 		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -97,64 +86,21 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		return
 	}
 	if shouldFallbackGeminiModels(res) {
-		c.JSON(http.StatusOK, gemini.ModelsListResponse{Models: filterGeminiModels(gemini.DefaultModels())})
+		c.JSON(http.StatusOK, gemini.FallbackModelsList())
 		return
-	}
-	if apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
-		if filtered, dropped, ok := filterUpstreamGeminiModelsBody(res.Body, apiKey.Group.ModelAllowlist); ok && dropped {
-			// 只在确有条目被过滤时替换响应体；全命中或解析失败时保持原始响应，
-			// 统一经 writeUpstreamResponse 写出（保留全部上游响应头）。
-			res.Body = filtered
-		}
 	}
 	writeUpstreamResponse(c, res)
 }
 
-// filterUpstreamGeminiModelsBody 按白名单过滤上游 /v1beta/models 响应中的
-// models[].name，其余信封字段（如 nextPageToken）原样保留。
-// 返回值：filtered 为过滤后的响应体；dropped 表示是否有条目被移除（全命中时
-// 为 false，调用方应保持原始响应以完整透传上游头）；ok=false 表示解析失败，
-// 调用方同样应透传原始响应。
-func filterUpstreamGeminiModelsBody(body []byte, allowlist service.GroupModelAllowlist) (filtered []byte, dropped bool, ok bool) {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, false, false
+func customGeminiModelsList(group *service.Group) (gemini.ModelsListResponse, bool) {
+	if group == nil || !group.CustomModelsListEnabled() {
+		return gemini.ModelsListResponse{}, false
 	}
-	rawModels, hasModels := envelope["models"]
-	if !hasModels {
-		return body, false, true
+	models := make([]gemini.Model, 0, len(group.ModelsListConfig.Models))
+	for _, modelID := range group.ModelsListConfig.Models {
+		models = append(models, gemini.FallbackModel(modelID))
 	}
-	type geminiModelName struct {
-		Name string `json:"name"`
-	}
-	var models []json.RawMessage
-	if err := json.Unmarshal(rawModels, &models); err != nil {
-		return nil, false, false
-	}
-	kept := make([]json.RawMessage, 0, len(models))
-	for _, raw := range models {
-		var model geminiModelName
-		if err := json.Unmarshal(raw, &model); err != nil {
-			return nil, false, false
-		}
-		if allowlist.Allows(model.Name) {
-			kept = append(kept, raw)
-		}
-	}
-	if len(kept) == len(models) {
-		// 全部命中时直接透传原始响应体。
-		return body, false, true
-	}
-	mergedModels, err := json.Marshal(kept)
-	if err != nil {
-		return nil, false, false
-	}
-	envelope["models"] = mergedModels
-	merged, err := json.Marshal(envelope)
-	if err != nil {
-		return nil, false, false
-	}
-	return merged, true, true
+	return gemini.ModelsListResponse{Models: models}, true
 }
 
 // GeminiV1BetaGetModel proxies:
@@ -192,6 +138,22 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		c.JSON(http.StatusOK, antigravity.FallbackGeminiModel(modelName))
 		return
 	}
+	if apiKey.Group != nil && apiKey.Group.IsAgent() {
+		models, err := h.agentGeminiModels(c.Request.Context(), apiKey.Group.ID)
+		if err != nil {
+			googleError(c, http.StatusServiceUnavailable, "Agent model catalogue is unavailable")
+			return
+		}
+		requested := strings.TrimPrefix(modelName, "models/")
+		for _, model := range models {
+			if strings.TrimPrefix(model.Name, "models/") == requested {
+				c.JSON(http.StatusOK, model)
+				return
+			}
+		}
+		googleError(c, http.StatusNotFound, "Model is not assigned to this Agent group")
+		return
+	}
 
 	account, err := h.geminiCompatService.SelectAccountForAIStudioEndpoints(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
@@ -217,6 +179,39 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		return
 	}
 	writeUpstreamResponse(c, res)
+}
+
+func (h *GatewayHandler) agentGeminiModels(ctx context.Context, groupID int64) ([]gemini.Model, error) {
+	if h == nil || h.agentModelCatalog == nil {
+		return nil, errors.New("agent model catalogue is unavailable")
+	}
+	catalog, err := h.agentModelCatalog.ListAvailable(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	methods := []string{"generateContent", "streamGenerateContent"}
+	models := make([]gemini.Model, 0)
+	for _, entry := range catalog {
+		if !containsAgentModelValue(entry.Platforms, service.PlatformGemini) ||
+			!containsAgentModelValue(entry.Interfaces, service.AgentInterfaceGeminiGenerateContent) {
+			continue
+		}
+		models = append(models, gemini.Model{
+			Name:                       "models/" + strings.TrimPrefix(entry.ID, "models/"),
+			DisplayName:                entry.ID,
+			SupportedGenerationMethods: methods,
+		})
+	}
+	return models, nil
+}
+
+func containsAgentModelValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // GeminiV1BetaModels proxies Gemini native REST endpoints like:
@@ -296,6 +291,16 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	reqModel := modelName // 保存映射前的原始模型名
 	if channelMapping.Mapped {
 		modelName = channelMapping.MappedModel
+	}
+	imageGeneration := action != "countTokens" &&
+		(service.IsGeminiImageGenerationModel(reqModel) || service.IsGeminiImageGenerationModel(modelName))
+	if imageGeneration {
+		imageTier := service.GeminiImageBillingTier(body)
+		if err := h.gatewayService.ValidateAgentImagePricing(c.Request.Context(), apiKey.Group, service.PlatformGemini, reqModel, imageTier, 1); err != nil {
+			reqLog.Warn("gemini.agent_image_pricing_unavailable", zap.Error(err))
+			writeGoogleAgentPricingError(c, err)
+			return
+		}
 	}
 
 	// Get subscription (may be nil)
@@ -476,6 +481,18 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if !imageGeneration {
+			if err := h.gatewayService.ValidateAgentLanguagePricing(
+				c.Request.Context(), apiKey.Group, account, reqModel, modelName,
+			); err != nil {
+				if selection.Acquired && selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				reqLog.Warn("gemini.agent_language_pricing_unavailable", zap.Error(err))
+				writeGoogleAgentPricingError(c, err)
+				return
+			}
+		}
 
 		// 检测账号切换：如果粘性会话绑定的账号与当前选择的账号不同，清除 thoughtSignature
 		// 注意：Gemini 原生 API 的 thoughtSignature 与具体上游账号强相关；跨账号透传会导致 400。
@@ -648,25 +665,26 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		forceCacheBilling := fs.ForceCacheBilling
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
-		// 长上下文阶梯由目录数据驱动，统一在计费路径内生效，入口无需声明。
 		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-				Result:             result,
-				QuotaPlatform:      quotaPlatform,
-				APIKey:             apiKey,
-				User:               apiKey.User,
-				Account:            account,
-				Subscription:       subscription,
-				PricingAt:          pricingAt,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIP,
-				RequestPayloadHash: requestPayloadHash,
-				ForceCacheBilling:  forceCacheBilling,
-				APIKeyService:      h.apiKeyService,
-				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+			if err := h.gatewayService.RecordUsageWithLongContext(ctx, &service.RecordUsageLongContextInput{
+				Result:                result,
+				QuotaPlatform:         quotaPlatform,
+				APIKey:                apiKey,
+				User:                  apiKey.User,
+				Account:               account,
+				Subscription:          subscription,
+				PricingAt:             pricingAt,
+				InboundEndpoint:       inboundEndpoint,
+				UpstreamEndpoint:      upstreamEndpoint,
+				UserAgent:             userAgent,
+				IPAddress:             clientIP,
+				RequestPayloadHash:    requestPayloadHash,
+				LongContextThreshold:  200000, // Gemini 200K 阈值
+				LongContextMultiplier: 2.0,    // 超出部分双倍计费
+				ForceCacheBilling:     forceCacheBilling,
+				APIKeyService:         h.apiKeyService,
+				SessionID:             sessionID,
+				ChannelUsageFields:    clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.gemini_v1beta.models"),
