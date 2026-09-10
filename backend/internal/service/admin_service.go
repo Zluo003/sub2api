@@ -80,6 +80,7 @@ type AdminService interface {
 	GetAccount(ctx context.Context, id int64) (*Account, error)
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)
+	ValidateAccountGroupBindings(ctx context.Context, groupIDs []int64) error
 	// DuplicateAccount creates an independent account from an existing account's configuration.
 	// First-class runtime columns are intentionally reset by the normal account creation path.
 	DuplicateAccount(ctx context.Context, id int64, actorScope, operationKey string) (*Account, error)
@@ -510,9 +511,11 @@ type UpdateProxyInput struct {
 	Password       string
 	Status         string
 	ExpiresAt      *time.Time
+	ClearExpiresAt bool
 	FallbackMode   string
 	BackupProxyID  *int64
-	ExpiryWarnDays int
+	ClearBackupID  bool
+	ExpiryWarnDays *int
 }
 
 type GenerateRedeemCodesInput struct {

@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 
@@ -150,6 +151,13 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.JSON("video_model_prices", map[string]map[string]float64{}).Optional().SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
+		field.Float("search_price_per_1k").Optional().Nillable().Min(0).SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("audio_realtime_price_per_min").Optional().Nillable().Min(0).SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("audio_tts_price_per_million_chars").Optional().Nillable().Min(0).SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("audio_stt_price_per_hour").Optional().Nillable().Min(0).SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Bool("long_context_pricing_enabled").Default(true),
+		field.JSON("model_pricing", json.RawMessage{}).Optional().SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.Float("web_search_price_per_call").
 			Optional().
 			Nillable().
@@ -203,6 +211,8 @@ func (Group) Fields() []ent.Field {
 		field.Bool("allow_live").
 			Default(false).
 			Comment("是否允许此 OpenAI 分组访问 Live 接口"),
+		field.Bool("force_openai_fast").Default(false),
+		field.Bool("free_openai_fast").Default(false),
 		field.Bool("require_oauth_only").
 			Default(false).
 			Comment("仅允许非 apikey 类型账号关联到此分组"),
@@ -217,6 +227,8 @@ func (Group) Fields() []ent.Field {
 			Default(domain.OpenAIMessagesDispatchModelConfig{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("OpenAI Messages 调度模型配置：按 Claude 系列/精确模型映射到目标 GPT 模型"),
+		field.JSON("model_allowlist", domain.GroupModelAllowlist{}).Default(domain.GroupModelAllowlist{}).SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
+		field.JSON("codex_models_manifest_config", domain.GroupCodexModelsManifestConfig{}).Default(domain.GroupCodexModelsManifestConfig{}).SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.JSON("models_list_config", domain.GroupModelsListConfig{}).
 			Default(domain.GroupModelsListConfig{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
@@ -232,6 +244,7 @@ func (Group) Fields() []ent.Field {
 			MaxLen(20).
 			Default("").
 			Comment("OpenAI reasoning effort 上限；可选 minimal/low/medium/high/xhigh/max"),
+		field.String("max_reasoning_effort_over_limit").MaxLen(20).Default("downgrade"),
 		field.JSON("reasoning_effort_mappings", []domain.ReasoningEffortMapping{}).
 			Default([]domain.ReasoningEffortMapping{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).

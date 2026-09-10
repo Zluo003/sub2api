@@ -95,6 +95,7 @@ func (User) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+		field.Bool("restrict_public_groups").Default(false),
 
 		// 余额不足通知
 		field.Bool("balance_notify_enabled").
