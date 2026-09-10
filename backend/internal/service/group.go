@@ -209,10 +209,6 @@ func (g *Group) GetSearchPricePer1k() *float64 {
 	return g.SearchPricePer1k
 }
 
-func IsGroupContextValid(group *Group) bool {
-	return group != nil && group.ID > 0 && group.Hydrated && group.Platform != "" && group.Status != ""
-}
-
 func groupSupportsOpenAIFast(platform string) bool {
 	return platform == PlatformOpenAI || platform == PlatformGrok
 }
