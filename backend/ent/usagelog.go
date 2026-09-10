@@ -47,7 +47,7 @@ type UsageLog struct {
 	ModelMappingChain *string `json:"model_mapping_chain,omitempty"`
 	// 计费层级标签
 	BillingTier *string `json:"billing_tier,omitempty"`
-	// 计费模式：token/per_request/image
+	// 计费模式：token/per_request/image/video_duration
 	BillingMode *string `json:"billing_mode,omitempty"`
 	// GroupID holds the value of the "group_id" field.
 	GroupID *int64 `json:"group_id,omitempty"`
@@ -107,12 +107,20 @@ type UsageLog struct {
 	ImageSizeSource *string `json:"image_size_source,omitempty"`
 	// ImageSizeBreakdown holds the value of the "image_size_breakdown" field.
 	ImageSizeBreakdown map[string]int `json:"image_size_breakdown,omitempty"`
-	// 视频生成数量；>0 表示本行是视频生成用量
-	VideoCount int `json:"video_count,omitempty"`
+	// VideoTaskID holds the value of the "video_task_id" field.
+	VideoTaskID *string `json:"video_task_id,omitempty"`
 	// 计费用视频分辨率 480p/720p/1080p
 	VideoResolution *string `json:"video_resolution,omitempty"`
-	// 提交时请求的视频时长（秒），按秒计费的乘数
-	VideoDurationSeconds *int `json:"video_duration_seconds,omitempty"`
+	// 视频时长（秒），按秒计费的乘数
+	VideoDurationSeconds int `json:"video_duration_seconds,omitempty"`
+	// VideoReferenceDurationSeconds holds the value of the "video_reference_duration_seconds" field.
+	VideoReferenceDurationSeconds int `json:"video_reference_duration_seconds,omitempty"`
+	// VideoBillableSeconds holds the value of the "video_billable_seconds" field.
+	VideoBillableSeconds int `json:"video_billable_seconds,omitempty"`
+	// VideoResultURL holds the value of the "video_result_url" field.
+	VideoResultURL *string `json:"video_result_url,omitempty"`
+	// 视频生成数量；>0 表示本行是视频生成用量
+	VideoCount int `json:"video_count,omitempty"`
 	// CacheTTLOverridden holds the value of the "cache_ttl_overridden" field.
 	CacheTTLOverridden bool `json:"cache_ttl_overridden,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
@@ -206,9 +214,9 @@ func (*UsageLog) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case usagelog.FieldInputCost, usagelog.FieldOutputCost, usagelog.FieldCacheCreationCost, usagelog.FieldCacheReadCost, usagelog.FieldTotalCost, usagelog.FieldActualCost, usagelog.FieldRateMultiplier, usagelog.FieldAccountRateMultiplier:
 			values[i] = new(sql.NullFloat64)
-		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount, usagelog.FieldVideoCount, usagelog.FieldVideoDurationSeconds:
+		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount, usagelog.FieldVideoDurationSeconds, usagelog.FieldVideoReferenceDurationSeconds, usagelog.FieldVideoBillableSeconds, usagelog.FieldVideoCount:
 			values[i] = new(sql.NullInt64)
-		case usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoResolution:
+		case usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoTaskID, usagelog.FieldVideoResolution, usagelog.FieldVideoResultURL:
 			values[i] = new(sql.NullString)
 		case usagelog.FieldCreatedAt:
 			values[i] = new(sql.NullTime)
@@ -506,11 +514,12 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field image_size_breakdown: %w", err)
 				}
 			}
-		case usagelog.FieldVideoCount:
-			if value, ok := values[i].(*sql.NullInt64); !ok {
-				return fmt.Errorf("unexpected type %T for field video_count", values[i])
+		case usagelog.FieldVideoTaskID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field video_task_id", values[i])
 			} else if value.Valid {
-				_m.VideoCount = int(value.Int64)
+				_m.VideoTaskID = new(string)
+				*_m.VideoTaskID = value.String
 			}
 		case usagelog.FieldVideoResolution:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -523,8 +532,32 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for field video_duration_seconds", values[i])
 			} else if value.Valid {
-				_m.VideoDurationSeconds = new(int)
-				*_m.VideoDurationSeconds = int(value.Int64)
+				_m.VideoDurationSeconds = int(value.Int64)
+			}
+		case usagelog.FieldVideoReferenceDurationSeconds:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field video_reference_duration_seconds", values[i])
+			} else if value.Valid {
+				_m.VideoReferenceDurationSeconds = int(value.Int64)
+			}
+		case usagelog.FieldVideoBillableSeconds:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field video_billable_seconds", values[i])
+			} else if value.Valid {
+				_m.VideoBillableSeconds = int(value.Int64)
+			}
+		case usagelog.FieldVideoResultURL:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field video_result_url", values[i])
+			} else if value.Valid {
+				_m.VideoResultURL = new(string)
+				*_m.VideoResultURL = value.String
+			}
+		case usagelog.FieldVideoCount:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field video_count", values[i])
+			} else if value.Valid {
+				_m.VideoCount = int(value.Int64)
 			}
 		case usagelog.FieldCacheTTLOverridden:
 			if value, ok := values[i].(*sql.NullBool); !ok {
@@ -763,18 +796,32 @@ func (_m *UsageLog) String() string {
 	builder.WriteString("image_size_breakdown=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ImageSizeBreakdown))
 	builder.WriteString(", ")
-	builder.WriteString("video_count=")
-	builder.WriteString(fmt.Sprintf("%v", _m.VideoCount))
+	if v := _m.VideoTaskID; v != nil {
+		builder.WriteString("video_task_id=")
+		builder.WriteString(*v)
+	}
 	builder.WriteString(", ")
 	if v := _m.VideoResolution; v != nil {
 		builder.WriteString("video_resolution=")
 		builder.WriteString(*v)
 	}
 	builder.WriteString(", ")
-	if v := _m.VideoDurationSeconds; v != nil {
-		builder.WriteString("video_duration_seconds=")
-		builder.WriteString(fmt.Sprintf("%v", *v))
+	builder.WriteString("video_duration_seconds=")
+	builder.WriteString(fmt.Sprintf("%v", _m.VideoDurationSeconds))
+	builder.WriteString(", ")
+	builder.WriteString("video_reference_duration_seconds=")
+	builder.WriteString(fmt.Sprintf("%v", _m.VideoReferenceDurationSeconds))
+	builder.WriteString(", ")
+	builder.WriteString("video_billable_seconds=")
+	builder.WriteString(fmt.Sprintf("%v", _m.VideoBillableSeconds))
+	builder.WriteString(", ")
+	if v := _m.VideoResultURL; v != nil {
+		builder.WriteString("video_result_url=")
+		builder.WriteString(*v)
 	}
+	builder.WriteString(", ")
+	builder.WriteString("video_count=")
+	builder.WriteString(fmt.Sprintf("%v", _m.VideoCount))
 	builder.WriteString(", ")
 	builder.WriteString("cache_ttl_overridden=")
 	builder.WriteString(fmt.Sprintf("%v", _m.CacheTTLOverridden))

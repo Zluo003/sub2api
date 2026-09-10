@@ -865,24 +865,23 @@ func (_u *UsageLogUpdate) ClearImageSizeBreakdown() *UsageLogUpdate {
 	return _u
 }
 
-// SetVideoCount sets the "video_count" field.
-func (_u *UsageLogUpdate) SetVideoCount(v int) *UsageLogUpdate {
-	_u.mutation.ResetVideoCount()
-	_u.mutation.SetVideoCount(v)
+// SetVideoTaskID sets the "video_task_id" field.
+func (_u *UsageLogUpdate) SetVideoTaskID(v string) *UsageLogUpdate {
+	_u.mutation.SetVideoTaskID(v)
 	return _u
 }
 
-// SetNillableVideoCount sets the "video_count" field if the given value is not nil.
-func (_u *UsageLogUpdate) SetNillableVideoCount(v *int) *UsageLogUpdate {
+// SetNillableVideoTaskID sets the "video_task_id" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableVideoTaskID(v *string) *UsageLogUpdate {
 	if v != nil {
-		_u.SetVideoCount(*v)
+		_u.SetVideoTaskID(*v)
 	}
 	return _u
 }
 
-// AddVideoCount adds value to the "video_count" field.
-func (_u *UsageLogUpdate) AddVideoCount(v int) *UsageLogUpdate {
-	_u.mutation.AddVideoCount(v)
+// ClearVideoTaskID clears the value of the "video_task_id" field.
+func (_u *UsageLogUpdate) ClearVideoTaskID() *UsageLogUpdate {
+	_u.mutation.ClearVideoTaskID()
 	return _u
 }
 
@@ -927,9 +926,86 @@ func (_u *UsageLogUpdate) AddVideoDurationSeconds(v int) *UsageLogUpdate {
 	return _u
 }
 
-// ClearVideoDurationSeconds clears the value of the "video_duration_seconds" field.
-func (_u *UsageLogUpdate) ClearVideoDurationSeconds() *UsageLogUpdate {
-	_u.mutation.ClearVideoDurationSeconds()
+// SetVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field.
+func (_u *UsageLogUpdate) SetVideoReferenceDurationSeconds(v int) *UsageLogUpdate {
+	_u.mutation.ResetVideoReferenceDurationSeconds()
+	_u.mutation.SetVideoReferenceDurationSeconds(v)
+	return _u
+}
+
+// SetNillableVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableVideoReferenceDurationSeconds(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetVideoReferenceDurationSeconds(*v)
+	}
+	return _u
+}
+
+// AddVideoReferenceDurationSeconds adds value to the "video_reference_duration_seconds" field.
+func (_u *UsageLogUpdate) AddVideoReferenceDurationSeconds(v int) *UsageLogUpdate {
+	_u.mutation.AddVideoReferenceDurationSeconds(v)
+	return _u
+}
+
+// SetVideoBillableSeconds sets the "video_billable_seconds" field.
+func (_u *UsageLogUpdate) SetVideoBillableSeconds(v int) *UsageLogUpdate {
+	_u.mutation.ResetVideoBillableSeconds()
+	_u.mutation.SetVideoBillableSeconds(v)
+	return _u
+}
+
+// SetNillableVideoBillableSeconds sets the "video_billable_seconds" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableVideoBillableSeconds(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetVideoBillableSeconds(*v)
+	}
+	return _u
+}
+
+// AddVideoBillableSeconds adds value to the "video_billable_seconds" field.
+func (_u *UsageLogUpdate) AddVideoBillableSeconds(v int) *UsageLogUpdate {
+	_u.mutation.AddVideoBillableSeconds(v)
+	return _u
+}
+
+// SetVideoResultURL sets the "video_result_url" field.
+func (_u *UsageLogUpdate) SetVideoResultURL(v string) *UsageLogUpdate {
+	_u.mutation.SetVideoResultURL(v)
+	return _u
+}
+
+// SetNillableVideoResultURL sets the "video_result_url" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableVideoResultURL(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetVideoResultURL(*v)
+	}
+	return _u
+}
+
+// ClearVideoResultURL clears the value of the "video_result_url" field.
+func (_u *UsageLogUpdate) ClearVideoResultURL() *UsageLogUpdate {
+	_u.mutation.ClearVideoResultURL()
+	return _u
+}
+
+// SetVideoCount sets the "video_count" field.
+func (_u *UsageLogUpdate) SetVideoCount(v int) *UsageLogUpdate {
+	_u.mutation.ResetVideoCount()
+	_u.mutation.SetVideoCount(v)
+	return _u
+}
+
+// SetNillableVideoCount sets the "video_count" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableVideoCount(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetVideoCount(*v)
+	}
+	return _u
+}
+
+// AddVideoCount adds value to the "video_count" field.
+func (_u *UsageLogUpdate) AddVideoCount(v int) *UsageLogUpdate {
+	_u.mutation.AddVideoCount(v)
 	return _u
 }
 
@@ -1104,6 +1180,11 @@ func (_u *UsageLogUpdate) check() error {
 	if v, ok := _u.mutation.ImageSizeSource(); ok {
 		if err := usagelog.ImageSizeSourceValidator(v); err != nil {
 			return &ValidationError{Name: "image_size_source", err: fmt.Errorf(`ent: validator failed for field "UsageLog.image_size_source": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.VideoTaskID(); ok {
+		if err := usagelog.VideoTaskIDValidator(v); err != nil {
+			return &ValidationError{Name: "video_task_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_task_id": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.VideoResolution(); ok {
@@ -1357,11 +1438,11 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if _u.mutation.ImageSizeBreakdownCleared() {
 		_spec.ClearField(usagelog.FieldImageSizeBreakdown, field.TypeJSON)
 	}
-	if value, ok := _u.mutation.VideoCount(); ok {
-		_spec.SetField(usagelog.FieldVideoCount, field.TypeInt, value)
+	if value, ok := _u.mutation.VideoTaskID(); ok {
+		_spec.SetField(usagelog.FieldVideoTaskID, field.TypeString, value)
 	}
-	if value, ok := _u.mutation.AddedVideoCount(); ok {
-		_spec.AddField(usagelog.FieldVideoCount, field.TypeInt, value)
+	if _u.mutation.VideoTaskIDCleared() {
+		_spec.ClearField(usagelog.FieldVideoTaskID, field.TypeString)
 	}
 	if value, ok := _u.mutation.VideoResolution(); ok {
 		_spec.SetField(usagelog.FieldVideoResolution, field.TypeString, value)
@@ -1375,8 +1456,29 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedVideoDurationSeconds(); ok {
 		_spec.AddField(usagelog.FieldVideoDurationSeconds, field.TypeInt, value)
 	}
-	if _u.mutation.VideoDurationSecondsCleared() {
-		_spec.ClearField(usagelog.FieldVideoDurationSeconds, field.TypeInt)
+	if value, ok := _u.mutation.VideoReferenceDurationSeconds(); ok {
+		_spec.SetField(usagelog.FieldVideoReferenceDurationSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedVideoReferenceDurationSeconds(); ok {
+		_spec.AddField(usagelog.FieldVideoReferenceDurationSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.VideoBillableSeconds(); ok {
+		_spec.SetField(usagelog.FieldVideoBillableSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedVideoBillableSeconds(); ok {
+		_spec.AddField(usagelog.FieldVideoBillableSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.VideoResultURL(); ok {
+		_spec.SetField(usagelog.FieldVideoResultURL, field.TypeString, value)
+	}
+	if _u.mutation.VideoResultURLCleared() {
+		_spec.ClearField(usagelog.FieldVideoResultURL, field.TypeString)
+	}
+	if value, ok := _u.mutation.VideoCount(); ok {
+		_spec.SetField(usagelog.FieldVideoCount, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedVideoCount(); ok {
+		_spec.AddField(usagelog.FieldVideoCount, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
@@ -2379,24 +2481,23 @@ func (_u *UsageLogUpdateOne) ClearImageSizeBreakdown() *UsageLogUpdateOne {
 	return _u
 }
 
-// SetVideoCount sets the "video_count" field.
-func (_u *UsageLogUpdateOne) SetVideoCount(v int) *UsageLogUpdateOne {
-	_u.mutation.ResetVideoCount()
-	_u.mutation.SetVideoCount(v)
+// SetVideoTaskID sets the "video_task_id" field.
+func (_u *UsageLogUpdateOne) SetVideoTaskID(v string) *UsageLogUpdateOne {
+	_u.mutation.SetVideoTaskID(v)
 	return _u
 }
 
-// SetNillableVideoCount sets the "video_count" field if the given value is not nil.
-func (_u *UsageLogUpdateOne) SetNillableVideoCount(v *int) *UsageLogUpdateOne {
+// SetNillableVideoTaskID sets the "video_task_id" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableVideoTaskID(v *string) *UsageLogUpdateOne {
 	if v != nil {
-		_u.SetVideoCount(*v)
+		_u.SetVideoTaskID(*v)
 	}
 	return _u
 }
 
-// AddVideoCount adds value to the "video_count" field.
-func (_u *UsageLogUpdateOne) AddVideoCount(v int) *UsageLogUpdateOne {
-	_u.mutation.AddVideoCount(v)
+// ClearVideoTaskID clears the value of the "video_task_id" field.
+func (_u *UsageLogUpdateOne) ClearVideoTaskID() *UsageLogUpdateOne {
+	_u.mutation.ClearVideoTaskID()
 	return _u
 }
 
@@ -2441,9 +2542,86 @@ func (_u *UsageLogUpdateOne) AddVideoDurationSeconds(v int) *UsageLogUpdateOne {
 	return _u
 }
 
-// ClearVideoDurationSeconds clears the value of the "video_duration_seconds" field.
-func (_u *UsageLogUpdateOne) ClearVideoDurationSeconds() *UsageLogUpdateOne {
-	_u.mutation.ClearVideoDurationSeconds()
+// SetVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field.
+func (_u *UsageLogUpdateOne) SetVideoReferenceDurationSeconds(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetVideoReferenceDurationSeconds()
+	_u.mutation.SetVideoReferenceDurationSeconds(v)
+	return _u
+}
+
+// SetNillableVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableVideoReferenceDurationSeconds(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetVideoReferenceDurationSeconds(*v)
+	}
+	return _u
+}
+
+// AddVideoReferenceDurationSeconds adds value to the "video_reference_duration_seconds" field.
+func (_u *UsageLogUpdateOne) AddVideoReferenceDurationSeconds(v int) *UsageLogUpdateOne {
+	_u.mutation.AddVideoReferenceDurationSeconds(v)
+	return _u
+}
+
+// SetVideoBillableSeconds sets the "video_billable_seconds" field.
+func (_u *UsageLogUpdateOne) SetVideoBillableSeconds(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetVideoBillableSeconds()
+	_u.mutation.SetVideoBillableSeconds(v)
+	return _u
+}
+
+// SetNillableVideoBillableSeconds sets the "video_billable_seconds" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableVideoBillableSeconds(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetVideoBillableSeconds(*v)
+	}
+	return _u
+}
+
+// AddVideoBillableSeconds adds value to the "video_billable_seconds" field.
+func (_u *UsageLogUpdateOne) AddVideoBillableSeconds(v int) *UsageLogUpdateOne {
+	_u.mutation.AddVideoBillableSeconds(v)
+	return _u
+}
+
+// SetVideoResultURL sets the "video_result_url" field.
+func (_u *UsageLogUpdateOne) SetVideoResultURL(v string) *UsageLogUpdateOne {
+	_u.mutation.SetVideoResultURL(v)
+	return _u
+}
+
+// SetNillableVideoResultURL sets the "video_result_url" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableVideoResultURL(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetVideoResultURL(*v)
+	}
+	return _u
+}
+
+// ClearVideoResultURL clears the value of the "video_result_url" field.
+func (_u *UsageLogUpdateOne) ClearVideoResultURL() *UsageLogUpdateOne {
+	_u.mutation.ClearVideoResultURL()
+	return _u
+}
+
+// SetVideoCount sets the "video_count" field.
+func (_u *UsageLogUpdateOne) SetVideoCount(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetVideoCount()
+	_u.mutation.SetVideoCount(v)
+	return _u
+}
+
+// SetNillableVideoCount sets the "video_count" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableVideoCount(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetVideoCount(*v)
+	}
+	return _u
+}
+
+// AddVideoCount adds value to the "video_count" field.
+func (_u *UsageLogUpdateOne) AddVideoCount(v int) *UsageLogUpdateOne {
+	_u.mutation.AddVideoCount(v)
 	return _u
 }
 
@@ -2631,6 +2809,11 @@ func (_u *UsageLogUpdateOne) check() error {
 	if v, ok := _u.mutation.ImageSizeSource(); ok {
 		if err := usagelog.ImageSizeSourceValidator(v); err != nil {
 			return &ValidationError{Name: "image_size_source", err: fmt.Errorf(`ent: validator failed for field "UsageLog.image_size_source": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.VideoTaskID(); ok {
+		if err := usagelog.VideoTaskIDValidator(v); err != nil {
+			return &ValidationError{Name: "video_task_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_task_id": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.VideoResolution(); ok {
@@ -2901,11 +3084,11 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	if _u.mutation.ImageSizeBreakdownCleared() {
 		_spec.ClearField(usagelog.FieldImageSizeBreakdown, field.TypeJSON)
 	}
-	if value, ok := _u.mutation.VideoCount(); ok {
-		_spec.SetField(usagelog.FieldVideoCount, field.TypeInt, value)
+	if value, ok := _u.mutation.VideoTaskID(); ok {
+		_spec.SetField(usagelog.FieldVideoTaskID, field.TypeString, value)
 	}
-	if value, ok := _u.mutation.AddedVideoCount(); ok {
-		_spec.AddField(usagelog.FieldVideoCount, field.TypeInt, value)
+	if _u.mutation.VideoTaskIDCleared() {
+		_spec.ClearField(usagelog.FieldVideoTaskID, field.TypeString)
 	}
 	if value, ok := _u.mutation.VideoResolution(); ok {
 		_spec.SetField(usagelog.FieldVideoResolution, field.TypeString, value)
@@ -2919,8 +3102,29 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	if value, ok := _u.mutation.AddedVideoDurationSeconds(); ok {
 		_spec.AddField(usagelog.FieldVideoDurationSeconds, field.TypeInt, value)
 	}
-	if _u.mutation.VideoDurationSecondsCleared() {
-		_spec.ClearField(usagelog.FieldVideoDurationSeconds, field.TypeInt)
+	if value, ok := _u.mutation.VideoReferenceDurationSeconds(); ok {
+		_spec.SetField(usagelog.FieldVideoReferenceDurationSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedVideoReferenceDurationSeconds(); ok {
+		_spec.AddField(usagelog.FieldVideoReferenceDurationSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.VideoBillableSeconds(); ok {
+		_spec.SetField(usagelog.FieldVideoBillableSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedVideoBillableSeconds(); ok {
+		_spec.AddField(usagelog.FieldVideoBillableSeconds, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.VideoResultURL(); ok {
+		_spec.SetField(usagelog.FieldVideoResultURL, field.TypeString, value)
+	}
+	if _u.mutation.VideoResultURLCleared() {
+		_spec.ClearField(usagelog.FieldVideoResultURL, field.TypeString)
+	}
+	if value, ok := _u.mutation.VideoCount(); ok {
+		_spec.SetField(usagelog.FieldVideoCount, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedVideoCount(); ok {
+		_spec.AddField(usagelog.FieldVideoCount, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)

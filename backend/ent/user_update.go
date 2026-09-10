@@ -25,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/videotask"
 )
 
 // UserUpdate is the builder for updating User entities.
@@ -321,20 +322,6 @@ func (_u *UserUpdate) ClearLastActiveAt() *UserUpdate {
 	return _u
 }
 
-// SetRestrictPublicGroups sets the "restrict_public_groups" field.
-func (_u *UserUpdate) SetRestrictPublicGroups(v bool) *UserUpdate {
-	_u.mutation.SetRestrictPublicGroups(v)
-	return _u
-}
-
-// SetNillableRestrictPublicGroups sets the "restrict_public_groups" field if the given value is not nil.
-func (_u *UserUpdate) SetNillableRestrictPublicGroups(v *bool) *UserUpdate {
-	if v != nil {
-		_u.SetRestrictPublicGroups(*v)
-	}
-	return _u
-}
-
 // SetBalanceNotifyEnabled sets the "balance_notify_enabled" field.
 func (_u *UserUpdate) SetBalanceNotifyEnabled(v bool) *UserUpdate {
 	_u.mutation.SetBalanceNotifyEnabled(v)
@@ -549,6 +536,21 @@ func (_u *UserUpdate) AddUsageLogs(v ...*UsageLog) *UserUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.AddUsageLogIDs(ids...)
+}
+
+// AddVideoTaskIDs adds the "video_tasks" edge to the VideoTask entity by IDs.
+func (_u *UserUpdate) AddVideoTaskIDs(ids ...int64) *UserUpdate {
+	_u.mutation.AddVideoTaskIDs(ids...)
+	return _u
+}
+
+// AddVideoTasks adds the "video_tasks" edges to the VideoTask entity.
+func (_u *UserUpdate) AddVideoTasks(v ...*VideoTask) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddVideoTaskIDs(ids...)
 }
 
 // AddAttributeValueIDs adds the "attribute_values" edge to the UserAttributeValue entity by IDs.
@@ -791,6 +793,27 @@ func (_u *UserUpdate) RemoveUsageLogs(v ...*UsageLog) *UserUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveUsageLogIDs(ids...)
+}
+
+// ClearVideoTasks clears all "video_tasks" edges to the VideoTask entity.
+func (_u *UserUpdate) ClearVideoTasks() *UserUpdate {
+	_u.mutation.ClearVideoTasks()
+	return _u
+}
+
+// RemoveVideoTaskIDs removes the "video_tasks" edge to VideoTask entities by IDs.
+func (_u *UserUpdate) RemoveVideoTaskIDs(ids ...int64) *UserUpdate {
+	_u.mutation.RemoveVideoTaskIDs(ids...)
+	return _u
+}
+
+// RemoveVideoTasks removes "video_tasks" edges to VideoTask entities.
+func (_u *UserUpdate) RemoveVideoTasks(v ...*VideoTask) *UserUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveVideoTaskIDs(ids...)
 }
 
 // ClearAttributeValues clears all "attribute_values" edges to the UserAttributeValue entity.
@@ -1082,9 +1105,6 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.LastActiveAtCleared() {
 		_spec.ClearField(user.FieldLastActiveAt, field.TypeTime)
-	}
-	if value, ok := _u.mutation.RestrictPublicGroups(); ok {
-		_spec.SetField(user.FieldRestrictPublicGroups, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.BalanceNotifyEnabled(); ok {
 		_spec.SetField(user.FieldBalanceNotifyEnabled, field.TypeBool, value)
@@ -1436,6 +1456,51 @@ func (_u *UserUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedVideoTasksIDs(); len(nodes) > 0 && !_u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.VideoTasksIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -2014,20 +2079,6 @@ func (_u *UserUpdateOne) ClearLastActiveAt() *UserUpdateOne {
 	return _u
 }
 
-// SetRestrictPublicGroups sets the "restrict_public_groups" field.
-func (_u *UserUpdateOne) SetRestrictPublicGroups(v bool) *UserUpdateOne {
-	_u.mutation.SetRestrictPublicGroups(v)
-	return _u
-}
-
-// SetNillableRestrictPublicGroups sets the "restrict_public_groups" field if the given value is not nil.
-func (_u *UserUpdateOne) SetNillableRestrictPublicGroups(v *bool) *UserUpdateOne {
-	if v != nil {
-		_u.SetRestrictPublicGroups(*v)
-	}
-	return _u
-}
-
 // SetBalanceNotifyEnabled sets the "balance_notify_enabled" field.
 func (_u *UserUpdateOne) SetBalanceNotifyEnabled(v bool) *UserUpdateOne {
 	_u.mutation.SetBalanceNotifyEnabled(v)
@@ -2242,6 +2293,21 @@ func (_u *UserUpdateOne) AddUsageLogs(v ...*UsageLog) *UserUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.AddUsageLogIDs(ids...)
+}
+
+// AddVideoTaskIDs adds the "video_tasks" edge to the VideoTask entity by IDs.
+func (_u *UserUpdateOne) AddVideoTaskIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.AddVideoTaskIDs(ids...)
+	return _u
+}
+
+// AddVideoTasks adds the "video_tasks" edges to the VideoTask entity.
+func (_u *UserUpdateOne) AddVideoTasks(v ...*VideoTask) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddVideoTaskIDs(ids...)
 }
 
 // AddAttributeValueIDs adds the "attribute_values" edge to the UserAttributeValue entity by IDs.
@@ -2484,6 +2550,27 @@ func (_u *UserUpdateOne) RemoveUsageLogs(v ...*UsageLog) *UserUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveUsageLogIDs(ids...)
+}
+
+// ClearVideoTasks clears all "video_tasks" edges to the VideoTask entity.
+func (_u *UserUpdateOne) ClearVideoTasks() *UserUpdateOne {
+	_u.mutation.ClearVideoTasks()
+	return _u
+}
+
+// RemoveVideoTaskIDs removes the "video_tasks" edge to VideoTask entities by IDs.
+func (_u *UserUpdateOne) RemoveVideoTaskIDs(ids ...int64) *UserUpdateOne {
+	_u.mutation.RemoveVideoTaskIDs(ids...)
+	return _u
+}
+
+// RemoveVideoTasks removes "video_tasks" edges to VideoTask entities.
+func (_u *UserUpdateOne) RemoveVideoTasks(v ...*VideoTask) *UserUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveVideoTaskIDs(ids...)
 }
 
 // ClearAttributeValues clears all "attribute_values" edges to the UserAttributeValue entity.
@@ -2805,9 +2892,6 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 	}
 	if _u.mutation.LastActiveAtCleared() {
 		_spec.ClearField(user.FieldLastActiveAt, field.TypeTime)
-	}
-	if value, ok := _u.mutation.RestrictPublicGroups(); ok {
-		_spec.SetField(user.FieldRestrictPublicGroups, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.BalanceNotifyEnabled(); ok {
 		_spec.SetField(user.FieldBalanceNotifyEnabled, field.TypeBool, value)
@@ -3159,6 +3243,51 @@ func (_u *UserUpdateOne) sqlSave(ctx context.Context) (_node *User, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedVideoTasksIDs(); len(nodes) > 0 && !_u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.VideoTasksIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

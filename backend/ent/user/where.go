@@ -145,11 +145,6 @@ func LastActiveAt(v time.Time) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldLastActiveAt, v))
 }
 
-// RestrictPublicGroups applies equality check predicate on the "restrict_public_groups" field. It's identical to RestrictPublicGroupsEQ.
-func RestrictPublicGroups(v bool) predicate.User {
-	return predicate.User(sql.FieldEQ(FieldRestrictPublicGroups, v))
-}
-
 // BalanceNotifyEnabled applies equality check predicate on the "balance_notify_enabled" field. It's identical to BalanceNotifyEnabledEQ.
 func BalanceNotifyEnabled(v bool) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldBalanceNotifyEnabled, v))
@@ -1120,16 +1115,6 @@ func LastActiveAtNotNil() predicate.User {
 	return predicate.User(sql.FieldNotNull(FieldLastActiveAt))
 }
 
-// RestrictPublicGroupsEQ applies the EQ predicate on the "restrict_public_groups" field.
-func RestrictPublicGroupsEQ(v bool) predicate.User {
-	return predicate.User(sql.FieldEQ(FieldRestrictPublicGroups, v))
-}
-
-// RestrictPublicGroupsNEQ applies the NEQ predicate on the "restrict_public_groups" field.
-func RestrictPublicGroupsNEQ(v bool) predicate.User {
-	return predicate.User(sql.FieldNEQ(FieldRestrictPublicGroups, v))
-}
-
 // BalanceNotifyEnabledEQ applies the EQ predicate on the "balance_notify_enabled" field.
 func BalanceNotifyEnabledEQ(v bool) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldBalanceNotifyEnabled, v))
@@ -1553,6 +1538,29 @@ func HasUsageLogs() predicate.User {
 func HasUsageLogsWith(preds ...predicate.UsageLog) predicate.User {
 	return predicate.User(func(s *sql.Selector) {
 		step := newUsageLogsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasVideoTasks applies the HasEdge predicate on the "video_tasks" edge.
+func HasVideoTasks() predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, VideoTasksTable, VideoTasksColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasVideoTasksWith applies the HasEdge predicate on the "video_tasks" edge with a given conditions (other predicates).
+func HasVideoTasksWith(preds ...predicate.VideoTask) predicate.User {
+	return predicate.User(func(s *sql.Selector) {
+		step := newVideoTasksStep()
 		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
 			for _, p := range preds {
 				p(s)

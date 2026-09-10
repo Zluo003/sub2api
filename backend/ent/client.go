@@ -54,6 +54,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/videogrouppricingrule"
+	"github.com/Wei-Shaw/sub2api/ent/videotask"
 
 	stdsql "database/sql"
 )
@@ -141,6 +143,10 @@ type Client struct {
 	UserPlatformQuota *UserPlatformQuotaClient
 	// UserSubscription is the client for interacting with the UserSubscription builders.
 	UserSubscription *UserSubscriptionClient
+	// VideoGroupPricingRule is the client for interacting with the VideoGroupPricingRule builders.
+	VideoGroupPricingRule *VideoGroupPricingRuleClient
+	// VideoTask is the client for interacting with the VideoTask builders.
+	VideoTask *VideoTaskClient
 }
 
 // NewClient creates a new client configured with the given options.
@@ -191,6 +197,8 @@ func (c *Client) init() {
 	c.UserAttributeValue = NewUserAttributeValueClient(c.config)
 	c.UserPlatformQuota = NewUserPlatformQuotaClient(c.config)
 	c.UserSubscription = NewUserSubscriptionClient(c.config)
+	c.VideoGroupPricingRule = NewVideoGroupPricingRuleClient(c.config)
+	c.VideoTask = NewVideoTaskClient(c.config)
 }
 
 type (
@@ -322,6 +330,8 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		UserAttributeValue:            NewUserAttributeValueClient(cfg),
 		UserPlatformQuota:             NewUserPlatformQuotaClient(cfg),
 		UserSubscription:              NewUserSubscriptionClient(cfg),
+		VideoGroupPricingRule:         NewVideoGroupPricingRuleClient(cfg),
+		VideoTask:                     NewVideoTaskClient(cfg),
 	}, nil
 }
 
@@ -380,6 +390,8 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		UserAttributeValue:            NewUserAttributeValueClient(cfg),
 		UserPlatformQuota:             NewUserPlatformQuotaClient(cfg),
 		UserSubscription:              NewUserSubscriptionClient(cfg),
+		VideoGroupPricingRule:         NewVideoGroupPricingRuleClient(cfg),
+		VideoTask:                     NewVideoTaskClient(cfg),
 	}, nil
 }
 
@@ -419,7 +431,7 @@ func (c *Client) Use(hooks ...Hook) {
 		c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting, c.SubscriptionPlan,
 		c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog, c.User,
 		c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserPlatformQuota, c.UserSubscription,
+		c.UserPlatformQuota, c.UserSubscription, c.VideoGroupPricingRule, c.VideoTask,
 	} {
 		n.Use(hooks...)
 	}
@@ -439,7 +451,7 @@ func (c *Client) Intercept(interceptors ...Interceptor) {
 		c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting, c.SubscriptionPlan,
 		c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog, c.User,
 		c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserPlatformQuota, c.UserSubscription,
+		c.UserPlatformQuota, c.UserSubscription, c.VideoGroupPricingRule, c.VideoTask,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -526,6 +538,10 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.UserPlatformQuota.mutate(ctx, m)
 	case *UserSubscriptionMutation:
 		return c.UserSubscription.mutate(ctx, m)
+	case *VideoGroupPricingRuleMutation:
+		return c.VideoGroupPricingRule.mutate(ctx, m)
+	case *VideoTaskMutation:
+		return c.VideoTask.mutate(ctx, m)
 	default:
 		return nil, fmt.Errorf("ent: unknown mutation type %T", m)
 	}
@@ -680,6 +696,22 @@ func (c *APIKeyClient) QueryUsageLogs(_m *APIKey) *UsageLogQuery {
 			sqlgraph.From(apikey.Table, apikey.FieldID, id),
 			sqlgraph.To(usagelog.Table, usagelog.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, apikey.UsageLogsTable, apikey.UsageLogsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryVideoTasks queries the video_tasks edge of a APIKey.
+func (c *APIKeyClient) QueryVideoTasks(_m *APIKey) *VideoTaskQuery {
+	query := (&VideoTaskClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(apikey.Table, apikey.FieldID, id),
+			sqlgraph.To(videotask.Table, videotask.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, apikey.VideoTasksTable, apikey.VideoTasksColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -895,6 +927,22 @@ func (c *AccountClient) QueryUsageLogs(_m *Account) *UsageLogQuery {
 			sqlgraph.From(account.Table, account.FieldID, id),
 			sqlgraph.To(usagelog.Table, usagelog.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, account.UsageLogsTable, account.UsageLogsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryVideoTasks queries the video_tasks edge of a Account.
+func (c *AccountClient) QueryVideoTasks(_m *Account) *VideoTaskQuery {
+	query := (&VideoTaskClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(account.Table, account.FieldID, id),
+			sqlgraph.To(videotask.Table, videotask.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, account.VideoTasksTable, account.VideoTasksColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -3188,6 +3236,38 @@ func (c *GroupClient) QueryUsageLogs(_m *Group) *UsageLogQuery {
 	return query
 }
 
+// QueryVideoTasks queries the video_tasks edge of a Group.
+func (c *GroupClient) QueryVideoTasks(_m *Group) *VideoTaskQuery {
+	query := (&VideoTaskClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, id),
+			sqlgraph.To(videotask.Table, videotask.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.VideoTasksTable, group.VideoTasksColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryVideoPricingRules queries the video_pricing_rules edge of a Group.
+func (c *GroupClient) QueryVideoPricingRules(_m *Group) *VideoGroupPricingRuleQuery {
+	query := (&VideoGroupPricingRuleClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, id),
+			sqlgraph.To(videogrouppricingrule.Table, videogrouppricingrule.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.VideoPricingRulesTable, group.VideoPricingRulesColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryAccounts queries the accounts edge of a Group.
 func (c *GroupClient) QueryAccounts(_m *Group) *AccountQuery {
 	query := (&AccountClient{config: c.config}).Query()
@@ -4595,22 +4675,6 @@ func (c *ProxyClient) QueryAccounts(_m *Proxy) *AccountQuery {
 	return query
 }
 
-// QueryPrimaryProxies queries the primary_proxies edge of a Proxy.
-func (c *ProxyClient) QueryPrimaryProxies(_m *Proxy) *ProxyQuery {
-	query := (&ProxyClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(proxy.Table, proxy.FieldID, id),
-			sqlgraph.To(proxy.Table, proxy.FieldID),
-			sqlgraph.Edge(sqlgraph.O2M, true, proxy.PrimaryProxiesTable, proxy.PrimaryProxiesColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
 // QueryBackupProxy queries the backup_proxy edge of a Proxy.
 func (c *ProxyClient) QueryBackupProxy(_m *Proxy) *ProxyQuery {
 	query := (&ProxyClient{config: c.config}).Query()
@@ -4619,7 +4683,7 @@ func (c *ProxyClient) QueryBackupProxy(_m *Proxy) *ProxyQuery {
 		step := sqlgraph.NewStep(
 			sqlgraph.From(proxy.Table, proxy.FieldID, id),
 			sqlgraph.To(proxy.Table, proxy.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, proxy.BackupProxyTable, proxy.BackupProxyColumn),
+			sqlgraph.Edge(sqlgraph.O2O, false, proxy.BackupProxyTable, proxy.BackupProxyColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -5917,6 +5981,22 @@ func (c *UserClient) QueryUsageLogs(_m *User) *UsageLogQuery {
 	return query
 }
 
+// QueryVideoTasks queries the video_tasks edge of a User.
+func (c *UserClient) QueryVideoTasks(_m *User) *VideoTaskQuery {
+	query := (&VideoTaskClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, id),
+			sqlgraph.To(videotask.Table, videotask.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.VideoTasksTable, user.VideoTasksColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryAttributeValues queries the attribute_values edge of a User.
 func (c *UserClient) QueryAttributeValues(_m *User) *UserAttributeValueQuery {
 	query := (&UserAttributeValueClient{config: c.config}).Query()
@@ -6838,6 +6918,352 @@ func (c *UserSubscriptionClient) mutate(ctx context.Context, m *UserSubscription
 	}
 }
 
+// VideoGroupPricingRuleClient is a client for the VideoGroupPricingRule schema.
+type VideoGroupPricingRuleClient struct {
+	config
+}
+
+// NewVideoGroupPricingRuleClient returns a client for the VideoGroupPricingRule from the given config.
+func NewVideoGroupPricingRuleClient(c config) *VideoGroupPricingRuleClient {
+	return &VideoGroupPricingRuleClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `videogrouppricingrule.Hooks(f(g(h())))`.
+func (c *VideoGroupPricingRuleClient) Use(hooks ...Hook) {
+	c.hooks.VideoGroupPricingRule = append(c.hooks.VideoGroupPricingRule, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `videogrouppricingrule.Intercept(f(g(h())))`.
+func (c *VideoGroupPricingRuleClient) Intercept(interceptors ...Interceptor) {
+	c.inters.VideoGroupPricingRule = append(c.inters.VideoGroupPricingRule, interceptors...)
+}
+
+// Create returns a builder for creating a VideoGroupPricingRule entity.
+func (c *VideoGroupPricingRuleClient) Create() *VideoGroupPricingRuleCreate {
+	mutation := newVideoGroupPricingRuleMutation(c.config, OpCreate)
+	return &VideoGroupPricingRuleCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of VideoGroupPricingRule entities.
+func (c *VideoGroupPricingRuleClient) CreateBulk(builders ...*VideoGroupPricingRuleCreate) *VideoGroupPricingRuleCreateBulk {
+	return &VideoGroupPricingRuleCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *VideoGroupPricingRuleClient) MapCreateBulk(slice any, setFunc func(*VideoGroupPricingRuleCreate, int)) *VideoGroupPricingRuleCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &VideoGroupPricingRuleCreateBulk{err: fmt.Errorf("calling to VideoGroupPricingRuleClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*VideoGroupPricingRuleCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &VideoGroupPricingRuleCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for VideoGroupPricingRule.
+func (c *VideoGroupPricingRuleClient) Update() *VideoGroupPricingRuleUpdate {
+	mutation := newVideoGroupPricingRuleMutation(c.config, OpUpdate)
+	return &VideoGroupPricingRuleUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *VideoGroupPricingRuleClient) UpdateOne(_m *VideoGroupPricingRule) *VideoGroupPricingRuleUpdateOne {
+	mutation := newVideoGroupPricingRuleMutation(c.config, OpUpdateOne, withVideoGroupPricingRule(_m))
+	return &VideoGroupPricingRuleUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *VideoGroupPricingRuleClient) UpdateOneID(id int64) *VideoGroupPricingRuleUpdateOne {
+	mutation := newVideoGroupPricingRuleMutation(c.config, OpUpdateOne, withVideoGroupPricingRuleID(id))
+	return &VideoGroupPricingRuleUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for VideoGroupPricingRule.
+func (c *VideoGroupPricingRuleClient) Delete() *VideoGroupPricingRuleDelete {
+	mutation := newVideoGroupPricingRuleMutation(c.config, OpDelete)
+	return &VideoGroupPricingRuleDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *VideoGroupPricingRuleClient) DeleteOne(_m *VideoGroupPricingRule) *VideoGroupPricingRuleDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *VideoGroupPricingRuleClient) DeleteOneID(id int64) *VideoGroupPricingRuleDeleteOne {
+	builder := c.Delete().Where(videogrouppricingrule.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &VideoGroupPricingRuleDeleteOne{builder}
+}
+
+// Query returns a query builder for VideoGroupPricingRule.
+func (c *VideoGroupPricingRuleClient) Query() *VideoGroupPricingRuleQuery {
+	return &VideoGroupPricingRuleQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeVideoGroupPricingRule},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a VideoGroupPricingRule entity by its id.
+func (c *VideoGroupPricingRuleClient) Get(ctx context.Context, id int64) (*VideoGroupPricingRule, error) {
+	return c.Query().Where(videogrouppricingrule.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *VideoGroupPricingRuleClient) GetX(ctx context.Context, id int64) *VideoGroupPricingRule {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryGroup queries the group edge of a VideoGroupPricingRule.
+func (c *VideoGroupPricingRuleClient) QueryGroup(_m *VideoGroupPricingRule) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(videogrouppricingrule.Table, videogrouppricingrule.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, videogrouppricingrule.GroupTable, videogrouppricingrule.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *VideoGroupPricingRuleClient) Hooks() []Hook {
+	return c.hooks.VideoGroupPricingRule
+}
+
+// Interceptors returns the client interceptors.
+func (c *VideoGroupPricingRuleClient) Interceptors() []Interceptor {
+	return c.inters.VideoGroupPricingRule
+}
+
+func (c *VideoGroupPricingRuleClient) mutate(ctx context.Context, m *VideoGroupPricingRuleMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&VideoGroupPricingRuleCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&VideoGroupPricingRuleUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&VideoGroupPricingRuleUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&VideoGroupPricingRuleDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown VideoGroupPricingRule mutation op: %q", m.Op())
+	}
+}
+
+// VideoTaskClient is a client for the VideoTask schema.
+type VideoTaskClient struct {
+	config
+}
+
+// NewVideoTaskClient returns a client for the VideoTask from the given config.
+func NewVideoTaskClient(c config) *VideoTaskClient {
+	return &VideoTaskClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `videotask.Hooks(f(g(h())))`.
+func (c *VideoTaskClient) Use(hooks ...Hook) {
+	c.hooks.VideoTask = append(c.hooks.VideoTask, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `videotask.Intercept(f(g(h())))`.
+func (c *VideoTaskClient) Intercept(interceptors ...Interceptor) {
+	c.inters.VideoTask = append(c.inters.VideoTask, interceptors...)
+}
+
+// Create returns a builder for creating a VideoTask entity.
+func (c *VideoTaskClient) Create() *VideoTaskCreate {
+	mutation := newVideoTaskMutation(c.config, OpCreate)
+	return &VideoTaskCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of VideoTask entities.
+func (c *VideoTaskClient) CreateBulk(builders ...*VideoTaskCreate) *VideoTaskCreateBulk {
+	return &VideoTaskCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *VideoTaskClient) MapCreateBulk(slice any, setFunc func(*VideoTaskCreate, int)) *VideoTaskCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &VideoTaskCreateBulk{err: fmt.Errorf("calling to VideoTaskClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*VideoTaskCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &VideoTaskCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for VideoTask.
+func (c *VideoTaskClient) Update() *VideoTaskUpdate {
+	mutation := newVideoTaskMutation(c.config, OpUpdate)
+	return &VideoTaskUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *VideoTaskClient) UpdateOne(_m *VideoTask) *VideoTaskUpdateOne {
+	mutation := newVideoTaskMutation(c.config, OpUpdateOne, withVideoTask(_m))
+	return &VideoTaskUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *VideoTaskClient) UpdateOneID(id int64) *VideoTaskUpdateOne {
+	mutation := newVideoTaskMutation(c.config, OpUpdateOne, withVideoTaskID(id))
+	return &VideoTaskUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for VideoTask.
+func (c *VideoTaskClient) Delete() *VideoTaskDelete {
+	mutation := newVideoTaskMutation(c.config, OpDelete)
+	return &VideoTaskDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *VideoTaskClient) DeleteOne(_m *VideoTask) *VideoTaskDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *VideoTaskClient) DeleteOneID(id int64) *VideoTaskDeleteOne {
+	builder := c.Delete().Where(videotask.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &VideoTaskDeleteOne{builder}
+}
+
+// Query returns a query builder for VideoTask.
+func (c *VideoTaskClient) Query() *VideoTaskQuery {
+	return &VideoTaskQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeVideoTask},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a VideoTask entity by its id.
+func (c *VideoTaskClient) Get(ctx context.Context, id int64) (*VideoTask, error) {
+	return c.Query().Where(videotask.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *VideoTaskClient) GetX(ctx context.Context, id int64) *VideoTask {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryUser queries the user edge of a VideoTask.
+func (c *VideoTaskClient) QueryUser(_m *VideoTask) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(videotask.Table, videotask.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, videotask.UserTable, videotask.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAPIKey queries the api_key edge of a VideoTask.
+func (c *VideoTaskClient) QueryAPIKey(_m *VideoTask) *APIKeyQuery {
+	query := (&APIKeyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(videotask.Table, videotask.FieldID, id),
+			sqlgraph.To(apikey.Table, apikey.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, videotask.APIKeyTable, videotask.APIKeyColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryGroup queries the group edge of a VideoTask.
+func (c *VideoTaskClient) QueryGroup(_m *VideoTask) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(videotask.Table, videotask.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, videotask.GroupTable, videotask.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAccount queries the account edge of a VideoTask.
+func (c *VideoTaskClient) QueryAccount(_m *VideoTask) *AccountQuery {
+	query := (&AccountClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(videotask.Table, videotask.FieldID, id),
+			sqlgraph.To(account.Table, account.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, videotask.AccountTable, videotask.AccountColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *VideoTaskClient) Hooks() []Hook {
+	return c.hooks.VideoTask
+}
+
+// Interceptors returns the client interceptors.
+func (c *VideoTaskClient) Interceptors() []Interceptor {
+	return c.inters.VideoTask
+}
+
+func (c *VideoTaskClient) mutate(ctx context.Context, m *VideoTaskMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&VideoTaskCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&VideoTaskUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&VideoTaskUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&VideoTaskDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown VideoTask mutation op: %q", m.Op())
+	}
+}
+
 // hooks and interceptors per client, for fast access.
 type (
 	hooks struct {
@@ -6850,7 +7276,7 @@ type (
 		PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
 		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
 		UserAttributeDefinition, UserAttributeValue, UserPlatformQuota,
-		UserSubscription []ent.Hook
+		UserSubscription, VideoGroupPricingRule, VideoTask []ent.Hook
 	}
 	inters struct {
 		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
@@ -6862,7 +7288,7 @@ type (
 		PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
 		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
 		UserAttributeDefinition, UserAttributeValue, UserPlatformQuota,
-		UserSubscription []ent.Interceptor
+		UserSubscription, VideoGroupPricingRule, VideoTask []ent.Interceptor
 	}
 )
 

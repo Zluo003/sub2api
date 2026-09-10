@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
+	"github.com/Wei-Shaw/sub2api/ent/videotask"
 )
 
 // AccountUpdate is the builder for updating Account entities.
@@ -633,6 +634,21 @@ func (_u *AccountUpdate) AddUsageLogs(v ...*UsageLog) *AccountUpdate {
 	return _u.AddUsageLogIDs(ids...)
 }
 
+// AddVideoTaskIDs adds the "video_tasks" edge to the VideoTask entity by IDs.
+func (_u *AccountUpdate) AddVideoTaskIDs(ids ...int64) *AccountUpdate {
+	_u.mutation.AddVideoTaskIDs(ids...)
+	return _u
+}
+
+// AddVideoTasks adds the "video_tasks" edges to the VideoTask entity.
+func (_u *AccountUpdate) AddVideoTasks(v ...*VideoTask) *AccountUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddVideoTaskIDs(ids...)
+}
+
 // Mutation returns the AccountMutation object of the builder.
 func (_u *AccountUpdate) Mutation() *AccountMutation {
 	return _u.mutation
@@ -711,6 +727,27 @@ func (_u *AccountUpdate) RemoveUsageLogs(v ...*UsageLog) *AccountUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveUsageLogIDs(ids...)
+}
+
+// ClearVideoTasks clears all "video_tasks" edges to the VideoTask entity.
+func (_u *AccountUpdate) ClearVideoTasks() *AccountUpdate {
+	_u.mutation.ClearVideoTasks()
+	return _u
+}
+
+// RemoveVideoTaskIDs removes the "video_tasks" edge to VideoTask entities by IDs.
+func (_u *AccountUpdate) RemoveVideoTaskIDs(ids ...int64) *AccountUpdate {
+	_u.mutation.RemoveVideoTaskIDs(ids...)
+	return _u
+}
+
+// RemoveVideoTasks removes "video_tasks" edges to VideoTask entities.
+func (_u *AccountUpdate) RemoveVideoTasks(v ...*VideoTask) *AccountUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveVideoTaskIDs(ids...)
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -1144,6 +1181,51 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   account.VideoTasksTable,
+			Columns: []string{account.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedVideoTasksIDs(); len(nodes) > 0 && !_u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   account.VideoTasksTable,
+			Columns: []string{account.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.VideoTasksIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   account.VideoTasksTable,
+			Columns: []string{account.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -1773,6 +1855,21 @@ func (_u *AccountUpdateOne) AddUsageLogs(v ...*UsageLog) *AccountUpdateOne {
 	return _u.AddUsageLogIDs(ids...)
 }
 
+// AddVideoTaskIDs adds the "video_tasks" edge to the VideoTask entity by IDs.
+func (_u *AccountUpdateOne) AddVideoTaskIDs(ids ...int64) *AccountUpdateOne {
+	_u.mutation.AddVideoTaskIDs(ids...)
+	return _u
+}
+
+// AddVideoTasks adds the "video_tasks" edges to the VideoTask entity.
+func (_u *AccountUpdateOne) AddVideoTasks(v ...*VideoTask) *AccountUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddVideoTaskIDs(ids...)
+}
+
 // Mutation returns the AccountMutation object of the builder.
 func (_u *AccountUpdateOne) Mutation() *AccountMutation {
 	return _u.mutation
@@ -1851,6 +1948,27 @@ func (_u *AccountUpdateOne) RemoveUsageLogs(v ...*UsageLog) *AccountUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveUsageLogIDs(ids...)
+}
+
+// ClearVideoTasks clears all "video_tasks" edges to the VideoTask entity.
+func (_u *AccountUpdateOne) ClearVideoTasks() *AccountUpdateOne {
+	_u.mutation.ClearVideoTasks()
+	return _u
+}
+
+// RemoveVideoTaskIDs removes the "video_tasks" edge to VideoTask entities by IDs.
+func (_u *AccountUpdateOne) RemoveVideoTaskIDs(ids ...int64) *AccountUpdateOne {
+	_u.mutation.RemoveVideoTaskIDs(ids...)
+	return _u
+}
+
+// RemoveVideoTasks removes "video_tasks" edges to VideoTask entities.
+func (_u *AccountUpdateOne) RemoveVideoTasks(v ...*VideoTask) *AccountUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveVideoTaskIDs(ids...)
 }
 
 // Where appends a list predicates to the AccountUpdate builder.
@@ -2314,6 +2432,51 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   account.VideoTasksTable,
+			Columns: []string{account.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedVideoTasksIDs(); len(nodes) > 0 && !_u.mutation.VideoTasksCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   account.VideoTasksTable,
+			Columns: []string{account.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.VideoTasksIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   account.VideoTasksTable,
+			Columns: []string{account.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

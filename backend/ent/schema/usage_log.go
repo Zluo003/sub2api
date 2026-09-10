@@ -67,7 +67,7 @@ func (UsageLog) Fields() []ent.Field {
 		field.Int64("channel_id").Optional().Nillable().Comment("渠道 ID"),
 		field.String("model_mapping_chain").MaxLen(500).Optional().Nillable().Comment("模型映射链"),
 		field.String("billing_tier").MaxLen(50).Optional().Nillable().Comment("计费层级标签"),
-		field.String("billing_mode").MaxLen(20).Optional().Nillable().Comment("计费模式：token/per_request/image"),
+		field.String("billing_mode").MaxLen(32).Optional().Nillable().Comment("计费模式：token/per_request/image/video_duration"),
 		field.Int64("group_id").
 			Optional().
 			Nillable(),
@@ -164,19 +164,40 @@ func (UsageLog) Fields() []ent.Field {
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 
-		// 视频生成字段（Grok 视频按秒计费；billing_mode 走 token/其他模式时这些列仍标记视频用量）
-		field.Int("video_count").
-			Default(0).
-			Comment("视频生成数量；>0 表示本行是视频生成用量"),
+		// 视频生成字段。
+		// 本仓库同时承载两条视频链路：
+		//   - Seedance/video 网关（/v1/videos 异步任务，billing_mode='video_duration'）
+		//   - 上游 Grok 视频（按秒计费，用 video_count>0 标记视频用量行）
+		// 两者共用 video_resolution / video_duration_seconds 两列。
+		// 列定义以迁移 156_video_gateway.sql 为准（按文件名排序先于上游 172 执行，
+		// 172 的 ADD COLUMN IF NOT EXISTS 对这两列是 no-op）：
+		//   video_resolution       VARCHAR(16)
+		//   video_duration_seconds INTEGER NOT NULL DEFAULT 0
+		// 因此 video_duration_seconds 保持非空 int，不能声明为 Nillable，
+		// 否则写入 NULL 会违反 NOT NULL 约束。
+		field.String("video_task_id").
+			MaxLen(64).
+			Optional().
+			Nillable(),
 		field.String("video_resolution").
-			MaxLen(10).
+			MaxLen(16).
 			Optional().
 			Nillable().
 			Comment("计费用视频分辨率 480p/720p/1080p"),
 		field.Int("video_duration_seconds").
+			Default(0).
+			Comment("视频时长（秒），按秒计费的乘数"),
+		field.Int("video_reference_duration_seconds").
+			Default(0),
+		field.Int("video_billable_seconds").
+			Default(0),
+		field.String("video_result_url").
 			Optional().
 			Nillable().
-			Comment("提交时请求的视频时长（秒），按秒计费的乘数"),
+			SchemaType(map[string]string{dialect.Postgres: "text"}),
+		field.Int("video_count").
+			Default(0).
+			Comment("视频生成数量；>0 表示本行是视频生成用量"),
 		// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 		field.Bool("cache_ttl_overridden").
 			Default(false),

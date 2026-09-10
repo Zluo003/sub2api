@@ -23,6 +23,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/videogrouppricingrule"
+	"github.com/Wei-Shaw/sub2api/ent/videotask"
 )
 
 // GroupQuery is the builder for querying Group entities.
@@ -36,6 +38,8 @@ type GroupQuery struct {
 	withRedeemCodes       *RedeemCodeQuery
 	withSubscriptions     *UserSubscriptionQuery
 	withUsageLogs         *UsageLogQuery
+	withVideoTasks        *VideoTaskQuery
+	withVideoPricingRules *VideoGroupPricingRuleQuery
 	withAccounts          *AccountQuery
 	withAllowedUsers      *UserQuery
 	withAccountGroups     *AccountGroupQuery
@@ -158,6 +162,50 @@ func (_q *GroupQuery) QueryUsageLogs() *UsageLogQuery {
 			sqlgraph.From(group.Table, group.FieldID, selector),
 			sqlgraph.To(usagelog.Table, usagelog.FieldID),
 			sqlgraph.Edge(sqlgraph.O2M, false, group.UsageLogsTable, group.UsageLogsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryVideoTasks chains the current query on the "video_tasks" edge.
+func (_q *GroupQuery) QueryVideoTasks() *VideoTaskQuery {
+	query := (&VideoTaskClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, selector),
+			sqlgraph.To(videotask.Table, videotask.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.VideoTasksTable, group.VideoTasksColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryVideoPricingRules chains the current query on the "video_pricing_rules" edge.
+func (_q *GroupQuery) QueryVideoPricingRules() *VideoGroupPricingRuleQuery {
+	query := (&VideoGroupPricingRuleClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, selector),
+			sqlgraph.To(videogrouppricingrule.Table, videogrouppricingrule.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.VideoPricingRulesTable, group.VideoPricingRulesColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -449,6 +497,8 @@ func (_q *GroupQuery) Clone() *GroupQuery {
 		withRedeemCodes:       _q.withRedeemCodes.Clone(),
 		withSubscriptions:     _q.withSubscriptions.Clone(),
 		withUsageLogs:         _q.withUsageLogs.Clone(),
+		withVideoTasks:        _q.withVideoTasks.Clone(),
+		withVideoPricingRules: _q.withVideoPricingRules.Clone(),
 		withAccounts:          _q.withAccounts.Clone(),
 		withAllowedUsers:      _q.withAllowedUsers.Clone(),
 		withAccountGroups:     _q.withAccountGroups.Clone(),
@@ -500,6 +550,28 @@ func (_q *GroupQuery) WithUsageLogs(opts ...func(*UsageLogQuery)) *GroupQuery {
 		opt(query)
 	}
 	_q.withUsageLogs = query
+	return _q
+}
+
+// WithVideoTasks tells the query-builder to eager-load the nodes that are connected to
+// the "video_tasks" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *GroupQuery) WithVideoTasks(opts ...func(*VideoTaskQuery)) *GroupQuery {
+	query := (&VideoTaskClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withVideoTasks = query
+	return _q
+}
+
+// WithVideoPricingRules tells the query-builder to eager-load the nodes that are connected to
+// the "video_pricing_rules" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *GroupQuery) WithVideoPricingRules(opts ...func(*VideoGroupPricingRuleQuery)) *GroupQuery {
+	query := (&VideoGroupPricingRuleClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withVideoPricingRules = query
 	return _q
 }
 
@@ -625,11 +697,13 @@ func (_q *GroupQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Group,
 	var (
 		nodes       = []*Group{}
 		_spec       = _q.querySpec()
-		loadedTypes = [8]bool{
+		loadedTypes = [10]bool{
 			_q.withAPIKeys != nil,
 			_q.withRedeemCodes != nil,
 			_q.withSubscriptions != nil,
 			_q.withUsageLogs != nil,
+			_q.withVideoTasks != nil,
+			_q.withVideoPricingRules != nil,
 			_q.withAccounts != nil,
 			_q.withAllowedUsers != nil,
 			_q.withAccountGroups != nil,
@@ -682,6 +756,22 @@ func (_q *GroupQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Group,
 		if err := _q.loadUsageLogs(ctx, query, nodes,
 			func(n *Group) { n.Edges.UsageLogs = []*UsageLog{} },
 			func(n *Group, e *UsageLog) { n.Edges.UsageLogs = append(n.Edges.UsageLogs, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withVideoTasks; query != nil {
+		if err := _q.loadVideoTasks(ctx, query, nodes,
+			func(n *Group) { n.Edges.VideoTasks = []*VideoTask{} },
+			func(n *Group, e *VideoTask) { n.Edges.VideoTasks = append(n.Edges.VideoTasks, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withVideoPricingRules; query != nil {
+		if err := _q.loadVideoPricingRules(ctx, query, nodes,
+			func(n *Group) { n.Edges.VideoPricingRules = []*VideoGroupPricingRule{} },
+			func(n *Group, e *VideoGroupPricingRule) {
+				n.Edges.VideoPricingRules = append(n.Edges.VideoPricingRules, e)
+			}); err != nil {
 			return nil, err
 		}
 	}
@@ -840,6 +930,66 @@ func (_q *GroupQuery) loadUsageLogs(ctx context.Context, query *UsageLogQuery, n
 		node, ok := nodeids[*fk]
 		if !ok {
 			return fmt.Errorf(`unexpected referenced foreign-key "group_id" returned %v for node %v`, *fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *GroupQuery) loadVideoTasks(ctx context.Context, query *VideoTaskQuery, nodes []*Group, init func(*Group), assign func(*Group, *VideoTask)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*Group)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(videotask.FieldGroupID)
+	}
+	query.Where(predicate.VideoTask(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(group.VideoTasksColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.GroupID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "group_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *GroupQuery) loadVideoPricingRules(ctx context.Context, query *VideoGroupPricingRuleQuery, nodes []*Group, init func(*Group), assign func(*Group, *VideoGroupPricingRule)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*Group)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(videogrouppricingrule.FieldGroupID)
+	}
+	query.Where(predicate.VideoGroupPricingRule(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(group.VideoPricingRulesColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.GroupID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "group_id" returned %v for node %v`, fk, n.ID)
 		}
 		assign(node, n)
 	}

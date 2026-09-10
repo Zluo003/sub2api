@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/videotask"
 )
 
 // UserCreate is the builder for creating a User entity.
@@ -270,20 +271,6 @@ func (_c *UserCreate) SetNillableLastActiveAt(v *time.Time) *UserCreate {
 	return _c
 }
 
-// SetRestrictPublicGroups sets the "restrict_public_groups" field.
-func (_c *UserCreate) SetRestrictPublicGroups(v bool) *UserCreate {
-	_c.mutation.SetRestrictPublicGroups(v)
-	return _c
-}
-
-// SetNillableRestrictPublicGroups sets the "restrict_public_groups" field if the given value is not nil.
-func (_c *UserCreate) SetNillableRestrictPublicGroups(v *bool) *UserCreate {
-	if v != nil {
-		_c.SetRestrictPublicGroups(*v)
-	}
-	return _c
-}
-
 // SetBalanceNotifyEnabled sets the "balance_notify_enabled" field.
 func (_c *UserCreate) SetBalanceNotifyEnabled(v bool) *UserCreate {
 	_c.mutation.SetBalanceNotifyEnabled(v)
@@ -473,6 +460,21 @@ func (_c *UserCreate) AddUsageLogs(v ...*UsageLog) *UserCreate {
 	return _c.AddUsageLogIDs(ids...)
 }
 
+// AddVideoTaskIDs adds the "video_tasks" edge to the VideoTask entity by IDs.
+func (_c *UserCreate) AddVideoTaskIDs(ids ...int64) *UserCreate {
+	_c.mutation.AddVideoTaskIDs(ids...)
+	return _c
+}
+
+// AddVideoTasks adds the "video_tasks" edges to the VideoTask entity.
+func (_c *UserCreate) AddVideoTasks(v ...*VideoTask) *UserCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddVideoTaskIDs(ids...)
+}
+
 // AddAttributeValueIDs adds the "attribute_values" edge to the UserAttributeValue entity by IDs.
 func (_c *UserCreate) AddAttributeValueIDs(ids ...int64) *UserCreate {
 	_c.mutation.AddAttributeValueIDs(ids...)
@@ -650,10 +652,6 @@ func (_c *UserCreate) defaults() error {
 		v := user.DefaultSignupSource
 		_c.mutation.SetSignupSource(v)
 	}
-	if _, ok := _c.mutation.RestrictPublicGroups(); !ok {
-		v := user.DefaultRestrictPublicGroups
-		_c.mutation.SetRestrictPublicGroups(v)
-	}
 	if _, ok := _c.mutation.BalanceNotifyEnabled(); !ok {
 		v := user.DefaultBalanceNotifyEnabled
 		_c.mutation.SetBalanceNotifyEnabled(v)
@@ -747,9 +745,6 @@ func (_c *UserCreate) check() error {
 		if err := user.SignupSourceValidator(v); err != nil {
 			return &ValidationError{Name: "signup_source", err: fmt.Errorf(`ent: validator failed for field "User.signup_source": %w`, err)}
 		}
-	}
-	if _, ok := _c.mutation.RestrictPublicGroups(); !ok {
-		return &ValidationError{Name: "restrict_public_groups", err: errors.New(`ent: missing required field "User.restrict_public_groups"`)}
 	}
 	if _, ok := _c.mutation.BalanceNotifyEnabled(); !ok {
 		return &ValidationError{Name: "balance_notify_enabled", err: errors.New(`ent: missing required field "User.balance_notify_enabled"`)}
@@ -864,10 +859,6 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.LastActiveAt(); ok {
 		_spec.SetField(user.FieldLastActiveAt, field.TypeTime, value)
 		_node.LastActiveAt = &value
-	}
-	if value, ok := _c.mutation.RestrictPublicGroups(); ok {
-		_spec.SetField(user.FieldRestrictPublicGroups, field.TypeBool, value)
-		_node.RestrictPublicGroups = value
 	}
 	if value, ok := _c.mutation.BalanceNotifyEnabled(); ok {
 		_spec.SetField(user.FieldBalanceNotifyEnabled, field.TypeBool, value)
@@ -1002,6 +993,22 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.VideoTasksIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   user.VideoTasksTable,
+			Columns: []string{user.VideoTasksColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(videotask.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -1406,18 +1413,6 @@ func (u *UserUpsert) UpdateLastActiveAt() *UserUpsert {
 // ClearLastActiveAt clears the value of the "last_active_at" field.
 func (u *UserUpsert) ClearLastActiveAt() *UserUpsert {
 	u.SetNull(user.FieldLastActiveAt)
-	return u
-}
-
-// SetRestrictPublicGroups sets the "restrict_public_groups" field.
-func (u *UserUpsert) SetRestrictPublicGroups(v bool) *UserUpsert {
-	u.Set(user.FieldRestrictPublicGroups, v)
-	return u
-}
-
-// UpdateRestrictPublicGroups sets the "restrict_public_groups" field to the value that was provided on create.
-func (u *UserUpsert) UpdateRestrictPublicGroups() *UserUpsert {
-	u.SetExcluded(user.FieldRestrictPublicGroups)
 	return u
 }
 
@@ -1853,20 +1848,6 @@ func (u *UserUpsertOne) UpdateLastActiveAt() *UserUpsertOne {
 func (u *UserUpsertOne) ClearLastActiveAt() *UserUpsertOne {
 	return u.Update(func(s *UserUpsert) {
 		s.ClearLastActiveAt()
-	})
-}
-
-// SetRestrictPublicGroups sets the "restrict_public_groups" field.
-func (u *UserUpsertOne) SetRestrictPublicGroups(v bool) *UserUpsertOne {
-	return u.Update(func(s *UserUpsert) {
-		s.SetRestrictPublicGroups(v)
-	})
-}
-
-// UpdateRestrictPublicGroups sets the "restrict_public_groups" field to the value that was provided on create.
-func (u *UserUpsertOne) UpdateRestrictPublicGroups() *UserUpsertOne {
-	return u.Update(func(s *UserUpsert) {
-		s.UpdateRestrictPublicGroups()
 	})
 }
 
@@ -2484,20 +2465,6 @@ func (u *UserUpsertBulk) UpdateLastActiveAt() *UserUpsertBulk {
 func (u *UserUpsertBulk) ClearLastActiveAt() *UserUpsertBulk {
 	return u.Update(func(s *UserUpsert) {
 		s.ClearLastActiveAt()
-	})
-}
-
-// SetRestrictPublicGroups sets the "restrict_public_groups" field.
-func (u *UserUpsertBulk) SetRestrictPublicGroups(v bool) *UserUpsertBulk {
-	return u.Update(func(s *UserUpsert) {
-		s.SetRestrictPublicGroups(v)
-	})
-}
-
-// UpdateRestrictPublicGroups sets the "restrict_public_groups" field to the value that was provided on create.
-func (u *UserUpsertBulk) UpdateRestrictPublicGroups() *UserUpsertBulk {
-	return u.Update(func(s *UserUpsert) {
-		s.UpdateRestrictPublicGroups()
 	})
 }
 

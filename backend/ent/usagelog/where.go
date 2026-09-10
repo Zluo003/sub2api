@@ -260,9 +260,9 @@ func ImageSizeSource(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldImageSizeSource, v))
 }
 
-// VideoCount applies equality check predicate on the "video_count" field. It's identical to VideoCountEQ.
-func VideoCount(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldEQ(FieldVideoCount, v))
+// VideoTaskID applies equality check predicate on the "video_task_id" field. It's identical to VideoTaskIDEQ.
+func VideoTaskID(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoTaskID, v))
 }
 
 // VideoResolution applies equality check predicate on the "video_resolution" field. It's identical to VideoResolutionEQ.
@@ -273,6 +273,26 @@ func VideoResolution(v string) predicate.UsageLog {
 // VideoDurationSeconds applies equality check predicate on the "video_duration_seconds" field. It's identical to VideoDurationSecondsEQ.
 func VideoDurationSeconds(v int) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldVideoDurationSeconds, v))
+}
+
+// VideoReferenceDurationSeconds applies equality check predicate on the "video_reference_duration_seconds" field. It's identical to VideoReferenceDurationSecondsEQ.
+func VideoReferenceDurationSeconds(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoReferenceDurationSeconds, v))
+}
+
+// VideoBillableSeconds applies equality check predicate on the "video_billable_seconds" field. It's identical to VideoBillableSecondsEQ.
+func VideoBillableSeconds(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoBillableSeconds, v))
+}
+
+// VideoResultURL applies equality check predicate on the "video_result_url" field. It's identical to VideoResultURLEQ.
+func VideoResultURL(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoResultURL, v))
+}
+
+// VideoCount applies equality check predicate on the "video_count" field. It's identical to VideoCountEQ.
+func VideoCount(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoCount, v))
 }
 
 // CacheTTLOverridden applies equality check predicate on the "cache_ttl_overridden" field. It's identical to CacheTTLOverriddenEQ.
@@ -2285,44 +2305,79 @@ func ImageSizeBreakdownNotNil() predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldNotNull(FieldImageSizeBreakdown))
 }
 
-// VideoCountEQ applies the EQ predicate on the "video_count" field.
-func VideoCountEQ(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldEQ(FieldVideoCount, v))
+// VideoTaskIDEQ applies the EQ predicate on the "video_task_id" field.
+func VideoTaskIDEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoTaskID, v))
 }
 
-// VideoCountNEQ applies the NEQ predicate on the "video_count" field.
-func VideoCountNEQ(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldNEQ(FieldVideoCount, v))
+// VideoTaskIDNEQ applies the NEQ predicate on the "video_task_id" field.
+func VideoTaskIDNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldVideoTaskID, v))
 }
 
-// VideoCountIn applies the In predicate on the "video_count" field.
-func VideoCountIn(vs ...int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldIn(FieldVideoCount, vs...))
+// VideoTaskIDIn applies the In predicate on the "video_task_id" field.
+func VideoTaskIDIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldVideoTaskID, vs...))
 }
 
-// VideoCountNotIn applies the NotIn predicate on the "video_count" field.
-func VideoCountNotIn(vs ...int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldNotIn(FieldVideoCount, vs...))
+// VideoTaskIDNotIn applies the NotIn predicate on the "video_task_id" field.
+func VideoTaskIDNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldVideoTaskID, vs...))
 }
 
-// VideoCountGT applies the GT predicate on the "video_count" field.
-func VideoCountGT(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldGT(FieldVideoCount, v))
+// VideoTaskIDGT applies the GT predicate on the "video_task_id" field.
+func VideoTaskIDGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldVideoTaskID, v))
 }
 
-// VideoCountGTE applies the GTE predicate on the "video_count" field.
-func VideoCountGTE(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldGTE(FieldVideoCount, v))
+// VideoTaskIDGTE applies the GTE predicate on the "video_task_id" field.
+func VideoTaskIDGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldVideoTaskID, v))
 }
 
-// VideoCountLT applies the LT predicate on the "video_count" field.
-func VideoCountLT(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldLT(FieldVideoCount, v))
+// VideoTaskIDLT applies the LT predicate on the "video_task_id" field.
+func VideoTaskIDLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldVideoTaskID, v))
 }
 
-// VideoCountLTE applies the LTE predicate on the "video_count" field.
-func VideoCountLTE(v int) predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldLTE(FieldVideoCount, v))
+// VideoTaskIDLTE applies the LTE predicate on the "video_task_id" field.
+func VideoTaskIDLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldVideoTaskID, v))
+}
+
+// VideoTaskIDContains applies the Contains predicate on the "video_task_id" field.
+func VideoTaskIDContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldVideoTaskID, v))
+}
+
+// VideoTaskIDHasPrefix applies the HasPrefix predicate on the "video_task_id" field.
+func VideoTaskIDHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldVideoTaskID, v))
+}
+
+// VideoTaskIDHasSuffix applies the HasSuffix predicate on the "video_task_id" field.
+func VideoTaskIDHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldVideoTaskID, v))
+}
+
+// VideoTaskIDIsNil applies the IsNil predicate on the "video_task_id" field.
+func VideoTaskIDIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldVideoTaskID))
+}
+
+// VideoTaskIDNotNil applies the NotNil predicate on the "video_task_id" field.
+func VideoTaskIDNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldVideoTaskID))
+}
+
+// VideoTaskIDEqualFold applies the EqualFold predicate on the "video_task_id" field.
+func VideoTaskIDEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldVideoTaskID, v))
+}
+
+// VideoTaskIDContainsFold applies the ContainsFold predicate on the "video_task_id" field.
+func VideoTaskIDContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldVideoTaskID, v))
 }
 
 // VideoResolutionEQ applies the EQ predicate on the "video_resolution" field.
@@ -2440,14 +2495,199 @@ func VideoDurationSecondsLTE(v int) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldLTE(FieldVideoDurationSeconds, v))
 }
 
-// VideoDurationSecondsIsNil applies the IsNil predicate on the "video_duration_seconds" field.
-func VideoDurationSecondsIsNil() predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldIsNull(FieldVideoDurationSeconds))
+// VideoReferenceDurationSecondsEQ applies the EQ predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoReferenceDurationSeconds, v))
 }
 
-// VideoDurationSecondsNotNil applies the NotNil predicate on the "video_duration_seconds" field.
-func VideoDurationSecondsNotNil() predicate.UsageLog {
-	return predicate.UsageLog(sql.FieldNotNull(FieldVideoDurationSeconds))
+// VideoReferenceDurationSecondsNEQ applies the NEQ predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsNEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldVideoReferenceDurationSeconds, v))
+}
+
+// VideoReferenceDurationSecondsIn applies the In predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldVideoReferenceDurationSeconds, vs...))
+}
+
+// VideoReferenceDurationSecondsNotIn applies the NotIn predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsNotIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldVideoReferenceDurationSeconds, vs...))
+}
+
+// VideoReferenceDurationSecondsGT applies the GT predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsGT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldVideoReferenceDurationSeconds, v))
+}
+
+// VideoReferenceDurationSecondsGTE applies the GTE predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsGTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldVideoReferenceDurationSeconds, v))
+}
+
+// VideoReferenceDurationSecondsLT applies the LT predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsLT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldVideoReferenceDurationSeconds, v))
+}
+
+// VideoReferenceDurationSecondsLTE applies the LTE predicate on the "video_reference_duration_seconds" field.
+func VideoReferenceDurationSecondsLTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldVideoReferenceDurationSeconds, v))
+}
+
+// VideoBillableSecondsEQ applies the EQ predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoBillableSeconds, v))
+}
+
+// VideoBillableSecondsNEQ applies the NEQ predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsNEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldVideoBillableSeconds, v))
+}
+
+// VideoBillableSecondsIn applies the In predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldVideoBillableSeconds, vs...))
+}
+
+// VideoBillableSecondsNotIn applies the NotIn predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsNotIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldVideoBillableSeconds, vs...))
+}
+
+// VideoBillableSecondsGT applies the GT predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsGT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldVideoBillableSeconds, v))
+}
+
+// VideoBillableSecondsGTE applies the GTE predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsGTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldVideoBillableSeconds, v))
+}
+
+// VideoBillableSecondsLT applies the LT predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsLT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldVideoBillableSeconds, v))
+}
+
+// VideoBillableSecondsLTE applies the LTE predicate on the "video_billable_seconds" field.
+func VideoBillableSecondsLTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldVideoBillableSeconds, v))
+}
+
+// VideoResultURLEQ applies the EQ predicate on the "video_result_url" field.
+func VideoResultURLEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoResultURL, v))
+}
+
+// VideoResultURLNEQ applies the NEQ predicate on the "video_result_url" field.
+func VideoResultURLNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldVideoResultURL, v))
+}
+
+// VideoResultURLIn applies the In predicate on the "video_result_url" field.
+func VideoResultURLIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldVideoResultURL, vs...))
+}
+
+// VideoResultURLNotIn applies the NotIn predicate on the "video_result_url" field.
+func VideoResultURLNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldVideoResultURL, vs...))
+}
+
+// VideoResultURLGT applies the GT predicate on the "video_result_url" field.
+func VideoResultURLGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldVideoResultURL, v))
+}
+
+// VideoResultURLGTE applies the GTE predicate on the "video_result_url" field.
+func VideoResultURLGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldVideoResultURL, v))
+}
+
+// VideoResultURLLT applies the LT predicate on the "video_result_url" field.
+func VideoResultURLLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldVideoResultURL, v))
+}
+
+// VideoResultURLLTE applies the LTE predicate on the "video_result_url" field.
+func VideoResultURLLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldVideoResultURL, v))
+}
+
+// VideoResultURLContains applies the Contains predicate on the "video_result_url" field.
+func VideoResultURLContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldVideoResultURL, v))
+}
+
+// VideoResultURLHasPrefix applies the HasPrefix predicate on the "video_result_url" field.
+func VideoResultURLHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldVideoResultURL, v))
+}
+
+// VideoResultURLHasSuffix applies the HasSuffix predicate on the "video_result_url" field.
+func VideoResultURLHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldVideoResultURL, v))
+}
+
+// VideoResultURLIsNil applies the IsNil predicate on the "video_result_url" field.
+func VideoResultURLIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldVideoResultURL))
+}
+
+// VideoResultURLNotNil applies the NotNil predicate on the "video_result_url" field.
+func VideoResultURLNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldVideoResultURL))
+}
+
+// VideoResultURLEqualFold applies the EqualFold predicate on the "video_result_url" field.
+func VideoResultURLEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldVideoResultURL, v))
+}
+
+// VideoResultURLContainsFold applies the ContainsFold predicate on the "video_result_url" field.
+func VideoResultURLContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldVideoResultURL, v))
+}
+
+// VideoCountEQ applies the EQ predicate on the "video_count" field.
+func VideoCountEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldVideoCount, v))
+}
+
+// VideoCountNEQ applies the NEQ predicate on the "video_count" field.
+func VideoCountNEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldVideoCount, v))
+}
+
+// VideoCountIn applies the In predicate on the "video_count" field.
+func VideoCountIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldVideoCount, vs...))
+}
+
+// VideoCountNotIn applies the NotIn predicate on the "video_count" field.
+func VideoCountNotIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldVideoCount, vs...))
+}
+
+// VideoCountGT applies the GT predicate on the "video_count" field.
+func VideoCountGT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldVideoCount, v))
+}
+
+// VideoCountGTE applies the GTE predicate on the "video_count" field.
+func VideoCountGTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldVideoCount, v))
+}
+
+// VideoCountLT applies the LT predicate on the "video_count" field.
+func VideoCountLT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldVideoCount, v))
+}
+
+// VideoCountLTE applies the LTE predicate on the "video_count" field.
+func VideoCountLTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldVideoCount, v))
 }
 
 // CacheTTLOverriddenEQ applies the EQ predicate on the "cache_ttl_overridden" field.

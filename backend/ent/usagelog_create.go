@@ -567,16 +567,16 @@ func (_c *UsageLogCreate) SetImageSizeBreakdown(v map[string]int) *UsageLogCreat
 	return _c
 }
 
-// SetVideoCount sets the "video_count" field.
-func (_c *UsageLogCreate) SetVideoCount(v int) *UsageLogCreate {
-	_c.mutation.SetVideoCount(v)
+// SetVideoTaskID sets the "video_task_id" field.
+func (_c *UsageLogCreate) SetVideoTaskID(v string) *UsageLogCreate {
+	_c.mutation.SetVideoTaskID(v)
 	return _c
 }
 
-// SetNillableVideoCount sets the "video_count" field if the given value is not nil.
-func (_c *UsageLogCreate) SetNillableVideoCount(v *int) *UsageLogCreate {
+// SetNillableVideoTaskID sets the "video_task_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableVideoTaskID(v *string) *UsageLogCreate {
 	if v != nil {
-		_c.SetVideoCount(*v)
+		_c.SetVideoTaskID(*v)
 	}
 	return _c
 }
@@ -605,6 +605,62 @@ func (_c *UsageLogCreate) SetVideoDurationSeconds(v int) *UsageLogCreate {
 func (_c *UsageLogCreate) SetNillableVideoDurationSeconds(v *int) *UsageLogCreate {
 	if v != nil {
 		_c.SetVideoDurationSeconds(*v)
+	}
+	return _c
+}
+
+// SetVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field.
+func (_c *UsageLogCreate) SetVideoReferenceDurationSeconds(v int) *UsageLogCreate {
+	_c.mutation.SetVideoReferenceDurationSeconds(v)
+	return _c
+}
+
+// SetNillableVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableVideoReferenceDurationSeconds(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetVideoReferenceDurationSeconds(*v)
+	}
+	return _c
+}
+
+// SetVideoBillableSeconds sets the "video_billable_seconds" field.
+func (_c *UsageLogCreate) SetVideoBillableSeconds(v int) *UsageLogCreate {
+	_c.mutation.SetVideoBillableSeconds(v)
+	return _c
+}
+
+// SetNillableVideoBillableSeconds sets the "video_billable_seconds" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableVideoBillableSeconds(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetVideoBillableSeconds(*v)
+	}
+	return _c
+}
+
+// SetVideoResultURL sets the "video_result_url" field.
+func (_c *UsageLogCreate) SetVideoResultURL(v string) *UsageLogCreate {
+	_c.mutation.SetVideoResultURL(v)
+	return _c
+}
+
+// SetNillableVideoResultURL sets the "video_result_url" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableVideoResultURL(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetVideoResultURL(*v)
+	}
+	return _c
+}
+
+// SetVideoCount sets the "video_count" field.
+func (_c *UsageLogCreate) SetVideoCount(v int) *UsageLogCreate {
+	_c.mutation.SetVideoCount(v)
+	return _c
+}
+
+// SetNillableVideoCount sets the "video_count" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableVideoCount(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetVideoCount(*v)
 	}
 	return _c
 }
@@ -765,6 +821,18 @@ func (_c *UsageLogCreate) defaults() {
 		v := usagelog.DefaultImageCount
 		_c.mutation.SetImageCount(v)
 	}
+	if _, ok := _c.mutation.VideoDurationSeconds(); !ok {
+		v := usagelog.DefaultVideoDurationSeconds
+		_c.mutation.SetVideoDurationSeconds(v)
+	}
+	if _, ok := _c.mutation.VideoReferenceDurationSeconds(); !ok {
+		v := usagelog.DefaultVideoReferenceDurationSeconds
+		_c.mutation.SetVideoReferenceDurationSeconds(v)
+	}
+	if _, ok := _c.mutation.VideoBillableSeconds(); !ok {
+		v := usagelog.DefaultVideoBillableSeconds
+		_c.mutation.SetVideoBillableSeconds(v)
+	}
 	if _, ok := _c.mutation.VideoCount(); !ok {
 		v := usagelog.DefaultVideoCount
 		_c.mutation.SetVideoCount(v)
@@ -917,13 +985,27 @@ func (_c *UsageLogCreate) check() error {
 			return &ValidationError{Name: "image_size_source", err: fmt.Errorf(`ent: validator failed for field "UsageLog.image_size_source": %w`, err)}
 		}
 	}
-	if _, ok := _c.mutation.VideoCount(); !ok {
-		return &ValidationError{Name: "video_count", err: errors.New(`ent: missing required field "UsageLog.video_count"`)}
+	if v, ok := _c.mutation.VideoTaskID(); ok {
+		if err := usagelog.VideoTaskIDValidator(v); err != nil {
+			return &ValidationError{Name: "video_task_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_task_id": %w`, err)}
+		}
 	}
 	if v, ok := _c.mutation.VideoResolution(); ok {
 		if err := usagelog.VideoResolutionValidator(v); err != nil {
 			return &ValidationError{Name: "video_resolution", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_resolution": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.VideoDurationSeconds(); !ok {
+		return &ValidationError{Name: "video_duration_seconds", err: errors.New(`ent: missing required field "UsageLog.video_duration_seconds"`)}
+	}
+	if _, ok := _c.mutation.VideoReferenceDurationSeconds(); !ok {
+		return &ValidationError{Name: "video_reference_duration_seconds", err: errors.New(`ent: missing required field "UsageLog.video_reference_duration_seconds"`)}
+	}
+	if _, ok := _c.mutation.VideoBillableSeconds(); !ok {
+		return &ValidationError{Name: "video_billable_seconds", err: errors.New(`ent: missing required field "UsageLog.video_billable_seconds"`)}
+	}
+	if _, ok := _c.mutation.VideoCount(); !ok {
+		return &ValidationError{Name: "video_count", err: errors.New(`ent: missing required field "UsageLog.video_count"`)}
 	}
 	if _, ok := _c.mutation.CacheTTLOverridden(); !ok {
 		return &ValidationError{Name: "cache_ttl_overridden", err: errors.New(`ent: missing required field "UsageLog.cache_ttl_overridden"`)}
@@ -1115,9 +1197,9 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		_spec.SetField(usagelog.FieldImageSizeBreakdown, field.TypeJSON, value)
 		_node.ImageSizeBreakdown = value
 	}
-	if value, ok := _c.mutation.VideoCount(); ok {
-		_spec.SetField(usagelog.FieldVideoCount, field.TypeInt, value)
-		_node.VideoCount = value
+	if value, ok := _c.mutation.VideoTaskID(); ok {
+		_spec.SetField(usagelog.FieldVideoTaskID, field.TypeString, value)
+		_node.VideoTaskID = &value
 	}
 	if value, ok := _c.mutation.VideoResolution(); ok {
 		_spec.SetField(usagelog.FieldVideoResolution, field.TypeString, value)
@@ -1125,7 +1207,23 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	}
 	if value, ok := _c.mutation.VideoDurationSeconds(); ok {
 		_spec.SetField(usagelog.FieldVideoDurationSeconds, field.TypeInt, value)
-		_node.VideoDurationSeconds = &value
+		_node.VideoDurationSeconds = value
+	}
+	if value, ok := _c.mutation.VideoReferenceDurationSeconds(); ok {
+		_spec.SetField(usagelog.FieldVideoReferenceDurationSeconds, field.TypeInt, value)
+		_node.VideoReferenceDurationSeconds = value
+	}
+	if value, ok := _c.mutation.VideoBillableSeconds(); ok {
+		_spec.SetField(usagelog.FieldVideoBillableSeconds, field.TypeInt, value)
+		_node.VideoBillableSeconds = value
+	}
+	if value, ok := _c.mutation.VideoResultURL(); ok {
+		_spec.SetField(usagelog.FieldVideoResultURL, field.TypeString, value)
+		_node.VideoResultURL = &value
+	}
+	if value, ok := _c.mutation.VideoCount(); ok {
+		_spec.SetField(usagelog.FieldVideoCount, field.TypeInt, value)
+		_node.VideoCount = value
 	}
 	if value, ok := _c.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
@@ -2010,21 +2108,21 @@ func (u *UsageLogUpsert) ClearImageSizeBreakdown() *UsageLogUpsert {
 	return u
 }
 
-// SetVideoCount sets the "video_count" field.
-func (u *UsageLogUpsert) SetVideoCount(v int) *UsageLogUpsert {
-	u.Set(usagelog.FieldVideoCount, v)
+// SetVideoTaskID sets the "video_task_id" field.
+func (u *UsageLogUpsert) SetVideoTaskID(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldVideoTaskID, v)
 	return u
 }
 
-// UpdateVideoCount sets the "video_count" field to the value that was provided on create.
-func (u *UsageLogUpsert) UpdateVideoCount() *UsageLogUpsert {
-	u.SetExcluded(usagelog.FieldVideoCount)
+// UpdateVideoTaskID sets the "video_task_id" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateVideoTaskID() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldVideoTaskID)
 	return u
 }
 
-// AddVideoCount adds v to the "video_count" field.
-func (u *UsageLogUpsert) AddVideoCount(v int) *UsageLogUpsert {
-	u.Add(usagelog.FieldVideoCount, v)
+// ClearVideoTaskID clears the value of the "video_task_id" field.
+func (u *UsageLogUpsert) ClearVideoTaskID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldVideoTaskID)
 	return u
 }
 
@@ -2064,9 +2162,75 @@ func (u *UsageLogUpsert) AddVideoDurationSeconds(v int) *UsageLogUpsert {
 	return u
 }
 
-// ClearVideoDurationSeconds clears the value of the "video_duration_seconds" field.
-func (u *UsageLogUpsert) ClearVideoDurationSeconds() *UsageLogUpsert {
-	u.SetNull(usagelog.FieldVideoDurationSeconds)
+// SetVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field.
+func (u *UsageLogUpsert) SetVideoReferenceDurationSeconds(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldVideoReferenceDurationSeconds, v)
+	return u
+}
+
+// UpdateVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateVideoReferenceDurationSeconds() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldVideoReferenceDurationSeconds)
+	return u
+}
+
+// AddVideoReferenceDurationSeconds adds v to the "video_reference_duration_seconds" field.
+func (u *UsageLogUpsert) AddVideoReferenceDurationSeconds(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldVideoReferenceDurationSeconds, v)
+	return u
+}
+
+// SetVideoBillableSeconds sets the "video_billable_seconds" field.
+func (u *UsageLogUpsert) SetVideoBillableSeconds(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldVideoBillableSeconds, v)
+	return u
+}
+
+// UpdateVideoBillableSeconds sets the "video_billable_seconds" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateVideoBillableSeconds() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldVideoBillableSeconds)
+	return u
+}
+
+// AddVideoBillableSeconds adds v to the "video_billable_seconds" field.
+func (u *UsageLogUpsert) AddVideoBillableSeconds(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldVideoBillableSeconds, v)
+	return u
+}
+
+// SetVideoResultURL sets the "video_result_url" field.
+func (u *UsageLogUpsert) SetVideoResultURL(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldVideoResultURL, v)
+	return u
+}
+
+// UpdateVideoResultURL sets the "video_result_url" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateVideoResultURL() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldVideoResultURL)
+	return u
+}
+
+// ClearVideoResultURL clears the value of the "video_result_url" field.
+func (u *UsageLogUpsert) ClearVideoResultURL() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldVideoResultURL)
+	return u
+}
+
+// SetVideoCount sets the "video_count" field.
+func (u *UsageLogUpsert) SetVideoCount(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldVideoCount, v)
+	return u
+}
+
+// UpdateVideoCount sets the "video_count" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateVideoCount() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldVideoCount)
+	return u
+}
+
+// AddVideoCount adds v to the "video_count" field.
+func (u *UsageLogUpsert) AddVideoCount(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldVideoCount, v)
 	return u
 }
 
@@ -2988,24 +3152,24 @@ func (u *UsageLogUpsertOne) ClearImageSizeBreakdown() *UsageLogUpsertOne {
 	})
 }
 
-// SetVideoCount sets the "video_count" field.
-func (u *UsageLogUpsertOne) SetVideoCount(v int) *UsageLogUpsertOne {
+// SetVideoTaskID sets the "video_task_id" field.
+func (u *UsageLogUpsertOne) SetVideoTaskID(v string) *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.SetVideoCount(v)
+		s.SetVideoTaskID(v)
 	})
 }
 
-// AddVideoCount adds v to the "video_count" field.
-func (u *UsageLogUpsertOne) AddVideoCount(v int) *UsageLogUpsertOne {
+// UpdateVideoTaskID sets the "video_task_id" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateVideoTaskID() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.AddVideoCount(v)
+		s.UpdateVideoTaskID()
 	})
 }
 
-// UpdateVideoCount sets the "video_count" field to the value that was provided on create.
-func (u *UsageLogUpsertOne) UpdateVideoCount() *UsageLogUpsertOne {
+// ClearVideoTaskID clears the value of the "video_task_id" field.
+func (u *UsageLogUpsertOne) ClearVideoTaskID() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.UpdateVideoCount()
+		s.ClearVideoTaskID()
 	})
 }
 
@@ -3051,10 +3215,87 @@ func (u *UsageLogUpsertOne) UpdateVideoDurationSeconds() *UsageLogUpsertOne {
 	})
 }
 
-// ClearVideoDurationSeconds clears the value of the "video_duration_seconds" field.
-func (u *UsageLogUpsertOne) ClearVideoDurationSeconds() *UsageLogUpsertOne {
+// SetVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field.
+func (u *UsageLogUpsertOne) SetVideoReferenceDurationSeconds(v int) *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.ClearVideoDurationSeconds()
+		s.SetVideoReferenceDurationSeconds(v)
+	})
+}
+
+// AddVideoReferenceDurationSeconds adds v to the "video_reference_duration_seconds" field.
+func (u *UsageLogUpsertOne) AddVideoReferenceDurationSeconds(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddVideoReferenceDurationSeconds(v)
+	})
+}
+
+// UpdateVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateVideoReferenceDurationSeconds() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoReferenceDurationSeconds()
+	})
+}
+
+// SetVideoBillableSeconds sets the "video_billable_seconds" field.
+func (u *UsageLogUpsertOne) SetVideoBillableSeconds(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetVideoBillableSeconds(v)
+	})
+}
+
+// AddVideoBillableSeconds adds v to the "video_billable_seconds" field.
+func (u *UsageLogUpsertOne) AddVideoBillableSeconds(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddVideoBillableSeconds(v)
+	})
+}
+
+// UpdateVideoBillableSeconds sets the "video_billable_seconds" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateVideoBillableSeconds() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoBillableSeconds()
+	})
+}
+
+// SetVideoResultURL sets the "video_result_url" field.
+func (u *UsageLogUpsertOne) SetVideoResultURL(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetVideoResultURL(v)
+	})
+}
+
+// UpdateVideoResultURL sets the "video_result_url" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateVideoResultURL() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoResultURL()
+	})
+}
+
+// ClearVideoResultURL clears the value of the "video_result_url" field.
+func (u *UsageLogUpsertOne) ClearVideoResultURL() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearVideoResultURL()
+	})
+}
+
+// SetVideoCount sets the "video_count" field.
+func (u *UsageLogUpsertOne) SetVideoCount(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetVideoCount(v)
+	})
+}
+
+// AddVideoCount adds v to the "video_count" field.
+func (u *UsageLogUpsertOne) AddVideoCount(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddVideoCount(v)
+	})
+}
+
+// UpdateVideoCount sets the "video_count" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateVideoCount() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoCount()
 	})
 }
 
@@ -4144,24 +4385,24 @@ func (u *UsageLogUpsertBulk) ClearImageSizeBreakdown() *UsageLogUpsertBulk {
 	})
 }
 
-// SetVideoCount sets the "video_count" field.
-func (u *UsageLogUpsertBulk) SetVideoCount(v int) *UsageLogUpsertBulk {
+// SetVideoTaskID sets the "video_task_id" field.
+func (u *UsageLogUpsertBulk) SetVideoTaskID(v string) *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.SetVideoCount(v)
+		s.SetVideoTaskID(v)
 	})
 }
 
-// AddVideoCount adds v to the "video_count" field.
-func (u *UsageLogUpsertBulk) AddVideoCount(v int) *UsageLogUpsertBulk {
+// UpdateVideoTaskID sets the "video_task_id" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateVideoTaskID() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.AddVideoCount(v)
+		s.UpdateVideoTaskID()
 	})
 }
 
-// UpdateVideoCount sets the "video_count" field to the value that was provided on create.
-func (u *UsageLogUpsertBulk) UpdateVideoCount() *UsageLogUpsertBulk {
+// ClearVideoTaskID clears the value of the "video_task_id" field.
+func (u *UsageLogUpsertBulk) ClearVideoTaskID() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.UpdateVideoCount()
+		s.ClearVideoTaskID()
 	})
 }
 
@@ -4207,10 +4448,87 @@ func (u *UsageLogUpsertBulk) UpdateVideoDurationSeconds() *UsageLogUpsertBulk {
 	})
 }
 
-// ClearVideoDurationSeconds clears the value of the "video_duration_seconds" field.
-func (u *UsageLogUpsertBulk) ClearVideoDurationSeconds() *UsageLogUpsertBulk {
+// SetVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field.
+func (u *UsageLogUpsertBulk) SetVideoReferenceDurationSeconds(v int) *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
-		s.ClearVideoDurationSeconds()
+		s.SetVideoReferenceDurationSeconds(v)
+	})
+}
+
+// AddVideoReferenceDurationSeconds adds v to the "video_reference_duration_seconds" field.
+func (u *UsageLogUpsertBulk) AddVideoReferenceDurationSeconds(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddVideoReferenceDurationSeconds(v)
+	})
+}
+
+// UpdateVideoReferenceDurationSeconds sets the "video_reference_duration_seconds" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateVideoReferenceDurationSeconds() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoReferenceDurationSeconds()
+	})
+}
+
+// SetVideoBillableSeconds sets the "video_billable_seconds" field.
+func (u *UsageLogUpsertBulk) SetVideoBillableSeconds(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetVideoBillableSeconds(v)
+	})
+}
+
+// AddVideoBillableSeconds adds v to the "video_billable_seconds" field.
+func (u *UsageLogUpsertBulk) AddVideoBillableSeconds(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddVideoBillableSeconds(v)
+	})
+}
+
+// UpdateVideoBillableSeconds sets the "video_billable_seconds" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateVideoBillableSeconds() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoBillableSeconds()
+	})
+}
+
+// SetVideoResultURL sets the "video_result_url" field.
+func (u *UsageLogUpsertBulk) SetVideoResultURL(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetVideoResultURL(v)
+	})
+}
+
+// UpdateVideoResultURL sets the "video_result_url" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateVideoResultURL() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoResultURL()
+	})
+}
+
+// ClearVideoResultURL clears the value of the "video_result_url" field.
+func (u *UsageLogUpsertBulk) ClearVideoResultURL() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearVideoResultURL()
+	})
+}
+
+// SetVideoCount sets the "video_count" field.
+func (u *UsageLogUpsertBulk) SetVideoCount(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetVideoCount(v)
+	})
+}
+
+// AddVideoCount adds v to the "video_count" field.
+func (u *UsageLogUpsertBulk) AddVideoCount(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddVideoCount(v)
+	})
+}
+
+// UpdateVideoCount sets the "video_count" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateVideoCount() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateVideoCount()
 	})
 }
 
