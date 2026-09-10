@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -1004,81 +1005,6 @@ func ProvideOpenAIQuotaAutoResetService(
 		leaderLock,
 	)
 	service.Start()
-	return service
-}
-
-func ProvideAccountUsageService(
-	accountRepo AccountRepository,
-	usageLogRepo UsageLogRepository,
-	usageFetcher ClaudeUsageFetcher,
-	geminiQuotaService *GeminiQuotaService,
-	antigravityQuotaFetcher *AntigravityQuotaFetcher,
-	grokQuotaFetcher *GrokQuotaFetcher,
-	grokQuotaService *GrokQuotaService,
-	openAIQuotaService *OpenAIQuotaService,
-	cache *UsageCache,
-	identityCache IdentityCache,
-	tlsFPProfileService *TLSFingerprintProfileService,
-	openAIGatewayService *OpenAIGatewayService,
-) *AccountUsageService {
-	service := NewAccountUsageService(
-		accountRepo,
-		usageLogRepo,
-		usageFetcher,
-		geminiQuotaService,
-		antigravityQuotaFetcher,
-		grokQuotaFetcher,
-		grokQuotaService,
-		openAIQuotaService,
-		cache,
-		identityCache,
-		tlsFPProfileService,
-	)
-	service.agentIdentityWS = openAIGatewayService
-	return service
-}
-
-func ProvideAccountTestService(
-	accountRepo AccountRepository,
-	geminiTokenProvider *GeminiTokenProvider,
-	claudeTokenProvider *ClaudeTokenProvider,
-	grokTokenProvider *GrokTokenProvider,
-	antigravityGatewayService *AntigravityGatewayService,
-	httpUpstream HTTPUpstream,
-	cfg *config.Config,
-	tlsFPProfileService *TLSFingerprintProfileService,
-	openAIGatewayService *OpenAIGatewayService,
-	settingService *SettingService,
-	pluginManager *PluginManager,
-) *AccountTestService {
-	service := NewAccountTestService(
-		accountRepo,
-		geminiTokenProvider,
-		claudeTokenProvider,
-		grokTokenProvider,
-		antigravityGatewayService,
-		httpUpstream,
-		cfg,
-		tlsFPProfileService,
-	)
-	service.agentIdentityWS = openAIGatewayService
-	service.SetOpenAIGatewayService(openAIGatewayService)
-	service.SetSettingService(settingService)
-	service.SetPluginManager(pluginManager)
-	return service
-}
-
-func ProvideGrokQuotaService(
-	accountRepo AccountRepository,
-	proxyRepo ProxyRepository,
-	tokenProvider *GrokTokenProvider,
-	httpUpstream HTTPUpstream,
-	cfg *config.Config,
-	usageLogRepo UsageLogRepository,
-	settingService *SettingService,
-) *GrokQuotaService {
-	service := NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream, cfg, usageLogRepo)
-	service.SetSettingService(settingService)
 	return service
 }
 
