@@ -31,6 +31,20 @@ const (
 	PlatformComposite   = "composite"
 )
 
+// Account modes control how account usage and cooldowns are tracked.
+const (
+	AccountModePayG   = "payg"
+	AccountModeCoding = "coding"
+)
+
+// API protocols identify the upstream request contract used by a channel.
+const (
+	APIProtocolChatCompletions = "chat_completions"
+	APIProtocolAnthropic       = "anthropic"
+	APIProtocolResponses       = "responses"
+	APIProtocolAdaptive        = "adaptive"
+)
+
 // Account type constants
 const (
 	AccountTypeOAuth          = "oauth"           // OAuth类型账号（full scope: profile + inference）
