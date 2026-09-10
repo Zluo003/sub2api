@@ -1260,7 +1260,7 @@ func buildVideoUsageLog(task *VideoTask, apiKey *APIKey, subscription *UserSubsc
 		BillingMode:                   &billingMode,
 		VideoTaskID:                   &task.PublicID,
 		VideoResolution:               &task.Resolution,
-		VideoDurationSeconds:          task.DurationSeconds,
+		VideoDurationSeconds:          &task.DurationSeconds,
 		VideoReferenceDurationSeconds: task.ReferenceDurationSeconds,
 		VideoBillableSeconds:          task.BillableSeconds,
 		VideoResultURL:                opts.ResultVideoURL,

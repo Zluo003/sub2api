@@ -541,7 +541,9 @@ func detachUpstreamContext(ctx context.Context) (context.Context, context.Cancel
 
 // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
 type billingDeps struct {
-	accountRepo           AccountRepository
+	accountRepo interface {
+		IncrementQuotaUsed(context.Context, int64, float64) error
+	}
 	userRepo              UserRepository
 	userSubRepo           UserSubscriptionRepository
 	billingCacheService   *BillingCacheService

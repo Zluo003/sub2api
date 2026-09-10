@@ -19,12 +19,13 @@ const (
 	RequestTypeStream       RequestType = 2
 	RequestTypeWSV2         RequestType = 3
 	RequestTypeCyberBlocked RequestType = 4 // cyber_policy 命中（透传但被上游安全策略拒绝）
-	RequestTypeLive         RequestType = 5
+	RequestTypeVideo        RequestType = 5
+	RequestTypeLive         RequestType = 6
 )
 
 func (t RequestType) IsValid() bool {
 	switch t {
-	case RequestTypeUnknown, RequestTypeSync, RequestTypeStream, RequestTypeWSV2, RequestTypeCyberBlocked, RequestTypeLive:
+	case RequestTypeUnknown, RequestTypeSync, RequestTypeStream, RequestTypeWSV2, RequestTypeCyberBlocked, RequestTypeVideo, RequestTypeLive:
 		return true
 	default:
 		return false
@@ -48,6 +49,8 @@ func (t RequestType) String() string {
 		return "ws_v2"
 	case RequestTypeCyberBlocked:
 		return "cyber"
+	case RequestTypeVideo:
+		return "video"
 	case RequestTypeLive:
 		return "live"
 	default:
@@ -71,6 +74,8 @@ func ParseUsageRequestType(value string) (RequestType, error) {
 		return RequestTypeWSV2, nil
 	case "cyber":
 		return RequestTypeCyberBlocked, nil
+	case "video":
+		return RequestTypeVideo, nil
 	case "live":
 		return RequestTypeLive, nil
 	default:
@@ -204,9 +209,13 @@ type UsageLog struct {
 	MediaType          *string
 
 	// 视频生成字段（Grok 视频按秒计费；video_count>0 的行不要求 image_size）
-	VideoCount           int
-	VideoResolution      *string
-	VideoDurationSeconds *int
+	VideoCount                    int
+	VideoResolution               *string
+	VideoDurationSeconds          *int
+	VideoTaskID                   *string
+	VideoReferenceDurationSeconds int
+	VideoBillableSeconds          int
+	VideoResultURL                *string
 
 	CreatedAt time.Time
 

@@ -724,6 +724,15 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 	}
 }
 
+// RollbackUserPlatformQuotaUsage invalidates the cached quota after a refunded
+// request. The durable quota ledger is reconciled by the caller's transaction.
+func (s *BillingCacheService) RollbackUserPlatformQuotaUsage(ctx context.Context, userID int64, platform string, cost float64) {
+	if s == nil || s.cache == nil || platform == "" {
+		return
+	}
+	_ = s.cache.DeleteUserPlatformQuotaCache(ctx, userID, platform)
+}
+
 // ============================================
 // 统一检查方法
 // ============================================
