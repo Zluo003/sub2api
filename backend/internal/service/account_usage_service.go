@@ -80,6 +80,17 @@ type UsageLogRepository interface {
 	GetDailyStatsAggregated(ctx context.Context, userID int64, startTime, endTime time.Time) ([]map[string]any, error)
 }
 
+type VideoUsageResultUpdater interface {
+	UpdateVideoResult(ctx context.Context, requestID string, apiKeyID int64, result VideoUsageResultUpdate) error
+}
+
+type VideoUsageResultUpdate struct {
+	ResultURL        string
+	DurationMs       *int
+	InboundEndpoint  string
+	UpstreamEndpoint string
+}
+
 type accountWindowStatsBatchReader interface {
 	GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error)
 }

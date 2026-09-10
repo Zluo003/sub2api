@@ -192,6 +192,31 @@ func (g *Group) GetVideoPrice(resolution string) *float64 {
 	}
 }
 
+func (g *Group) GetVideoPriceForModel(model, resolution string) *float64 {
+	if g == nil {
+		return nil
+	}
+	if price := LookupVideoModelPrice(g.VideoModelPrices, model, resolution); price != nil {
+		return price
+	}
+	return g.GetVideoPrice(resolution)
+}
+
+func (g *Group) GetSearchPricePer1k() *float64 {
+	if g == nil {
+		return nil
+	}
+	return g.SearchPricePer1k
+}
+
+func IsGroupContextValid(group *Group) bool {
+	return group != nil && group.ID > 0 && group.Hydrated && group.Platform != "" && group.Status != ""
+}
+
+func groupSupportsOpenAIFast(platform string) bool {
+	return platform == PlatformOpenAI || platform == PlatformGrok
+}
+
 // IsGroupContextValid reports whether a group from context has the fields required for routing decisions.
 func IsGroupContextValid(group *Group) bool {
 	if group == nil {

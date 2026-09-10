@@ -11,16 +11,17 @@ import (
 type BillingMode string
 
 const (
-	BillingModeToken      BillingMode = "token"       // 按 token 区间计费
-	BillingModePerRequest BillingMode = "per_request" // 按次计费（支持上下文窗口分层）
-	BillingModeImage      BillingMode = "image"       // 图片计费（当前按次，预留 token 计费）
-	BillingModeVideo      BillingMode = "video"       // 视频生成计费（按视频生成次数）
+	BillingModeToken         BillingMode = "token"       // 按 token 区间计费
+	BillingModePerRequest    BillingMode = "per_request" // 按次计费（支持上下文窗口分层）
+	BillingModeImage         BillingMode = "image"       // 图片计费（当前按次，预留 token 计费）
+	BillingModeVideo         BillingMode = "video"       // 视频生成计费（按视频生成次数）
+	BillingModeVideoDuration BillingMode = "video_duration"
 )
 
 // IsValid 检查 BillingMode 是否为合法值
 func (m BillingMode) IsValid() bool {
 	switch m {
-	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
+	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, BillingModeVideoDuration, "":
 		return true
 	}
 	return false
@@ -29,7 +30,7 @@ func (m BillingMode) IsValid() bool {
 // IsValidUsageFilter 检查 BillingMode 是否可用于使用记录筛选。
 func (m BillingMode) IsValidUsageFilter() bool {
 	switch m {
-	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
+	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, BillingModeVideoDuration, "":
 		return true
 	}
 	return false
