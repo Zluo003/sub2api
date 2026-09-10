@@ -26,6 +26,7 @@ type GroupHandler struct {
 	dashboardService     *service.DashboardService
 	groupCapacityService *service.GroupCapacityService
 	cfg                  *config.Config
+	agentModels          *service.AgentModelCatalogService
 }
 
 // GetLiveCapability 返回当前服务端是否具备生成 Live attestation 的运行环境。
@@ -102,6 +103,23 @@ func NewGroupHandlerWithConfig(adminService service.AdminService, dashboardServi
 		groupCapacityService: groupCapacityService,
 		cfg:                  cfg,
 	}
+}
+
+func parseAdminGroupID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid group ID")
+		return 0, false
+	}
+	return id, true
+}
+
+func (h *GroupHandler) requireAgentModels(c *gin.Context) bool {
+	if h.agentModels == nil {
+		response.BadRequest(c, "Agent model catalog is not configured")
+		return false
+	}
+	return true
 }
 
 func (h *GroupHandler) isSimpleMode() bool {
@@ -1146,4 +1164,96 @@ func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Sort order updated successfully"})
+}
+
+func (h *GroupHandler) GetAgentModels(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok || !h.requireAgentModels(c) {
+		return
+	}
+	cfg, err := h.agentModels.GetConfig(c.Request.Context(), groupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, cfg)
+}
+func (h *GroupHandler) SyncAgentModels(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok || !h.requireAgentModels(c) {
+		return
+	}
+	cfg, err := h.agentModels.Sync(c.Request.Context(), groupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, cfg)
+}
+
+type setAgentPlatformRateRequest struct {
+	RateMultiplier *float64 `json:"rate_multiplier" binding:"required"`
+}
+
+func (h *GroupHandler) SetAgentPlatformRate(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok || !h.requireAgentModels(c) {
+		return
+	}
+	var req setAgentPlatformRateRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.RateMultiplier == nil || *req.RateMultiplier < 0 {
+		response.BadRequest(c, "rate_multiplier must be a non-negative number")
+		return
+	}
+	cfg, err := h.agentModels.SetPlatformRate(c.Request.Context(), groupID, c.Param("platform"), *req.RateMultiplier)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, cfg)
+}
+
+type updateAgentModelRequest struct {
+	MediaType string                    `json:"media_type"`
+	Enabled   *bool                     `json:"enabled"`
+	Prices    []service.AgentModelPrice `json:"prices"`
+}
+
+func (h *GroupHandler) UpdateAgentModel(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok || !h.requireAgentModels(c) {
+		return
+	}
+	modelID, err := strconv.ParseInt(c.Param("model_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid model ID")
+		return
+	}
+	var req updateAgentModelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	cfg, err := h.agentModels.UpdateModel(c.Request.Context(), groupID, modelID, service.AgentModelConfigInput{MediaType: req.MediaType, Enabled: req.Enabled, Prices: req.Prices})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, cfg)
+}
+func (h *GroupHandler) DeleteAgentModel(c *gin.Context) {
+	groupID, ok := parseAdminGroupID(c)
+	if !ok || !h.requireAgentModels(c) {
+		return
+	}
+	modelID, err := strconv.ParseInt(c.Param("model_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid model ID")
+		return
+	}
+	if err := h.agentModels.DeleteModel(c.Request.Context(), groupID, modelID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
 }
