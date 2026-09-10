@@ -28,6 +28,15 @@
 - **📖 免责声明**：本项目仅供技术学习与研究使用，作者不对因使用本项目导致的账户封禁、服务中断、数据丢失或其他任何直接或间接损失承担责任。
 - **🚫 无商业授权**：本项目从未授权任何个人或组织基于本项目开展任何形式的商业化运营。任何以本项目名义或基于本项目从事的商业行为均与本项目及其开发者无关，由此产生的一切纠纷、损失和法律责任由行为主体自行承担。
 
+## 二开说明
+
+本仓库是 `Wei-Shaw/sub2api` 的 **Yingzo 二开版本**，当前维护仓库为 `https://github.com/Zluo003/sub2api`。
+
+- 保留了 Yingzo Agent 的分组聚合、模型路由和账号池能力。
+- 保留并增强了 `/v1/videos` 全链路（任务创建、轮询、计费、重试和退款）。
+- 保留文件上传缓存、资源租约、媒体重托管与视频/Agent 资产关联。
+- 兼容 Gemini/Claude/OpenAI 的协议修复与稳定性回归。
+
 ## ❤️ 赞助商
 
 > [想出现在这里？](mailto:support@sub2api.org)
@@ -245,7 +254,7 @@ Nginx 默认会丢弃名称中含下划线的请求头（如 `session_id`），�
 #### 安装步骤
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Zluo003/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 脚本会自动：
@@ -282,6 +291,37 @@ sudo systemctl enable sub2api
 - 一键下载并应用更新
 - 支持回滚
 
+建议在本二开环境里把网页更新视为**滚动升级入口**，而不是单步全量切换。
+
+推荐流程：
+1. 先做升级前检查并记录旧镜像版本。
+2. 多实例场景下先保留一批健康实例，再替换单一实例。
+3. 用 3~5 分钟观察健康检查和启动日志通过后，再继续替换。
+
+若出现明显异常（含 tool 回放链路持续报 `503`）应立即停止升级并回滚。
+
+#### 版本回退手册（包含 0.1.191 异常场景）
+
+```bash
+# 记录可回退目标版本
+export STABLE_TAG=v0.2.5
+
+# 1）升级前快照
+mkdir -p /tmp/sub2api-rollback-$(date +%F-%H%M)
+cp -r data postgres_data redis_data /tmp/sub2api-rollback-$(date +%F-%H%M)/ 2>/dev/null || true
+
+# 2）回退到稳定版本镜像并重启
+sed -i "s#image: .*#    image: ghcr.io/zluo003/sub2api:${STABLE_TAG}#" deploy/docker-compose.local.yml
+cd deploy
+docker compose -f docker-compose.local.yml up -d
+
+# 3）验证启动与迁移状态
+docker compose -f docker-compose.local.yml logs sub2api --tail=150
+docker compose -f docker-compose.local.yml exec -T postgres psql -U postgres -d sub2api -c "SELECT 1;"
+```
+
+若回退后仍有数据库迁移错误，请先恢复数据库备份后再继续。
+
 #### 常用命令
 
 ```bash
@@ -295,7 +335,7 @@ sudo journalctl -u sub2api -f
 sudo systemctl restart sub2api
 
 # 卸载
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
+curl -sSL https://raw.githubusercontent.com/Zluo003/sub2api/main/deploy/install.sh | sudo bash -s -- uninstall -y
 ```
 
 ---
@@ -318,7 +358,7 @@ curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install
 mkdir -p sub2api-deploy && cd sub2api-deploy
 
 # 下载并运行部署准备脚本
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/Zluo003/sub2api/main/deploy/docker-deploy.sh | bash
 
 # 启动服务
 docker compose up -d
@@ -340,7 +380,7 @@ docker compose logs -f sub2api
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/Zluo003/sub2api.git
 cd sub2api/deploy
 
 # 2. 复制环境配置文件
@@ -439,6 +479,29 @@ docker compose -f docker-compose.local.yml pull
 docker compose -f docker-compose.local.yml up -d
 ```
 
+#### 推荐：不中断升级与回滚
+
+```bash
+# 1）升级前校验
+./sub2api --version
+cd backend && go test ./... && cd -
+
+# 2）升级前备份目录（关键）
+mkdir -p /tmp/sub2api-backup/$(date +%F-%H%M)
+cp -r data postgres_data redis_data /tmp/sub2api-backup/$(date +%F-%H%M)/ 2>/dev/null || true
+
+# 3）执行升级
+docker compose -f docker-compose.local.yml pull
+docker compose -f docker-compose.local.yml up -d
+
+# 4）若 5 分钟内异常，回退稳定镜像
+sed -i 's#image: .*#    image: ghcr.io/zluo003/sub2api:v0.2.5#' docker-compose.local.yml
+docker compose -f docker-compose.local.yml up -d
+
+# 5）复核日志
+docker compose -f docker-compose.local.yml logs sub2api --tail=200
+```
+
 #### 轻松迁移（本地目录版）
 
 使用 `docker-compose.local.yml` 时，可以轻松迁移到新服务器：
@@ -482,7 +545,7 @@ rm -rf data/ postgres_data/ redis_data/
 Apple 芯片 Mac 在 macOS 26 上可使用 Apple `container` 1.1.0 或更高版本运行完整的 Sub2API、PostgreSQL 和 Redis：
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/Zluo003/sub2api.git
 cd sub2api/deploy
 ./apple-container.sh init
 ./apple-container.sh up
@@ -508,7 +571,7 @@ cd sub2api/deploy
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Wei-Shaw/sub2api.git
+git clone https://github.com/Zluo003/sub2api.git
 cd sub2api
 
 # 2. 安装 pnpm（如果还没有安装）
@@ -782,9 +845,9 @@ sub2api/
 
 <a href="https://star-history.dera.page/#Wei-Shaw/sub2api&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=Wei-Shaw/sub2api&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=Wei-Shaw/sub2api&type=Date" />
-   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=Wei-Shaw/sub2api&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=Zluo003/sub2api&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=Zluo003/sub2api&type=Date" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=Zluo003/sub2api&type=Date" />
  </picture>
 </a>
 
